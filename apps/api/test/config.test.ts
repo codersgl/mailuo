@@ -1,10 +1,17 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { afterEach, describe, expect, it } from 'vitest';
-import { DEFAULT_PORT, loadConfig, loadEnvFileIfPresent } from '../src/config.js';
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import {
+  DEFAULT_PORT,
+  envFilePath,
+  loadConfig,
+  loadEnvFileIfPresent,
+  repoRoot,
+} from '../src/config.js';
 
 describe('loadConfig', () => {
+  // 这些用例的入参是显式传的对象，不读进程环境，所以 shell 里已有 PORT 也不影响。
   it('默认端口是 3001，数据库指向仓库 data/kanban.db', () => {
     const config = loadConfig({});
 
@@ -26,16 +33,37 @@ describe('loadConfig', () => {
     expect(() => loadConfig({ PORT: '0' })).toThrow(/PORT/);
     expect(() => loadConfig({ PORT: '70000' })).toThrow(/PORT/);
   });
+
+  it('默认读的 .env 就在仓库根目录', () => {
+    // 这是「不带前缀启动也能拿到端口」的前提。下面 loadEnvFileIfPresent 的用例都显式传路径，
+    // 所以路径推导写错时它们照样全绿，只有真跑 dev:api 才暴露。
+    expect(envFilePath).toBe(path.join(repoRoot, '.env'));
+    expect(fs.existsSync(path.join(repoRoot, 'package.json'))).toBe(true);
+  });
 });
 
 describe('loadEnvFileIfPresent', () => {
-  // process.loadEnvFile 直接改 process.env，用完必须还原，否则会污染同一进程里后面的用例。
-  const touched = ['PORT', 'KANBAN_DB_PATH'];
+  // process.loadEnvFile 直接改 process.env。运行环境里本来可能就有 PORT（CI 常常注入），
+  // 所以既不能假定初值为空，也不能用「删掉」当清理：先记下真实初值，用完还原。
+  const saved: Record<string, string | undefined> = {
+    PORT: process.env.PORT,
+    KANBAN_DB_PATH: process.env.KANBAN_DB_PATH,
+  };
   const tempDirs: string[] = [];
 
+  beforeEach(() => {
+    // 每个用例都从「这两个变量不存在」开始，否则测不出 .env 究竟写进去了什么。
+    delete process.env.PORT;
+    delete process.env.KANBAN_DB_PATH;
+  });
+
   afterEach(() => {
-    for (const key of touched) {
-      delete process.env[key];
+    for (const [key, original] of Object.entries(saved)) {
+      if (original === undefined) {
+        delete process.env[key];
+      } else {
+        process.env[key] = original;
+      }
     }
     for (const dir of tempDirs.splice(0)) {
       fs.rmSync(dir, { recursive: true, force: true });

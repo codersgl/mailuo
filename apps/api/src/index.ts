@@ -24,9 +24,13 @@ const server = serve({ fetch: createApp(db).fetch, port: config.port }, (info) =
 // 这里换成一行可操作的提示。
 server.on('error', (error: NodeJS.ErrnoException) => {
   if (error.code === 'EADDRINUSE') {
+    // 提示必须指向 .env：端口现在由根目录 .env 同时喂给两个进程（见 docs/decisions.md D41），
+    // 只给 dev:api 加 `PORT=` 前缀的话，前端代理还指着 .env 里的旧端口，
+    // 结果是「后端起来了、前端一直 404」，而且没有任何报错指得出原因。
     console.error(
-      `端口 ${config.port} 已被占用。换一个端口启动，例如：PORT=${config.port + 1} pnpm dev:api`,
+      `端口 ${config.port} 已被占用。换端口请改根目录 .env 的 PORT，然后重启 dev:api 与 dev:web。`,
     );
+    console.error('只给某一个进程加 PORT= 前缀会让两端不一致，表现为前端一直 404。');
   } else {
     console.error('API 启动失败:', error);
   }

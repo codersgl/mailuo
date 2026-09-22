@@ -445,3 +445,10 @@ Zod 的 `.int()` 拒绝的是**不安全整数**，而所有大于 2^53 的值�
 
 **可选复杂性，这次没做**：不引入 dotenv 之类的依赖，也不做「后端端口被占时自动换端口」——后端自己换了端口而前端不知道，正是这次 404 的成因。
 
+**影响面（审阅后补充）**：
+
+- `apps/api/src/index.ts` 在模块顶层就把 `.env` 灌进 `process.env`，所以生产入口 `pnpm --filter @kanban/api start`（`node dist/index.js`）同样会读到本机残留的根 `.env` 并改变端口。
+- 根 `.env` 的键会被 Vite 看见：配置文件先执行（把根 `.env` 写进 `process.env`），Vite 之后才按 `VITE_` 前缀从 `process.env` 取值送给客户端，所以根 `.env` 里的 `VITE_*` 会被内联进前端产物。`PORT` 不受影响。不要往里放敏感值。
+- 改 `.env` 不会自动重启：`tsx watch` 不监听 `.env`，Vite 只监听自己 envDir（`apps/web`）下的 `.env*`，两个进程都要手动重启。
+- 端口占用时的提示文案同步改了：现在指向「改根目录 `.env` 的 PORT，重启两个进程」，而不是只给 `dev:api` 加前缀——后者会精确复现上面那条 404。
+
