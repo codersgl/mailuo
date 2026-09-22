@@ -1,0 +1,34 @@
+import { Hono } from 'hono';
+import { HTTPException } from 'hono/http-exception';
+import type { Db } from './db/client.js';
+import { readBoard } from './repositories/board.js';
+
+/**
+ * 组装 Hono 应用。数据库句柄由调用方注入，测试里换成内存库即可，不需要起进程。
+ */
+export function createApp(db: Db): Hono {
+  const app = new Hono();
+
+  app.get('/api/health', (c) => {
+    // 真跑一条查询，确认连接可用，而不是只回一个常量。
+    db.prepare('SELECT 1').get();
+    return c.json({ status: 'ok' });
+  });
+
+  // 根看板。子看板 GET /api/board/:parentId 在导航那一步接入，读取逻辑已由 readBoard 支持。
+  app.get('/api/board', (c) => c.json(readBoard(db, null)));
+
+  // 错误统一返回 { error: string }（见 docs/spec.md）。
+  app.notFound((c) => c.json({ error: 'not found' }, 404));
+  app.onError((error, c) => {
+    // HTTPException 携带有意义的状态码（例如后续 zValidator 校验失败抛的 400），
+    // 直接放行它的响应，不要压成 500。
+    if (error instanceof HTTPException) {
+      return error.getResponse();
+    }
+    console.error(error);
+    return c.json({ error: 'internal server error' }, 500);
+  });
+
+  return app;
+}
