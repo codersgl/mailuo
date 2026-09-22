@@ -4,9 +4,15 @@ import { cx } from '../lib/cx';
 import { formatDuration, formatProgress, isDurationEstimated, progressPercent } from '../lib/format';
 import type { BoardTask } from '../api/types';
 
-/** 菜单项的统一外观。写成常量是为了让 Tailwind 扫描到完整类名。 */
-const MENU_ITEM =
-  'block w-full px-2.5 py-1.5 text-left text-[12px] text-ink-2 hover:bg-track hover:text-ink';
+/**
+ * 菜单项外观。拆成「基类 + 颜色」两份常量是必须的：`cx` 只做字符串拼接、不去重，
+ * 同一个 CSS 属性写两遍时谁生效由**生成样式表的源序**决定（Tailwind 按 theme key 字母序输出，
+ * `.text-danger` 排在 `.text-ink-2` 前面，于是灰色赢），跟 class 书写顺序无关。
+ * 所以颜色只能出现一处：普通项用 MENU_ITEM，危险项用 MENU_ITEM_DANGER，不要再 `cx` 叠加。
+ */
+const MENU_ITEM_BASE = 'block w-full px-2.5 py-1.5 text-left text-[12px]';
+const MENU_ITEM = `${MENU_ITEM_BASE} text-ink-2 hover:bg-track hover:text-ink`;
+const MENU_ITEM_DANGER = `${MENU_ITEM_BASE} text-danger hover:bg-track hover:text-danger`;
 
 /** 估算的菜单高度，用来判断该向上还是向下展开。 */
 const MENU_HEIGHT = 110;
@@ -18,8 +24,11 @@ const MENU_HEIGHT = 110;
  * ——两个不同热区必须分得开，否则点操作时会误入下层（见 docs/spec.md 的「界面行为」）。
  * 主体按钮里的子元素全用 span：button 只允许短语内容（phrasing content），塞 div / h3 是无效 HTML。
  *
- * 编辑、归档、删除都收在「⋯」菜单里（定版原型 B）：抽屉只做字段编辑，破坏性与状态类操作留在卡片上。
- * 菜单里的删除还要就地二次确认。已归档的卡片没有「编辑」——后端对已归档任务的 PATCH 一律拒绝（D16）。
+ * 编辑、归档、删除都收在「⋯」里（定版原型 B）：抽屉只做字段编辑，破坏性与状态类操作留在卡片上。
+ * 删除还要就地二次确认。已归档的卡片没有「编辑」——后端对已归档任务的 PATCH 一律拒绝（D16）。
+ *
+ * 这个弹层是「展开/收起」而不是 ARIA menu：只有三项、Tab 就能走完，而 role="menu" 会连带承诺
+ * 方向键导航与焦点管理（还要求子节点只能是 menuitem），不如老老实实用 aria-expanded + 一组按钮。
  */
 export function TaskCard({
   task,
@@ -49,15 +58,18 @@ export function TaskCard({
     setConfirmingDelete(false);
   }, []);
 
-  function openMenu() {
-    // 默认向下展开；卡片贴近视口底部时向上翻，免得菜单被 main 的滚动区裁掉。
-    const rect = triggerRef.current?.getBoundingClientRect();
-    setOpenUp(rect !== undefined && rect.bottom + MENU_HEIGHT > window.innerHeight);
-    setMenuOpen(true);
-  }
-
   useEffect(() => {
     if (!menuOpen) return;
+
+    // 默认向下展开；菜单会超出视口底边时改成向上翻（否则会被 main 的滚动区裁掉）。
+    // 打开时算一次，之后滚动或改窗高都要重算——只在打开那一刻判断的话，用户滚一下菜单就跑到屏幕外了。
+    const reposition = () => {
+      const rect = triggerRef.current?.getBoundingClientRect();
+      if (rect === undefined) return;
+      setOpenUp(rect.bottom + MENU_HEIGHT > window.innerHeight);
+    };
+    reposition();
+
     // 点菜单与触发按钮之外的地方关闭（不铺遮罩：看板其余部分照常可用）。
     const handlePointerDown = (event: MouseEvent) => {
       const target = event.target as Node;
@@ -68,11 +80,17 @@ export function TaskCard({
     const handleKeyDown = (event: KeyboardEvent) => {
       if (event.key === 'Escape') closeMenu();
     };
+
     document.addEventListener('mousedown', handlePointerDown);
     document.addEventListener('keydown', handleKeyDown);
+    // 滚动事件不冒泡，捕获阶段才能听到 main 的滚动。
+    window.addEventListener('scroll', reposition, true);
+    window.addEventListener('resize', reposition);
     return () => {
       document.removeEventListener('mousedown', handlePointerDown);
       document.removeEventListener('keydown', handleKeyDown);
+      window.removeEventListener('scroll', reposition, true);
+      window.removeEventListener('resize', reposition);
     };
   }, [menuOpen, closeMenu]);
 
@@ -142,8 +160,7 @@ export function TaskCard({
       <button
         ref={triggerRef}
         type="button"
-        onClick={() => (menuOpen ? closeMenu() : openMenu())}
-        aria-haspopup="menu"
+        onClick={() => (menuOpen ? closeMenu() : setMenuOpen(true))}
         aria-expanded={menuOpen}
         aria-label={`「${task.title}」的更多操作`}
         className="absolute right-1 top-1 grid size-5 place-items-center rounded-[4px] text-ink-3 hover:bg-track hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent-border"
@@ -159,11 +176,10 @@ export function TaskCard({
       {menuOpen && (
         <div
           ref={menuRef}
-          role="menu"
-          aria-label={`「${task.title}」的更多操作`}
           className={cx(
             'absolute right-1 z-10 rounded-[5px] border border-line bg-surface py-1 shadow-[0_6px_16px_rgba(29,33,38,0.12)]',
-            openUp ? 'bottom-7' : 'top-7',
+            // 向上翻时不写死偏移量，而是按自身高度整体上移：菜单高度随内容变（三项 / 确认态）。
+            openUp ? 'top-6 -translate-y-full' : 'top-7',
             confirmingDelete ? 'w-[200px]' : 'w-[132px]',
           )}
         >
@@ -174,7 +190,6 @@ export function TaskCard({
               <span className="mt-1.5 flex gap-1.5">
                 <button
                   type="button"
-                  role="menuitem"
                   onClick={() => {
                     closeMenu();
                     onDelete(task);
@@ -185,7 +200,6 @@ export function TaskCard({
                 </button>
                 <button
                   type="button"
-                  role="menuitem"
                   onClick={() => setConfirmingDelete(false)}
                   className="h-[22px] rounded-[4px] border border-line px-2 text-[11.5px] text-ink-2 hover:border-line-strong hover:bg-surface-2 hover:text-ink"
                 >
@@ -198,7 +212,6 @@ export function TaskCard({
               {!archived && (
                 <button
                   type="button"
-                  role="menuitem"
                   onClick={() => {
                     closeMenu();
                     onEdit(task);
@@ -210,7 +223,6 @@ export function TaskCard({
               )}
               <button
                 type="button"
-                role="menuitem"
                 onClick={() => {
                   closeMenu();
                   onSetArchived(task, !archived);
@@ -221,9 +233,8 @@ export function TaskCard({
               </button>
               <button
                 type="button"
-                role="menuitem"
                 onClick={() => setConfirmingDelete(true)}
-                className={cx(MENU_ITEM, 'text-danger hover:text-danger')}
+                className={MENU_ITEM_DANGER}
               >
                 删除
               </button>

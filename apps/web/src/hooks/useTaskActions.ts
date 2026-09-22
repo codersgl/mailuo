@@ -26,8 +26,9 @@ export interface TaskActions {
 /**
  * 任务的写操作。
  *
- * 失败不抛异常，而是返回 `{ ok: false, message }`：写入口有两个（抽屉面板与列底新建行），
- * 各自要把错误显示在自己的位置上，用一个共享的 error state 会串台（面板的错误冒到新建行上）。
+ * 失败不抛异常，而是返回 `{ ok: false, message }`：写入口有三处（抽屉面板、列底新建行、
+ * 卡片的「⋯」菜单），各自要把错误显示在自己的位置上，用一个共享的 error state 会串台
+ * （面板的错误冒到新建行上）。
  *
  * 成功后统一调用 `refreshAll()` 静默重取看板、文件树与面包屑，而不是拿写响应里的
  * `columnTasks` 做整列替换（见 docs/decisions.md D35）。

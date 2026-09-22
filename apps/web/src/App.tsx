@@ -71,10 +71,11 @@ function BoardPage({
 
   const actions = useTaskActions(refreshAll);
 
-  // 换一层看板就把抽屉与新建行收起来：它们编辑的是上一层看板里的子任务，换层后已不在这个列表里。
+  // 换一层看板就把抽屉、新建行与上一条操作错误收起来：它们都属于上一层看板，留着只会让人误会。
   useEffect(() => {
     setEditing(null);
     setCreatingColumnId(null);
+    setActionError(null);
   }, [boardId]);
 
   const closeEditor = useCallback(() => setEditing(null), []);
@@ -94,6 +95,8 @@ function BoardPage({
       return;
     }
     // 归档正在编辑的任务时把抽屉收掉：已归档的任务不能改字段，留着一个改不动的抽屉没有意义。
+    // 鼠标其实走不到这条：抽屉的遮罩盖住整块看板，卡片菜单点不到。只有「Tab 绕回看板 + 回车」
+    // 这条键盘路径会命中，保留是免得那个状态下抽屉显示成可编辑。
     if (archived) setEditing((current) => (current?.id === task.id ? null : current));
   }
 
@@ -132,7 +135,12 @@ function BoardPage({
         />
         <main className="min-w-0 flex-1 overflow-auto">
           {actionError !== null && (
-            <div className="mx-4 mt-3 flex items-start gap-2 rounded-[5px] border border-line bg-surface px-2.5 py-1.5">
+            // sticky：提示条是 main 的第一个子元素，长看板下 main 会滚动，不粘住就会滚出视野。
+            // role="alert" 让读屏立刻播报（看板区没有别的地方会报这个错）。
+            <div
+              role="alert"
+              className="sticky top-0 z-[6] mx-4 mt-3 flex items-start gap-2 rounded-[5px] border border-line bg-surface px-2.5 py-1.5"
+            >
               <p className="min-w-0 flex-1 text-[11.5px] text-danger">{actionError}</p>
               <button
                 type="button"

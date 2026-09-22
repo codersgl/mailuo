@@ -43,7 +43,7 @@ function task(overrides: Partial<FakeTask> & Pick<FakeTask, 'id' | 'title'>): Fa
 
 function createFakeApi(
   initial: FakeTask[],
-  options: { postError?: string; archiveError?: string } = {},
+  options: { postError?: string; archiveError?: string; deleteError?: string } = {},
 ) {
   const tasks = initial.map((item) => ({ ...item }));
   const calls: RecordedCall[] = [];
@@ -192,6 +192,7 @@ function createFakeApi(
     }
 
     if (method === 'DELETE' && path.startsWith('/api/tasks/')) {
+      if (options.deleteError !== undefined) return json({ error: options.deleteError }, 400);
       const target = id('/api/tasks/');
       for (let index = tasks.length - 1; index >= 0; index -= 1) {
         if (tasks[index]?.id === target) tasks.splice(index, 1);
@@ -227,13 +228,17 @@ function dialog() {
 
 /** 打开某张卡片的「⋯」菜单。 */
 async function openCardMenu(title: string): Promise<void> {
-  fireEvent.click(await boardArea().findByRole('button', { name: `「${title}」的更多操作` }));
+  const button = await boardArea().findByRole('button', { name: `「${title}」的更多操作` });
+  // 真实鼠标是 mousedown → mouseup → click，而「点外面关闭」的监听挂在 mousedown 上：
+  // 只发 click 的话，另一个已经打开的菜单不会关掉，测出来的行为与浏览器不一致。
+  fireEvent.mouseDown(button);
+  fireEvent.click(button);
 }
 
 /** 打开某张卡片的编辑抽屉：⋯ 菜单 → 编辑。 */
 async function openEditor(title: string): Promise<void> {
   await openCardMenu(title);
-  fireEvent.click(boardArea().getByRole('menuitem', { name: '编辑' }));
+  fireEvent.click(boardArea().getByRole('button', { name: '编辑' }));
   await screen.findByRole('dialog');
 }
 
@@ -481,7 +486,7 @@ describe('App 增删改', () => {
     await boardArea().findByText('支付对账');
 
     await openCardMenu('支付对账');
-    fireEvent.click(boardArea().getByRole('menuitem', { name: '归档' }));
+    fireEvent.click(boardArea().getByRole('button', { name: '归档' }));
 
     await waitFor(() => expect(boardArea().queryByText('支付对账')).toBeNull());
     expect(api.calls.some((call) => call.url === '/api/tasks/b/archive')).toBe(true);
@@ -500,8 +505,8 @@ describe('App 增删改', () => {
 
     // 归档卡片没有「编辑」（后端不接受已归档任务的字段改动），但给「取消归档」。
     fireEvent.click(archivedCard.getByRole('button', { name: '「支付对账」的更多操作' }));
-    expect(archivedCard.queryByRole('menuitem', { name: '编辑' })).toBeNull();
-    fireEvent.click(archivedCard.getByRole('menuitem', { name: '取消归档' }));
+    expect(archivedCard.queryByRole('button', { name: '编辑' })).toBeNull();
+    fireEvent.click(archivedCard.getByRole('button', { name: '取消归档' }));
 
     await waitFor(() =>
       expect(
@@ -516,13 +521,13 @@ describe('App 增删改', () => {
     await boardArea().findByText('支付对账');
 
     await openCardMenu('支付对账');
-    fireEvent.click(boardArea().getByRole('menuitem', { name: '删除' }));
+    fireEvent.click(boardArea().getByRole('button', { name: '删除' }));
 
     // 就地确认，不是浏览器原生 confirm。
     expect(boardArea().getByText('确认删除？')).toBeTruthy();
     expect(api.calls.some((call) => call.method === 'DELETE')).toBe(false);
 
-    fireEvent.click(boardArea().getByRole('menuitem', { name: '确认' }));
+    fireEvent.click(boardArea().getByRole('button', { name: '确认' }));
 
     await waitFor(() => expect(boardArea().queryByText('支付对账')).toBeNull());
     expect(api.calls.some((call) => call.method === 'DELETE' && call.url === '/api/tasks/b')).toBe(true);
@@ -534,14 +539,43 @@ describe('App 增删改', () => {
     await boardArea().findByText('支付对账');
 
     await openCardMenu('支付对账');
-    fireEvent.click(boardArea().getByRole('menuitem', { name: '归档' }));
+    fireEvent.click(boardArea().getByRole('button', { name: '归档' }));
 
-    expect(await boardArea().findByText('任务已归档')).toBeTruthy();
+    expect(await boardArea().findByRole('alert')).toBeTruthy();
+    expect(boardArea().getByText('任务已归档')).toBeTruthy();
     // 写失败，卡片必须还在。
     expect(boardArea().getByText('支付对账')).toBeTruthy();
 
     fireEvent.click(boardArea().getByRole('button', { name: '关闭' }));
     expect(boardArea().queryByText('任务已归档')).toBeNull();
+  });
+
+  it('卡片菜单里的删除失败时，卡片留在原地并给出提示', async () => {
+    createFakeApi(fixtures, { deleteError: '任务不存在' });
+    render(<App />);
+    await boardArea().findByText('支付对账');
+
+    await openCardMenu('支付对账');
+    fireEvent.click(boardArea().getByRole('button', { name: '删除' }));
+    fireEvent.click(boardArea().getByRole('button', { name: '确认' }));
+
+    expect(await boardArea().findByRole('alert')).toBeTruthy();
+    expect(boardArea().getByText('任务不存在')).toBeTruthy();
+    expect(boardArea().getByText('支付对账')).toBeTruthy();
+  });
+
+  it('打开另一张卡片的菜单会收起前一个', async () => {
+    createFakeApi(fixtures);
+    render(<App />);
+    await boardArea().findByText('支付对账');
+
+    await openCardMenu('支付对账');
+    expect(boardArea().getAllByRole('button', { name: '编辑' })).toHaveLength(1);
+
+    await openCardMenu('重构登录');
+
+    // 两个菜单不会同时开着：点第二张卡片的「⋯」先命中第一张卡片「点外面关闭」的监听。
+    expect(boardArea().getAllByRole('button', { name: '编辑' })).toHaveLength(1);
   });
 
   it('抽屉的遮罩、关闭按钮与 Esc 都能关掉面板', async () => {
