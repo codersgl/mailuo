@@ -7,17 +7,22 @@ import {
   applyTaskUpdate,
   changeTaskParent,
   createTask,
+  deleteTaskSubtree,
   findTask,
   isSelfOrDescendant,
+  setTaskArchived,
   type TaskRecord,
 } from '../repositories/tasks.js';
-import { changeTaskParentSchema, createTaskSchema, updateTaskSchema } from '../schemas/task.js';
+import {
+  changeTaskParentSchema,
+  createTaskSchema,
+  setTaskArchivedSchema,
+  updateTaskSchema,
+} from '../schemas/task.js';
+import { wantsArchived } from './query.js';
 import { validationHook } from './validation.js';
 
-/**
- * 写接口：新建任务、改字段与移动、改父级。
- * 归档与删除还没做。
- */
+/** 写接口：新建、改字段与移动、改父级、归档、删除。 */
 export function createTaskRoutes(db: Db): Hono {
   const routes = new Hono();
 
@@ -75,7 +80,7 @@ export function createTaskRoutes(db: Db): Hono {
     if (!updated) {
       return c.json({ error: '任务不存在' }, 404);
     }
-    return c.json(withColumnTasks(db, updated));
+    return c.json(withColumnTasks(db, updated, wantsArchived(c)));
   });
 
   routes.patch(
@@ -114,9 +119,40 @@ export function createTaskRoutes(db: Db): Hono {
       if (!updated) {
         return c.json({ error: '任务不存在' }, 404);
       }
-      return c.json(withColumnTasks(db, updated));
+      return c.json(withColumnTasks(db, updated, wantsArchived(c)));
     },
   );
+
+  // 归档是唯一接受「已归档任务」的写接口：它正是把任务从归档状态里拿出来（或再放回去）的入口，
+  // 所以不套用 D16 的「写接口拒绝归档任务」。重复归档与重复取消归档都是幂等的空操作。
+  routes.patch(
+    '/api/tasks/:id/archive',
+    zValidator('json', setTaskArchivedSchema, validationHook),
+    (c) => {
+      const id = c.req.param('id');
+      const { archived } = c.req.valid('json');
+
+      const updated = setTaskArchived(db, id, archived);
+      if (!updated) {
+        return c.json({ error: '任务不存在' }, 404);
+      }
+      // 归档后该任务不在任何列里，所以这里的 columnTasks 不含它；取消归档后它回到原列原位置。
+      // 前端开着「显示已归档」时列表照旧带上归档卡片，不能因为改状态就少一张。
+      return c.json(withColumnTasks(db, updated, wantsArchived(c)));
+    },
+  );
+
+  // 删除整棵子树。已归档任务同样可删：归档只是收起来，删除才是清理入口。
+  routes.delete('/api/tasks/:id', (c) => {
+    const removed = deleteTaskSubtree(db, c.req.param('id'));
+    if (!removed) {
+      return c.json({ error: '任务不存在' }, 404);
+    }
+    // 没有 task 可回，只返回它原来所在列的列表，前端整列替换即可。
+    return c.json({
+      columnTasks: readColumnTasks(db, removed.parentId, removed.columnId, wantsArchived(c)),
+    });
+  });
 
   return routes;
 }
@@ -124,10 +160,11 @@ export function createTaskRoutes(db: Db): Hono {
 /**
  * 写接口的统一响应：改动后的任务 + 它所在列的完整有序列表。
  * 移动后前端直接整列替换，不做本地重排（见 docs/spec.md 与 docs/decisions.md D18）。
+ * includeArchived 沿用请求参数：前端在「显示已归档」模式下整列替换时不能丢归档卡片。
  */
-function withColumnTasks(db: Db, task: TaskRecord) {
+function withColumnTasks(db: Db, task: TaskRecord, includeArchived: boolean) {
   return {
     task,
-    columnTasks: readColumnTasks(db, task.parentId, task.columnId),
+    columnTasks: readColumnTasks(db, task.parentId, task.columnId, includeArchived),
   };
 }
