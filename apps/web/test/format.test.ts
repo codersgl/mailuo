@@ -120,7 +120,7 @@ describe('工期输入的三段换算', () => {
     }
   });
 
-  it('超过上限一律算非法：否则后端会 500，或者 Infinity 被 JSON 变成 null 静默存成未估', () => {
+  it('超过上限一律算非法：超限走界面提示，Infinity 则必须在发请求前拦下', () => {
     expect(readDurationInput({ days: '10000000000000000000', hours: '', minutes: '' })).toEqual({
       kind: 'invalid',
     });

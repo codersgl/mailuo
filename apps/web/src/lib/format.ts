@@ -17,9 +17,9 @@ export const MINUTES_PER_DAY = 480;
  *
  * - 极长的数字（300 位以上）让 `Number()` 得到 `Infinity`，而 `JSON.stringify(Infinity)` 是 `null`
  *   ——界面预览写着「工期 Infinity 天」，请求发出去却成了「未估工期」，还会提示「已保存」。
- *   这是静默改数据，后端拦不住（它收到的是合法的 null）。
- * - 20 位左右的数字本身能被后端拒绝，但文案是「durationMinutes: 工期必须是整数分钟」，
- *   不如在输入框旁边直接说「工期必须是 0 到 9999 天之间的整数」。
+ *   这是静默改数据，后端拦不住（它收到的是合法的 null），只能在发请求前挡住。
+ * - 大到超过上限、但仍是安全整数的值（例如 `Number.MAX_SAFE_INTEGER`）：后端会返回 400，只是文案是
+ *   「工期最多 9999 天」，不如在输入框旁边直接显示「工期必须是 0 到 9999 天之间的整数」。
  */
 export const MAX_DURATION_MINUTES = 9999 * MINUTES_PER_DAY;
 
@@ -113,7 +113,8 @@ export function readDurationInput(parts: DurationParts): DurationInput {
 
   const [days, hours, minutes] = values as [number, number, number];
   const total = days * MINUTES_PER_DAY + hours * MINUTES_PER_HOUR + minutes;
-  // 上限见 MAX_DURATION_MINUTES 的注释：超限不是「很大」，而是后端会 500 或静默存成未估。
+  // 上限与 Infinity 都在这里挡住，理由见 MAX_DURATION_MINUTES 的注释：超限要走前端的提示，
+  // Infinity 则是必须在发请求前拦下（发出去会变成 null，静默存成未估）。
   if (!Number.isFinite(total) || total > MAX_DURATION_MINUTES) return { kind: 'invalid' };
   return { kind: 'minutes', value: total };
 }

@@ -368,7 +368,7 @@ SQL 列名保持 `parent_id`、`archived_at` 这类写法，与规范里的建�
 
 文件树的重取方式：树的数据获取仍在 Sidebar 内部（`useTree`），BoardPage 用一个自增的 `refreshToken` 通知它静默重取。没有顺手把 `useTree` 上移到 BoardPage，是因为那要把 Sidebar 的十几个用例全部改写成受控组件，而本步的写入口只有 BoardPage 一处，一个令牌足以表达「数据过期了」。若以后写入口分散到多个组件，应改成把树的数据获取上移，或引入统一的数据层。
 
-- 工期输入的**上界**是 9999 天（`MAX_DURATION_MINUTES`，`lib/format.ts`）。没有上界时两类输入会静默出错：20 位以上的数字让后端把值绑成 REAL，撞上 `typeof(duration_minutes) = 'integer'` 的 CHECK 变成 500；300 位以上让 `Number()` 得到 `Infinity`，而 `JSON.stringify(Infinity)` 是 `null`——界面预览写着「工期 Infinity 天」，存进去却成了「未估工期」。前端挡住之后，直接调接口传超大工期仍然会 500：后端入参 schema 只有 `.min(0)` 没有 `.max()`，而规范的数据模型也没写上限，留给后面决定（本步不动后端）。**（D40 已实测推翻这段里的「会 500」与「绑成 REAL」：不安全整数在 Zod 的 `.int()` 就被挡住，到不了数据库；上限改由 D40 落到接口层。）**
+- 工期输入的**上界**是 9999 天（`MAX_DURATION_MINUTES`，`lib/format.ts`）。没有上界时两类输入会静默出错：20 位以上的数字让后端把值绑成 REAL，撞上 `typeof(duration_minutes) = 'integer'` 的 CHECK 变成 500；300 位以上让 `Number()` 得到 `Infinity`，而 `JSON.stringify(Infinity)` 是 `null`——界面预览写着「工期 Infinity 天」，存进去却成了「未估工期」。前端挡住之后，直接调接口传超大工期仍然会 500：后端入参 schema 只有 `.min(0)` 没有 `.max()`，而规范的数据模型也没写上限，留给后面决定（本步不动后端）。**（这段里的两句推断都被 D40 实测推翻：「值被绑成 REAL 撞 CHECK」这件事本身没错，但那条路走不到——不安全整数在 Zod 的 `.int()` 就被挡住，根本到不了数据库；所以「直接调接口传超大工期会 500」不成立。真正的缺口是「安全但无意义」的大整数会被存下来，上限已由 D40 落到接口层。）**
 
 原型文件（`.worktrees/feat-task-crud/prototypes/`）在定版并实现后按前端规则删除，不入版本库。
 
