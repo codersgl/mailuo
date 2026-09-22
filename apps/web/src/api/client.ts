@@ -1,4 +1,4 @@
-import type { Board } from './types';
+import type { Board, BreadcrumbItem, TreeTask } from './types';
 
 /**
  * 后端错误统一是 `{ error: string }`（见 docs/spec.md），这里把它变成异常，
@@ -67,4 +67,26 @@ function readErrorMessage(body: unknown): string | undefined {
 export function fetchBoard(parentId: string | null): Promise<Board> {
   const path = parentId === null ? '/api/board' : `/api/board/${encodeURIComponent(parentId)}`;
   return request<Board>(path);
+}
+
+/**
+ * 「显示已归档」开关。后端认 `1` 和 `true`（见 docs/spec.md），这里统一发 `1`。
+ * 开关状态只存在前端（D24），所以每次都要显式传，不能靠后端记住。
+ */
+function archivedQuery(includeArchived: boolean): string {
+  return includeArchived ? '?includeArchived=1' : '';
+}
+
+/** 读完整任务树，用来建左侧文件树。默认不含归档节点。 */
+export function fetchTree(includeArchived: boolean): Promise<TreeTask[]> {
+  return request<{ tasks: TreeTask[] }>(`/api/tree${archivedQuery(includeArchived)}`).then(
+    (body) => body.tasks,
+  );
+}
+
+/** 读某个任务的面包屑（从根看板到该任务，含两端）。 */
+export function fetchBreadcrumb(taskId: string): Promise<BreadcrumbItem[]> {
+  return request<{ items: BreadcrumbItem[] }>(
+    `/api/breadcrumb/${encodeURIComponent(taskId)}`,
+  ).then((body) => body.items);
 }

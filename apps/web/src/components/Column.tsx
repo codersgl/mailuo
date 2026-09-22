@@ -4,7 +4,13 @@ import { TaskCard } from './TaskCard';
 import type { BoardColumn } from '../api/types';
 
 /** 看板里的一列：列头（列名 + 任务数）+ 卡片列表。 */
-export function Column({ column }: { column: BoardColumn }) {
+export function Column({
+  column,
+  onOpenTask,
+}: {
+  column: BoardColumn;
+  onOpenTask: (taskId: string) => void;
+}) {
   return (
     <section className="flex min-w-0 flex-col">
       <div className="sticky top-0 z-[5] flex items-center gap-[7px] border-b border-line bg-canvas px-0.5 pt-3 pb-[9px]">
@@ -24,7 +30,9 @@ export function Column({ column }: { column: BoardColumn }) {
           // 空列在刚建库时是常态，给一行弱提示，避免看起来像加载失败。
           <p className="px-0.5 text-[11px] text-ink-3">暂无任务</p>
         ) : (
-          column.tasks.map((task) => <TaskCard key={task.id} task={task} />)
+          column.tasks.map((task) => (
+            <TaskCard key={task.id} task={task} onOpen={onOpenTask} />
+          ))
         )}
       </div>
     </section>
