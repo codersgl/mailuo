@@ -68,7 +68,7 @@ KanBan/
   data/kanban.db               SQLite 文件，不入版本库
 ```
 
-- 开发：Vite 跑 5173，`server.proxy` 把 `/api` 代理到后端 3000。
+- 开发：Vite 跑 5173，`server.proxy` 把 `/api` 代理到后端 3001。
 - 生产：Hono 提供 `/api/*`，并用 `serveStatic` 托管 `apps/web/dist`，只跑一个进程。
 - 迁移：手写编号 SQL 文件，启动时按序执行，已执行的记录在 `schema_migrations` 表。
 
