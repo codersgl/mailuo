@@ -1,5 +1,6 @@
-import type { Board } from '../api/types';
+import type { Board, BoardTask } from '../api/types';
 import { Column } from './Column';
+import type { NewTaskControls } from './Column';
 
 /**
  * 三列看板。列的 id、名称、顺序都取自后端返回的 board.columns；
@@ -11,14 +12,30 @@ import { Column } from './Column';
 export function BoardView({
   board,
   onOpenTask,
+  onEditTask,
+  onSetArchived,
+  onDeleteTask,
+  create,
 }: {
   board: Board;
   onOpenTask: (taskId: string) => void;
+  onEditTask: (task: BoardTask) => void;
+  onSetArchived: (task: BoardTask, archived: boolean) => void;
+  onDeleteTask: (task: BoardTask) => void;
+  create: NewTaskControls;
 }) {
   return (
     <div className="grid min-w-[780px] grid-cols-3 items-start gap-3.5 px-4 pb-7">
       {board.columns.map((column) => (
-        <Column key={column.id} column={column} onOpenTask={onOpenTask} />
+        <Column
+          key={column.id}
+          column={column}
+          onOpenTask={onOpenTask}
+          onEditTask={onEditTask}
+          onSetArchived={onSetArchived}
+          onDeleteTask={onDeleteTask}
+          create={create}
+        />
       ))}
     </div>
   );

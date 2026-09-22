@@ -57,7 +57,7 @@ afterEach(() => {
 describe('useBoard', () => {
   it('根看板请求 /api/board，拿到看板后进入 ready', async () => {
     stubDeferredFetch();
-    const { result } = renderHook(() => useBoard(null));
+    const { result } = renderHook(() => useBoard(null, false));
 
     expect(result.current.state.status).toBe('loading');
 
@@ -71,7 +71,7 @@ describe('useBoard', () => {
 
   it('任务看板请求 /api/board/:taskId（URL 决定看哪一层）', async () => {
     stubDeferredFetch();
-    const { result } = renderHook(() => useBoard('t1'));
+    const { result } = renderHook(() => useBoard('t1', false));
 
     await waitForRequests(1);
     expect(pending[0]?.url).toBe('/api/board/t1');
@@ -81,19 +81,50 @@ describe('useBoard', () => {
     expect(result.current.state).toMatchObject({ data: { parentId: 't1' } });
   });
 
+  it('「显示已归档」打开时把 includeArchived 带给后端', async () => {
+    stubDeferredFetch();
+    const { result } = renderHook(() => useBoard(null, true));
+
+    await waitForRequests(1);
+    expect(pending[0]?.url).toBe('/api/board?includeArchived=1');
+
+    pending[0]?.respond(board(null));
+    await waitFor(() => expect(result.current.state.status).toBe('ready'));
+  });
+
+  it('开关切换属于「换了一份数据」：会回到 loading，而不是沿用旧列表', async () => {
+    stubDeferredFetch();
+    const { result, rerender } = renderHook(
+      ({ includeArchived }) => useBoard(null, includeArchived),
+      { initialProps: { includeArchived: false } },
+    );
+
+    await waitForRequests(1);
+    pending[0]?.respond(board(null));
+    await waitFor(() => expect(result.current.state.status).toBe('ready'));
+
+    rerender({ includeArchived: true });
+    expect(result.current.state.status).toBe('loading');
+
+    await waitForRequests(2);
+    expect(pending[1]?.url).toBe('/api/board?includeArchived=1');
+    pending[1]?.respond(board(null));
+    await waitFor(() => expect(result.current.state.status).toBe('ready'));
+  });
+
   it('把 ApiError 的中文文案带进 failed 状态', async () => {
     vi.stubGlobal('fetch', async () =>
       new Response(JSON.stringify({ error: '任务不存在' }), { status: 404 }),
     );
-    const { result } = renderHook(() => useBoard('missing'));
+    const { result } = renderHook(() => useBoard('missing', false));
 
     await waitFor(() => expect(result.current.state.status).toBe('failed'));
     expect(result.current.state).toMatchObject({ message: '任务不存在' });
   });
 
-  it('非 ApiError 的失败给兜底文案', async () => {
+  it('fetch 抛出的原始异常被 client 转成 ApiError(0)，文案是「连不上后端」', async () => {
     stubRejectingFetch(new TypeError('boom'));
-    const { result } = renderHook(() => useBoard(null));
+    const { result } = renderHook(() => useBoard(null, false));
 
     // fetch 抛错在 client 里已经转成 ApiError(0)，这里断言它不会漏成原始异常。
     await waitFor(() => expect(result.current.state.status).toBe('failed'));
@@ -104,7 +135,7 @@ describe('useBoard', () => {
 
   it('parentId 变化时旧请求的结果被丢弃', async () => {
     stubDeferredFetch();
-    const { result, rerender } = renderHook(({ parentId }) => useBoard(parentId), {
+    const { result, rerender } = renderHook(({ parentId }) => useBoard(parentId, false), {
       initialProps: { parentId: 'a' as string | null },
     });
 
@@ -125,7 +156,7 @@ describe('useBoard', () => {
 
   it('reload 会重新取一次', async () => {
     stubDeferredFetch();
-    const { result, rerender } = renderHook(() => useBoard(null));
+    const { result, rerender } = renderHook(() => useBoard(null, false));
 
     await waitForRequests(1);
     pending[0]?.respond(board(null));

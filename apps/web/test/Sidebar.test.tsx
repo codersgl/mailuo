@@ -5,7 +5,10 @@ import type { TreeTask } from '../src/api/types';
 
 /**
  * 文件树的行为：层级与徽标、点名字导航、三角只折叠、归档样式与开关、
- * 「当前看板被折叠在祖先里时自动展开」、以及本地偏好坏掉时的兜底。
+ * 「当前看板被折叠在祖先里时自动展开」、写操作后的静默重取、以及本地偏好坏掉时的兜底。
+ *
+ * 开关本身由 BoardPage 持有（看板列也认它），所以这里只测「受控显示 + 回调」，
+ * 落 localStorage 的行为在 App.test.tsx 里覆盖。
  */
 
 const treeTasks: TreeTask[] = [
@@ -24,29 +27,45 @@ const treeTasks: TreeTask[] = [
   },
 ];
 
+/** 后端的实际行为：includeArchived 关着时不返回归档节点。 */
+function visibleOf(tasks: TreeTask[]): TreeTask[] {
+  return tasks.filter((task) => task.archivedAt === null);
+}
+
 let requested: string[] = [];
 
-/** 桩照后端的实际行为：includeArchived 关着时不返回归档节点，否则「开关没生效」测不出来。 */
 function stubTreeFetch(tasks: TreeTask[] = treeTasks): void {
   requested = [];
   vi.stubGlobal('fetch', (input: string) => {
     const url = String(input);
     requested.push(url);
-    const visible = url.includes('includeArchived')
-      ? tasks
-      : tasks.filter((task) => task.archivedAt === null);
-    return Promise.resolve(
-      new Response(JSON.stringify({ tasks: visible }), {
-        status: 200,
-        headers: { 'Content-Type': 'application/json' },
-      }),
-    );
+    const visible = url.includes('includeArchived') ? tasks : visibleOf(tasks);
+    return Promise.resolve(jsonResponse({ tasks: visible }));
   });
 }
 
-function renderSidebar(boardId: string | null = null, onNavigate = vi.fn()) {
-  const view = render(<Sidebar boardId={boardId} onNavigate={onNavigate} />);
-  return { onNavigate, ...view };
+function jsonResponse(body: unknown, status = 200): Response {
+  return new Response(JSON.stringify(body), {
+    status,
+    headers: { 'Content-Type': 'application/json' },
+  });
+}
+
+function renderSidebar(
+  boardId: string | null = null,
+  options: { showArchived?: boolean; refreshToken?: number } = {},
+) {
+  const onNavigate = vi.fn();
+  const onShowArchivedChange = vi.fn();
+  const props = {
+    boardId,
+    onNavigate,
+    showArchived: options.showArchived ?? false,
+    onShowArchivedChange,
+    refreshToken: options.refreshToken ?? 0,
+  };
+  const view = render(<Sidebar {...props} />);
+  return { onNavigate, onShowArchivedChange, props, ...view };
 }
 
 beforeEach(() => {
@@ -89,26 +108,60 @@ describe('Sidebar', () => {
     expect(window.localStorage.getItem('kanban.tree.collapsed')).toBe(JSON.stringify(['a']));
   });
 
-  it('开关关着时归档节点不出现在树里', async () => {
+  it('开关关着时请求不带 includeArchived，归档节点不出现在树里', async () => {
     stubTreeFetch();
     renderSidebar();
 
     expect(await screen.findByText('重构登录')).toBeTruthy();
+    expect(requested).toEqual(['/api/tree']);
     expect(screen.queryByText('旧版导出')).toBeNull();
   });
 
-  it('打开「显示已归档」后带 includeArchived 重新取树，归档节点带「归档」标记', async () => {
+  it('开关打开时带 includeArchived=1 取树，归档节点带「归档」标记', async () => {
     stubTreeFetch();
-    renderSidebar();
+    renderSidebar(null, { showArchived: true });
+
+    expect(await screen.findByText('旧版导出')).toBeTruthy();
+    expect(requested).toEqual(['/api/tree?includeArchived=1']);
+    expect(screen.getByText('归档')).toBeTruthy();
+  });
+
+  it('点开关把新值交给上层，自己不落 localStorage', async () => {
+    stubTreeFetch();
+    const { onShowArchivedChange } = renderSidebar();
     await screen.findByText('重构登录');
-    expect(requested).toEqual(['/api/tree']);
 
     fireEvent.click(screen.getByRole('checkbox', { name: '显示已归档' }));
 
-    await waitFor(() => expect(requested).toEqual(['/api/tree', '/api/tree?includeArchived=1']));
-    expect(await screen.findByText('旧版导出')).toBeTruthy();
-    expect(screen.getByText('归档')).toBeTruthy();
-    expect(window.localStorage.getItem('kanban.tree.showArchived')).toBe('true');
+    expect(onShowArchivedChange).toHaveBeenCalledWith(true);
+    // 开关状态是 BoardPage 的 usePersistentState 在存，Sidebar 不再自己写一份。
+    expect(window.localStorage.getItem('kanban.tree.showArchived')).toBeNull();
+  });
+
+  it('refreshToken 变化时静默重取：旧树留在屏幕上，不闪「加载中」', async () => {
+    const resolvers: Array<(tasks: TreeTask[]) => void> = [];
+    requested = [];
+    vi.stubGlobal('fetch', (input: string) => {
+      requested.push(String(input));
+      return new Promise<Response>((resolve) => {
+        resolvers.push((tasks) => resolve(jsonResponse({ tasks })));
+      });
+    });
+
+    const { props, rerender } = renderSidebar();
+    await waitFor(() => expect(resolvers).toHaveLength(1));
+    resolvers[0]?.(visibleOf(treeTasks));
+    expect(await screen.findByText('重构登录')).toBeTruthy();
+
+    rerender(<Sidebar {...props} refreshToken={1} />);
+    await waitFor(() => expect(resolvers).toHaveLength(2));
+
+    // 第二次请求还在飞：树不能被清成加载态，否则写一次标题文件树就会闪一下。
+    expect(screen.queryByText('加载中…')).toBeNull();
+    expect(screen.getByText('重构登录')).toBeTruthy();
+
+    resolvers[1]?.(visibleOf(treeTasks));
+    await waitFor(() => expect(requested).toEqual(['/api/tree', '/api/tree']));
   });
 
   it('当前看板的祖先被折叠过时自动展开，用户折叠的其他分支保持折叠', async () => {
@@ -167,8 +220,7 @@ describe('Sidebar', () => {
 
   it('选中一个归档节点时，选中色不被归档的弱化色覆盖', async () => {
     stubTreeFetch();
-    renderSidebar('z');
-    fireEvent.click(screen.getByRole('checkbox', { name: '显示已归档' }));
+    renderSidebar('z', { showArchived: true });
 
     const name = await screen.findByText('旧版导出');
     // 行上同时挂 bg-accent-weak（选中）和 text-ink-3（归档弱化）时，生成 CSS 里 ink-3 在后，
@@ -181,14 +233,7 @@ describe('Sidebar', () => {
   });
 
   it('取树失败时显示后端文案并可重试', async () => {
-    vi.stubGlobal('fetch', () =>
-      Promise.resolve(
-        new Response(JSON.stringify({ error: '服务挂了' }), {
-          status: 500,
-          headers: { 'Content-Type': 'application/json' },
-        }),
-      ),
-    );
+    vi.stubGlobal('fetch', () => Promise.resolve(jsonResponse({ error: '服务挂了' }, 500)));
     const { onNavigate } = renderSidebar();
 
     expect(await screen.findByText('服务挂了')).toBeTruthy();

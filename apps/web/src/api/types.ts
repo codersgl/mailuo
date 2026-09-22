@@ -3,8 +3,11 @@
  * 字段名与后端一致，全 camelCase；数据库的 snake_case 只在后端内部出现。
  */
 
-/** 看板里的一张卡片。 */
-export interface BoardTask {
+/**
+ * 任务的完整字段。写接口响应里的 `task` 就是这个形状（不含子任务计数），
+ * 所以「面板保存后把新值并回本地快照」不需要再拉一次任务。
+ */
+export interface TaskRecord {
   id: string;
   parentId: string | null;
   columnId: string;
@@ -16,6 +19,10 @@ export interface BoardTask {
   createdAt: string;
   updatedAt: string;
   archivedAt: string | null;
+}
+
+/** 看板里的一张卡片：任务字段 + 直接子任务的进度计数。 */
+export interface BoardTask extends TaskRecord {
   /** 直接子任务中未归档的数量。 */
   childTotal: number;
   /** childTotal 里处于完成列的数量。 */

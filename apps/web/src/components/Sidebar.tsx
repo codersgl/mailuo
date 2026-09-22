@@ -1,6 +1,7 @@
 import { useEffect } from 'react';
 import { usePersistentState } from '../hooks/usePersistentState';
 import { useTree } from '../hooks/useTree';
+import { COLLAPSED_TASKS_KEY } from '../lib/preferences';
 import { ancestorIds, buildTree, expandAncestors, toggleCollapsed } from '../lib/tree';
 import { ErrorNote, LoadingNote } from './StatusNote';
 import { TreeNodeRow } from './TreeNodeRow';
@@ -8,34 +9,42 @@ import { TreeNodeRow } from './TreeNodeRow';
 /** 面板宽度取自定版原型 A：固定 252px、不可折叠。 */
 const PANEL_WIDTH = 252;
 
-/** 本地偏好的 key。展开状态与开关都只存前端，不落库（见 docs/spec.md 的「归档」「界面行为」）。 */
-const COLLAPSED_KEY = 'kanban.tree.collapsed';
-const SHOW_ARCHIVED_KEY = 'kanban.tree.showArchived';
-
-const isBoolean = (value: unknown): boolean => typeof value === 'boolean';
-/** 元素类型也要校验：`['a', 1]` 这类脏值会让 collapsedIds.includes 静默失效。 */
 const isStringArray = (value: unknown): boolean =>
   Array.isArray(value) && value.every((item) => typeof item === 'string');
 
 /**
  * 左侧文件树。点任务名进入该任务的看板；三角只负责展开折叠。
- * 归档是否出现在树里由后端的 `?includeArchived` 决定，这里的开关只负责把 query 传下去（D24）。
+ * 归档是否出现在树里由后端的 `?includeArchived` 决定，开关本身由 BoardPage 持有
+ * （看板列也要认同一个开关，见 docs/decisions.md D35），这里只做受控显示与回调。
  */
 export function Sidebar({
   boardId,
   onNavigate,
+  showArchived,
+  onShowArchivedChange,
+  refreshToken,
 }: {
   /** 当前看板对应的任务 id；根看板为 null。 */
   boardId: string | null;
   onNavigate: (taskId: string) => void;
+  showArchived: boolean;
+  onShowArchivedChange: (showArchived: boolean) => void;
+  /** 写操作成功后由上层加一，用来让树静默重取一次（树的数据获取仍在 Sidebar 内部）。 */
+  refreshToken: number;
 }) {
-  const [showArchived, setShowArchived] = usePersistentState(SHOW_ARCHIVED_KEY, false, isBoolean);
   const [collapsedIds, setCollapsedIds] = usePersistentState<string[]>(
-    COLLAPSED_KEY,
+    COLLAPSED_TASKS_KEY,
     [],
     isStringArray,
   );
-  const { state, reload } = useTree(showArchived);
+  const { state, reload, refresh } = useTree(showArchived);
+
+  // 写操作（新建、改名、归档、删除）之后树必须是新的：D34 遗留的那条「写操作那一步必须显式刷新树」。
+  // 0 是初始值，挂载时不用多取一次。
+  useEffect(() => {
+    if (refreshToken === 0) return;
+    refresh();
+  }, [refreshToken, refresh]);
 
   // 当前看板的节点若被折叠在某个祖先里，用户就看不到自己在哪：自动展开那一条祖先链。
   // 只展开祖先、不展开自己，否则会覆盖用户「把这一支折起来」的操作。
@@ -66,7 +75,7 @@ export function Sidebar({
             type="checkbox"
             className="peer sr-only"
             checked={showArchived}
-            onChange={(event) => setShowArchived(event.target.checked)}
+            onChange={(event) => onShowArchivedChange(event.target.checked)}
           />
           <span
             className="relative h-[15px] w-[26px] flex-none rounded-full bg-line-strong after:absolute after:left-0.5 after:top-0.5 after:size-[11px] after:rounded-full after:bg-surface peer-checked:bg-accent peer-checked:after:left-[13px] peer-focus-visible:outline-2 peer-focus-visible:outline-offset-1 peer-focus-visible:outline-accent-border"
