@@ -59,11 +59,16 @@ export const updateTaskSchema = z
     message: '移动必须同时提供 columnId 与 position',
   });
 
-/** 改父级（文件树拖动）：新父任务 + 落到新父级的哪一列。 */
+/** 改父级（文件树拖动）：新父任务 + 落到新父级的哪一列。parentId 必填，null 表示移到根看板。 */
 export const changeTaskParentSchema = z.strictObject(
   {
     parentId: z
-      .string({ error: '父任务 id 必须是字符串' })
+      .string({
+        error: (issue) =>
+          issue.input === undefined
+            ? '不能为空，移到根看板请传 null'
+            : '父任务 id 必须是字符串',
+      })
       .min(1, '父任务 id 不能为空')
       .nullable(),
     columnId: z.string({ error: '列 id 必须是字符串' }).min(1, '列 id 不能为空'),

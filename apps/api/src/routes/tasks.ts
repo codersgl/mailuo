@@ -23,9 +23,10 @@ export function createTaskRoutes(db: Db): Hono {
 
   // zValidator 在 Content-Type 不是 JSON 时会直接跳过解析，请求体变成 undefined，
   // 报错就成了「列 id 必须是字符串」这种误导文案（curl -d 默认发 form-urlencoded）。
-  // 先明确提示，省掉一轮排查。
+  // 先明确提示，省掉一轮排查。只拦 /api/tasks 下的写请求，别影响其他路径的 404。
   routes.use('*', async (c, next) => {
-    if (c.req.method === 'POST' || c.req.method === 'PATCH') {
+    const isWrite = c.req.method === 'POST' || c.req.method === 'PATCH';
+    if (isWrite && c.req.path.startsWith('/api/tasks')) {
       const contentType = c.req.header('content-type') ?? '';
       if (!contentType.includes('application/json')) {
         return c.json({ error: 'Content-Type 必须是 application/json' }, 400);
@@ -55,12 +56,22 @@ export function createTaskRoutes(db: Db): Hono {
   });
 
   routes.patch('/api/tasks/:id', zValidator('json', updateTaskSchema, validationHook), (c) => {
+    const id = c.req.param('id');
     const patch = c.req.valid('json');
+
+    // 顺序固定为：任务存在（404）→ 任务未归档（400）→ 目标列存在（400）。顺序写进测试。
+    const task = findTask(db, id);
+    if (!task) {
+      return c.json({ error: '任务不存在' }, 404);
+    }
+    if (task.archivedAt !== null) {
+      return c.json({ error: '任务已归档' }, 400);
+    }
     if (patch.columnId !== undefined && !columnExists(db, patch.columnId)) {
       return c.json({ error: `列不存在: ${patch.columnId}` }, 400);
     }
 
-    const updated = applyTaskUpdate(db, c.req.param('id'), patch);
+    const updated = applyTaskUpdate(db, id, patch);
     if (!updated) {
       return c.json({ error: '任务不存在' }, 404);
     }
@@ -74,8 +85,13 @@ export function createTaskRoutes(db: Db): Hono {
       const id = c.req.param('id');
       const input = c.req.valid('json');
 
-      if (!findTask(db, id)) {
+      // 与 PATCH /api/tasks/:id 保持同一顺序：任务存在 → 任务未归档 → 列存在 → 父级检查。
+      const task = findTask(db, id);
+      if (!task) {
         return c.json({ error: '任务不存在' }, 404);
+      }
+      if (task.archivedAt !== null) {
+        return c.json({ error: '任务已归档' }, 400);
       }
       if (!columnExists(db, input.columnId)) {
         return c.json({ error: `列不存在: ${input.columnId}` }, 400);

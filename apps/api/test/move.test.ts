@@ -291,3 +291,178 @@ describe('PATCH /api/tasks/:id/parent', () => {
     expect(await response.json()).toEqual({ error: '任务不存在' });
   });
 });
+
+describe('移动的边界与回归', () => {
+  it('跨列移动不动源列其他任务的 orders', async () => {
+    const db = createTestDb();
+    const movingId = insertTask(db, { title: '要移动', columnId: 'todo', orders: 2000 });
+    insertTask(db, { title: '留在原列一', columnId: 'todo', orders: 1000 });
+    insertTask(db, { title: '留在原列二', columnId: 'todo', orders: 3000 });
+    const api = createApp(db);
+
+    await patchJson(api, `/api/tasks/${movingId}`, { columnId: 'doing', position: 0 });
+
+    const board = await (await api.request('/api/board')).json();
+    const todo = board.columns.find((column: { id: string }) => column.id === 'todo');
+    expect(todo.tasks.map((task: { title: string; orders: number }) => [task.title, task.orders])).toEqual([
+      ['留在原列一', 1000],
+      ['留在原列二', 3000],
+    ]);
+  });
+
+  it('放到原位是空操作，不刷新任何任务的 updatedAt', async () => {
+    const db = createTestDb();
+    const aId = insertTask(db, { title: 'A', columnId: 'todo', orders: 1000 });
+    const bId = insertTask(db, { title: 'B', columnId: 'todo', orders: 2000 });
+    const readUpdatedAt = (id: string) =>
+      (db.prepare('SELECT updated_at FROM tasks WHERE id = ?').get(id) as { updated_at: string })
+        .updated_at;
+    const beforeA = readUpdatedAt(aId);
+    const beforeB = readUpdatedAt(bId);
+    const api = createApp(db);
+
+    const response = await patchJson(api, `/api/tasks/${bId}`, { columnId: 'todo', position: 1 });
+
+    expect(response.status).toBe(200);
+    expect(readUpdatedAt(aId)).toBe(beforeA);
+    expect(readUpdatedAt(bId)).toBe(beforeB);
+  });
+
+  it('columnTasks 与看板卡片同构，带直接子任务计数', async () => {
+    const db = createTestDb();
+    const parentId = insertTask(db, { title: '父任务', columnId: 'todo', orders: 1000 });
+    const childId = insertTask(db, { title: '子任务', columnId: 'done', orders: 1000, parentId });
+    insertTask(db, { title: '子任务待办', columnId: 'todo', orders: 2000, parentId });
+    const api = createApp(db);
+
+    const response = await patchJson(api, `/api/tasks/${childId}`, { columnId: 'done', position: 0 });
+
+    const { columnTasks } = await response.json();
+    expect(columnTasks[0]).toMatchObject({ id: childId, childTotal: 0, childDone: 0 });
+    const board = await (await api.request('/api/board')).json();
+    expect(board.columns[0].tasks[0]).toMatchObject({ id: parentId, childTotal: 2, childDone: 1 });
+  });
+
+  it('已归档任务不能被移动或改字段', async () => {
+    const db = createTestDb();
+    const archivedId = insertTask(db, {
+      title: '归档任务',
+      columnId: 'todo',
+      orders: 5000,
+      archived: true,
+    });
+    const api = createApp(db);
+
+    const moved = await patchJson(api, `/api/tasks/${archivedId}`, {
+      columnId: 'todo',
+      position: 0,
+    });
+    expect(moved.status).toBe(400);
+    expect(await moved.json()).toEqual({ error: '任务已归档' });
+
+    const renamed = await patchJson(api, `/api/tasks/${archivedId}`, { title: '改名' });
+    expect(renamed.status).toBe(400);
+    expect(await renamed.json()).toEqual({ error: '任务已归档' });
+
+    const archivedOrders = db
+      .prepare('SELECT orders FROM tasks WHERE id = ?')
+      .get(archivedId) as { orders: number };
+    expect(archivedOrders.orders).toBe(5000);
+  });
+
+  it('未知字段返回 400', async () => {
+    const db = createTestDb();
+    const id = insertTask(db, { title: 'A', columnId: 'todo', orders: 1000 });
+
+    const response = await patchJson(createApp(db), `/api/tasks/${id}`, { titel: 'B' });
+
+    expect(response.status).toBe(400);
+    expect(await response.json()).toEqual({ error: '存在未定义的字段' });
+  });
+
+  it('任务不存在优先于列不存在', async () => {
+    const response = await patchJson(createApp(createTestDb()), '/api/tasks/不存在的任务', {
+      columnId: '不存在的列',
+      position: 0,
+    });
+
+    expect(response.status).toBe(404);
+    expect(await response.json()).toEqual({ error: '任务不存在' });
+  });
+});
+
+describe('改父级的边界与回归', () => {
+  it('环被拒绝后库没有任何改动', async () => {
+    const db = createTestDb();
+    const aId = insertTask(db, { title: 'A', columnId: 'todo', orders: 1000 });
+    const bId = insertTask(db, { title: 'B', columnId: 'doing', orders: 2000, parentId: aId });
+    const cId = insertTask(db, { title: 'C', columnId: 'done', orders: 3000, parentId: bId });
+    const api = createApp(db);
+
+    const response = await patchJson(api, `/api/tasks/${aId}/parent`, {
+      parentId: cId,
+      columnId: 'done',
+    });
+
+    expect(response.status).toBe(400);
+    const rows = db
+      .prepare('SELECT id, parent_id, column_id, orders FROM tasks ORDER BY id')
+      .all() as Array<{ id: string; parent_id: string | null; column_id: string; orders: number }>;
+    expect(rows).toEqual([
+      { id: aId, parent_id: null, column_id: 'todo', orders: 1000 },
+      { id: bId, parent_id: aId, column_id: 'doing', orders: 2000 },
+      { id: cId, parent_id: bId, column_id: 'done', orders: 3000 },
+    ]);
+  });
+
+  it('缺少 parentId 时给出明确提示', async () => {
+    const db = createTestDb();
+    const id = insertTask(db, { title: 'A', columnId: 'todo', orders: 1000 });
+
+    const response = await patchJson(createApp(db), `/api/tasks/${id}/parent`, {
+      columnId: 'todo',
+    });
+
+    expect(response.status).toBe(400);
+    expect(await response.json()).toEqual({
+      error: 'parentId: 不能为空，移到根看板请传 null',
+    });
+  });
+
+  it('未知字段返回 400，已归档任务不能被改父级', async () => {
+    const db = createTestDb();
+    const id = insertTask(db, { title: 'A', columnId: 'todo', orders: 1000 });
+    const archivedId = insertTask(db, {
+      title: '归档任务',
+      columnId: 'todo',
+      orders: 2000,
+      archived: true,
+    });
+    const api = createApp(db);
+
+    const extra = await patchJson(api, `/api/tasks/${id}/parent`, {
+      parentId: null,
+      columnId: 'todo',
+      orders: 1,
+    });
+    expect(extra.status).toBe(400);
+    expect(await extra.json()).toEqual({ error: '存在未定义的字段' });
+
+    const archived = await patchJson(api, `/api/tasks/${archivedId}/parent`, {
+      parentId: null,
+      columnId: 'todo',
+    });
+    expect(archived.status).toBe(400);
+    expect(await archived.json()).toEqual({ error: '任务已归档' });
+  });
+
+  it('任务不存在优先于列不存在', async () => {
+    const response = await patchJson(createApp(createTestDb()), '/api/tasks/不存在的任务/parent', {
+      parentId: null,
+      columnId: '不存在的列',
+    });
+
+    expect(response.status).toBe(404);
+    expect(await response.json()).toEqual({ error: '任务不存在' });
+  });
+});

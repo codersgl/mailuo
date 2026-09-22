@@ -96,6 +96,16 @@ describe('未知路径', () => {
     expect(response.status).toBe(404);
     expect(await response.json()).toEqual({ error: 'not found' });
   });
+
+  it('没有 JSON 请求体要求的路径不受写接口 Content-Type 校验影响', async () => {
+    const app = createApp(createTestDb());
+
+    // /api/health 只支持 GET，POST 应该是 404，而不是 400「Content-Type 必须是 ...」
+    const response = await app.request('/api/health', { method: 'POST' });
+
+    expect(response.status).toBe(404);
+    expect(await response.json()).toEqual({ error: 'not found' });
+  });
 });
 
 describe('错误处理', () => {

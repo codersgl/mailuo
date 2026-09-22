@@ -272,10 +272,10 @@ export function applyTaskUpdate(db: Db, id: string, patch: UpdateTaskInput): Tas
 }
 
 /**
- * 把任务移动到目标列的指定位置，并重写该列（同一父任务下）所有未归档任务的 orders。
+ * 把任务移动到目标列的指定位置，并重写该列（同一父任务下）未归档任务的 orders。
  *
- * position 是目标列里的插入下标（0 开始），按「先把任务移出、再插入」计算，超出长度按末尾处理。
- * 已归档任务不参与重排，保留原 orders：它们不参与渲染，撞号只影响取消归档后的精确位置。
+ * position 是目标列里的插入下标（0 开始，schema 已保证非负），按「先把任务移出、再插入」计算，
+ * 超出长度按末尾处理。已归档任务不参与重排，保留原 orders（见 docs/decisions.md D20）。
  */
 function moveTask(db: Db, id: string, input: MoveTaskInput): void {
   const task = findTask(db, id);
@@ -283,7 +283,7 @@ function moveTask(db: Db, id: string, input: MoveTaskInput): void {
 
   const siblings = db
     .prepare(
-      `SELECT id FROM tasks
+      `SELECT id, column_id, orders FROM tasks
        WHERE column_id = @columnId AND archived_at IS NULL AND id <> @id
          AND ${task.parentId === null ? 'parent_id IS NULL' : 'parent_id = @parentId'}
        ORDER BY orders`,
@@ -292,26 +292,32 @@ function moveTask(db: Db, id: string, input: MoveTaskInput): void {
       task.parentId === null
         ? { columnId: input.columnId, id }
         : { columnId: input.columnId, id, parentId: task.parentId },
-    ) as Array<{ id: string }>;
+    ) as Array<{ id: string; column_id: string; orders: number }>;
 
-  const insertAt = Math.min(Math.max(input.position, 0), siblings.length);
+  const insertAt = Math.min(input.position, siblings.length);
   const orderedIds = [
     ...siblings.slice(0, insertAt).map((row) => row.id),
     id,
     ...siblings.slice(insertAt).map((row) => row.id),
   ];
 
+  const before = new Map<string, { columnId: string; orders: number }>();
+  for (const row of siblings) {
+    before.set(row.id, { columnId: row.column_id, orders: row.orders });
+  }
+  before.set(id, { columnId: task.columnId, orders: task.orders });
+
   const update = db.prepare(
     'UPDATE tasks SET column_id = @columnId, orders = @orders, updated_at = @updatedAt WHERE id = @id',
   );
   const now = new Date().toISOString();
   orderedIds.forEach((taskId, index) => {
-    update.run({
-      id: taskId,
-      columnId: input.columnId,
-      orders: (index + 1) * ORDERS_STEP,
-      updatedAt: now,
-    });
+    const orders = (index + 1) * ORDERS_STEP;
+    const previous = before.get(taskId);
+    // 位置和列都没变就不写。否则「拖动后放回原位」会把整列的 updated_at 全部刷新，
+    // 将来做「最近变更」时数据就废了。
+    if (previous && previous.orders === orders && previous.columnId === input.columnId) return;
+    update.run({ id: taskId, columnId: input.columnId, orders, updatedAt: now });
   });
 }
 
