@@ -38,6 +38,8 @@ export interface TreeTask {
   parentId: string | null;
   title: string;
   columnId: string;
+  /** 非空表示已归档。前端用它把归档节点画成另一种样式，而不是靠「是否在列表里」推断。 */
+  archivedAt: string | null;
 }
 
 /** 面包屑的一项。id 为 null 表示根看板。 */
@@ -132,7 +134,7 @@ export function findTask(db: Db, id: string): TaskRecord | undefined {
 export function listTreeTasks(db: Db, includeArchived = false): TreeTask[] {
   const rows = db
     .prepare(
-      `SELECT id, parent_id, title, column_id
+      `SELECT id, parent_id, title, column_id, archived_at
        FROM tasks
        WHERE (@includeArchived = 1 OR archived_at IS NULL)
        ORDER BY parent_id, orders`,
@@ -142,6 +144,7 @@ export function listTreeTasks(db: Db, includeArchived = false): TreeTask[] {
     parent_id: string | null;
     title: string;
     column_id: string;
+    archived_at: string | null;
   }>;
 
   return rows.map((row) => ({
@@ -149,6 +152,7 @@ export function listTreeTasks(db: Db, includeArchived = false): TreeTask[] {
     parentId: row.parent_id,
     title: row.title,
     columnId: row.column_id,
+    archivedAt: row.archived_at,
   }));
 }
 

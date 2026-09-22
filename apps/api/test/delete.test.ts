@@ -122,7 +122,7 @@ describe('DELETE /api/tasks/:id', () => {
     const board = await (await api.request('/api/board')).json();
     expect(board.columns[0].tasks).toMatchObject([{ id: aId, childTotal: 0 }]);
     expect(await (await api.request('/api/tree')).json()).toEqual({
-      tasks: [{ id: aId, parentId: null, title: 'A', columnId: 'todo' }],
+      tasks: [{ id: aId, parentId: null, title: 'A', columnId: 'todo', archivedAt: null }],
     });
     expect((await api.request(`/api/board/${bId}`)).status).toBe(404);
     expect((await api.request(`/api/breadcrumb/${bId}`)).status).toBe(404);

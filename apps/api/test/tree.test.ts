@@ -36,7 +36,7 @@ describe('GET /api/board/:parentId', () => {
 });
 
 describe('GET /api/tree', () => {
-  it('一次返回全部未归档任务，字段只有 id/parentId/title/columnId', async () => {
+  it('一次返回全部未归档任务，字段是 id/parentId/title/columnId/archivedAt', async () => {
     const db = createTestDb();
     const rootId = insertTask(db, { title: '根任务', columnId: 'todo', orders: 1000 });
     const childId = insertTask(db, { title: '子任务', columnId: 'doing', orders: 1000, parentId: rootId });
@@ -58,8 +58,21 @@ describe('GET /api/tree', () => {
       parentId: rootId,
       title: '子任务',
       columnId: 'doing',
+      archivedAt: null,
     });
     expect(tasks.find((task: { id: string }) => task.id === rootId).parentId).toBeNull();
+  });
+
+  it('includeArchived=1 时归档节点带 archivedAt 返回', async () => {
+    const db = createTestDb();
+    const archivedId = insertTask(db, { title: '已归档任务', columnId: 'todo', orders: 1000, archived: true });
+
+    const response = await createApp(db).request('/api/tree?includeArchived=1');
+
+    const { tasks } = await response.json();
+    expect(tasks).toEqual([
+      { id: archivedId, parentId: null, title: '已归档任务', columnId: 'todo', archivedAt: '2024-01-01T00:00:00.000Z' },
+    ]);
   });
 
   it('空库返回空数组', async () => {
