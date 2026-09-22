@@ -38,6 +38,36 @@ interface BoardTaskRow extends TaskRow {
  * 两个口径都在同一条查询里用 LEFT JOIN 算出，避免 N+1。
  */
 export function readBoard(db: Db, parentId: string | null): Board {
+  const columnRows = listColumns(db);
+
+  const tasksByColumn = new Map<string, BoardTask[]>();
+  for (const task of selectBoardTasks(db, parentId, null)) {
+    const bucket = tasksByColumn.get(task.columnId) ?? [];
+    bucket.push(task);
+    tasksByColumn.set(task.columnId, bucket);
+  }
+
+  return {
+    parentId,
+    columns: columnRows.map((column) => ({
+      id: column.id,
+      name: column.name,
+      orders: column.orders,
+      tasks: tasksByColumn.get(column.id) ?? [],
+    })),
+  };
+}
+
+/**
+ * 某一列的完整任务列表（含直接子任务计数），按 orders 升序。
+ * 移动或改动任务后返回给前端整列替换，排序逻辑只存在于后端（见 docs/spec.md）。
+ */
+export function readColumnTasks(db: Db, parentId: string | null, columnId: string): BoardTask[] {
+  return selectBoardTasks(db, parentId, columnId);
+}
+
+/** 看板任务的统一查询：层级（parentId）、可选列过滤，都走同一条带进度计数的 SELECT。 */
+function selectBoardTasks(db: Db, parentId: string | null, columnId: string | null): BoardTask[] {
   const conditions = ['t.archived_at IS NULL'];
   const params: Record<string, string> = { doneColumnId: DONE_COLUMN_ID };
   if (parentId === null) {
@@ -45,6 +75,10 @@ export function readBoard(db: Db, parentId: string | null): Board {
   } else {
     conditions.push('t.parent_id = @parentId');
     params.parentId = parentId;
+  }
+  if (columnId !== null) {
+    conditions.push('t.column_id = @columnId');
+    params.columnId = columnId;
   }
 
   const rows = db
@@ -61,24 +95,7 @@ export function readBoard(db: Db, parentId: string | null): Board {
     )
     .all(params) as BoardTaskRow[];
 
-  const columnRows = listColumns(db);
-
-  const tasksByColumn = new Map<string, BoardTask[]>();
-  for (const row of rows) {
-    const bucket = tasksByColumn.get(row.column_id) ?? [];
-    bucket.push(toBoardTask(row));
-    tasksByColumn.set(row.column_id, bucket);
-  }
-
-  return {
-    parentId,
-    columns: columnRows.map((column) => ({
-      id: column.id,
-      name: column.name,
-      orders: column.orders,
-      tasks: tasksByColumn.get(column.id) ?? [],
-    })),
-  };
+  return rows.map(toBoardTask);
 }
 
 function toBoardTask(row: BoardTaskRow): BoardTask {

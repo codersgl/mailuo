@@ -31,7 +31,10 @@ export const createTaskSchema = z.strictObject(
   { error: strictObjectError },
 );
 
-/** 修改任务基础字段，至少传一个。移动排序与改父级是另外的接口。 */
+/**
+ * 修改任务：改基础字段，或移动（columnId + position），至少要传一个。
+ * 移动的两个参数必须成对出现：只给 columnId 无法确定插到哪，只给 position 无法确定列。
+ */
 export const updateTaskSchema = z
   .strictObject(
     {
@@ -42,10 +45,37 @@ export const updateTaskSchema = z
         .int('工期必须是整数')
         .min(0, '工期不能为负')
         .optional(),
+      columnId: z.string({ error: '列 id 必须是字符串' }).min(1, '列 id 不能为空').optional(),
+      position: z
+        .number({ error: '位置必须是数字' })
+        .int('位置必须是整数')
+        .min(0, '位置不能为负')
+        .optional(),
     },
     { error: strictObjectError },
   )
-  .refine((patch) => Object.keys(patch).length > 0, { message: '没有需要修改的字段' });
+  .refine((patch) => Object.keys(patch).length > 0, { message: '没有需要修改的字段' })
+  .refine((patch) => (patch.columnId === undefined) === (patch.position === undefined), {
+    message: '移动必须同时提供 columnId 与 position',
+  });
+
+/** 改父级（文件树拖动）：新父任务 + 落到新父级的哪一列。parentId 必填，null 表示移到根看板。 */
+export const changeTaskParentSchema = z.strictObject(
+  {
+    parentId: z
+      .string({
+        error: (issue) =>
+          issue.input === undefined
+            ? '不能为空，移到根看板请传 null'
+            : '父任务 id 必须是字符串',
+      })
+      .min(1, '父任务 id 不能为空')
+      .nullable(),
+    columnId: z.string({ error: '列 id 必须是字符串' }).min(1, '列 id 不能为空'),
+  },
+  { error: strictObjectError },
+);
 
 export type CreateTaskBody = z.infer<typeof createTaskSchema>;
 export type UpdateTaskBody = z.infer<typeof updateTaskSchema>;
+export type ChangeTaskParentBody = z.infer<typeof changeTaskParentSchema>;
