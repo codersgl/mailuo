@@ -145,7 +145,7 @@ CREATE INDEX idx_deps_successor ON task_deps(successor_id);
 | ------ | -------------------------- | -------------------------- |
 | GET    | `/api/board`               | 根看板                     |
 | GET    | `/api/board/:parentId`     | 指定任务的子看板           |
-| GET    | `/api/tree`                | 完整任务树（不含归档）     |
+| GET    | `/api/tree`                | 完整任务树（默认不含归档） |
 | GET    | `/api/breadcrumb/:taskId`  | 沿 parent_id 回溯的面包屑  |
 | POST   | `/api/tasks`               | 新建任务                   |
 | PATCH  | `/api/tasks/:id`           | 改标题、描述、工期，或移动 |
@@ -168,7 +168,9 @@ GROUP BY t.id
 ORDER BY t.column_id, t.orders;
 ```
 
-`GET /api/tree` 一次返回所有未归档任务的 `{ id, parentId, title, columnId }`，前端据此建树，展开时按需再取看板数据。树层级不深，个人规模下一次性返回比逐层懒加载简单。
+`GET /api/board`、`GET /api/board/:parentId`、`GET /api/tree` 都接受 `?includeArchived=1`（也接受 `true`），缺省关闭。这就是上面 SQL 里「显示已归档时去掉此条件」的开关：开关状态只存在前端，不落库，所以用查询参数传递。写接口响应里的 `columnTasks` 也认这个参数，前端在显示归档模式下整列替换才不会丢卡片。
+
+`GET /api/tree` 一次返回任务的 `{ id, parentId, title, columnId, archivedAt }`，默认不含归档任务，前端据此建树，展开时按需再取看板数据。`archivedAt` 非空表示该节点已归档，前端用它把归档节点画成另一种样式，而不是靠「节点是否出现在列表里」推断。树层级不深，个人规模下一次性返回比逐层懒加载简单。
 
 `POST /api/tasks` 入参 `{ parentId, columnId, title }`。后端在同一父任务下取 `MAX(orders) + 1000` 作为新 `orders`，事务内完成。
 
@@ -176,11 +178,11 @@ ORDER BY t.column_id, t.orders;
 
 `PATCH /api/tasks/:id/parent` 入参 `{ parentId, columnId }`。改动父级后，任务在新父级下追加到目标列末尾，`orders` 取新同级的 `MAX(orders) + 1000`。必须拒绝把任务挂到自己的后代下，否则会形成环，返回 `400`。
 
-`PATCH /api/tasks/:id/archive` 入参 `{ archived: boolean }`。服务端按上述归档规则处理整棵子树。
+`PATCH /api/tasks/:id/archive` 入参 `{ archived: boolean }`。服务端按上述归档规则处理整棵子树，返回 `{ task, columnTasks }`：`task` 是改动后的任务，`columnTasks` 是它所在列的列表（归档后该任务默认不在其中，取消归档后回到原列原位置）。
 
 `PUT /api/tasks/:id/deps` 入参 `{ predecessorIds: string[] }`，整体替换该任务的前置依赖。写入前做环检测和同层校验。
 
-`DELETE /api/tasks/:id` 级联删除其所有后代任务，并删除这些任务作为任意一端的依赖记录。
+`DELETE /api/tasks/:id` 级联删除其所有后代任务，并删除这些任务作为任意一端的依赖记录。返回 `{ columnTasks }`，即该任务原所在列的列表，前端整列替换即可。
 
 错误统一返回 `{ error: string }`：`400` 入参非法，`404` 目标不存在，`409` 形成环。
 

@@ -18,7 +18,7 @@
 
 ```sh
 pnpm install          # 安装全部工作区依赖
-pnpm dev:api          # 启动后端，默认 http://localhost:3000
+pnpm dev:api          # 启动后端，默认 http://localhost:3001
 pnpm test             # 跑测试
 pnpm typecheck        # 类型检查
 pnpm build            # 编译后端到 apps/api/dist

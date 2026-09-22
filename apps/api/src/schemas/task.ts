@@ -76,6 +76,17 @@ export const changeTaskParentSchema = z.strictObject(
   { error: strictObjectError },
 );
 
+/** 归档或取消归档。布尔值必填：省略时无法判断意图，不给默认值。 */
+export const setTaskArchivedSchema = z.strictObject(
+  {
+    archived: z.boolean({
+      error: (issue) => (issue.input === undefined ? '不能为空' : '必须是布尔值'),
+    }),
+  },
+  { error: strictObjectError },
+);
+
 export type CreateTaskBody = z.infer<typeof createTaskSchema>;
 export type UpdateTaskBody = z.infer<typeof updateTaskSchema>;
 export type ChangeTaskParentBody = z.infer<typeof changeTaskParentSchema>;
+export type SetTaskArchivedBody = z.infer<typeof setTaskArchivedSchema>;

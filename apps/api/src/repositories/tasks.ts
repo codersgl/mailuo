@@ -38,6 +38,8 @@ export interface TreeTask {
   parentId: string | null;
   title: string;
   columnId: string;
+  /** 非空表示已归档。前端用它把归档节点画成另一种样式，而不是靠「是否在列表里」推断。 */
+  archivedAt: string | null;
 }
 
 /** 面包屑的一项。id 为 null 表示根看板。 */
@@ -79,6 +81,29 @@ export interface ChangeTaskParentInput {
 const TASK_COLUMNS =
   'id, parent_id, column_id, title, description, duration, orders, created_at, updated_at, archived_at';
 
+/**
+ * 递归求子树的 CTE。用 UNION（不是 UNION ALL）去重：父子关系成环的脏数据下递归也能终止。
+ * 调用时传入 `@id` 作为子树的根。
+ */
+const SUBTREE_IDS_CTE = `WITH RECURSIVE subtree(id) AS (
+       SELECT id FROM tasks WHERE id = @id
+       UNION
+       SELECT t.id FROM tasks t JOIN subtree s ON t.parent_id = s.id
+     )`;
+
+/**
+ * 任务及其全部后代的 id，含任务自己。
+ * 一条 SQL 取完再交给调用方按 id 操作，而不是在 DELETE/UPDATE 里内联这段 CTE：
+ * 内联时 CTE 与写操作作用于同一批行，先物化还是边写边算依赖 SQLite 的实现细节，
+ * 先读后写不受影响。个人规模下这棵树只有几十个节点。
+ */
+function listSubtreeIds(db: Db, id: string): string[] {
+  const rows = db.prepare(`${SUBTREE_IDS_CTE} SELECT id FROM subtree`).all({ id }) as Array<{
+    id: string;
+  }>;
+  return rows.map((row) => row.id);
+}
+
 export function toTaskRecord(row: TaskRow): TaskRecord {
   return {
     id: row.id,
@@ -101,24 +126,33 @@ export function findTask(db: Db, id: string): TaskRecord | undefined {
 }
 
 /**
- * 全部未归档任务的精简字段，供前端一次性建树。
+ * 全部任务的精简字段，供前端一次性建树。
+ * includeArchived 为 false 时只返回未归档任务（默认）；规范里「显示已归档」是前端开关，
+ * 状态不落库，所以这里只按参数切换查询条件。
  * 排序只为让返回稳定，树里不支持排序。
  */
-export function listTreeTasks(db: Db): TreeTask[] {
+export function listTreeTasks(db: Db, includeArchived = false): TreeTask[] {
   const rows = db
     .prepare(
-      `SELECT id, parent_id, title, column_id
+      `SELECT id, parent_id, title, column_id, archived_at
        FROM tasks
-       WHERE archived_at IS NULL
+       WHERE (@includeArchived = 1 OR archived_at IS NULL)
        ORDER BY parent_id, orders`,
     )
-    .all() as Array<{ id: string; parent_id: string | null; title: string; column_id: string }>;
+    .all({ includeArchived: includeArchived ? 1 : 0 }) as Array<{
+    id: string;
+    parent_id: string | null;
+    title: string;
+    column_id: string;
+    archived_at: string | null;
+  }>;
 
   return rows.map((row) => ({
     id: row.id,
     parentId: row.parent_id,
     title: row.title,
     columnId: row.column_id,
+    archivedAt: row.archived_at,
   }));
 }
 
@@ -369,19 +403,95 @@ export function changeTaskParent(
 }
 
 /**
+ * 归档或取消归档整棵子树（见 docs/spec.md 的「归档」与 docs/decisions.md D24）。
+ * 任务不存在返回 undefined，成功返回改动后的任务本身。
+ *
+ * - 归档：任务及其全部后代置 `archived_at`。已经归档的行保持原时间戳不动
+ *   （它们是从别的入口先归档的），因此重复归档是幂等的，也不会白刷 `updated_at`。
+ * - 取消归档：恢复整棵子树，并沿着 `parent_id` 向上把仍处于归档状态的祖先一并恢复，
+ *   否则任务会挂在一个不显示的父节点下变成孤儿。
+ *
+ * 两条 UPDATE 都用「先取 id 再写」，理由同 listSubtreeIds。
+ */
+export function setTaskArchived(db: Db, id: string, archived: boolean): TaskRecord | undefined {
+  const now = new Date().toISOString();
+
+  const apply = db.transaction((): TaskRecord | undefined => {
+    if (!findTask(db, id)) return undefined;
+
+    if (archived) {
+      const ids = listSubtreeIds(db, id);
+      const placeholders = ids.map(() => '?').join(', ');
+      // 只改未归档的行：已归档的后代保留原归档时间。
+      db.prepare(
+        `UPDATE tasks SET archived_at = ?, updated_at = ?
+         WHERE archived_at IS NULL AND id IN (${placeholders})`,
+      ).run(now, now, ...ids);
+    } else {
+      // 祖先链：从任务的 parent_id 起逐层向上，遇到 NULL 停止。
+      const ancestors = db
+        .prepare(
+          `WITH RECURSIVE ancestors(id) AS (
+             SELECT parent_id FROM tasks WHERE id = @id AND parent_id IS NOT NULL
+             UNION
+             SELECT t.parent_id FROM tasks t JOIN ancestors a ON t.id = a.id
+              WHERE t.parent_id IS NOT NULL
+           )
+           SELECT id FROM ancestors`,
+        )
+        .all({ id }) as Array<{ id: string }>;
+
+      const ids = [...new Set([...listSubtreeIds(db, id), ...ancestors.map((row) => row.id)])];
+      const placeholders = ids.map(() => '?').join(', ');
+      // 只改已归档的行：祖先里本来就没归档的那几层不该被刷新 updated_at。
+      db.prepare(
+        `UPDATE tasks SET archived_at = NULL, updated_at = ?
+         WHERE archived_at IS NOT NULL AND id IN (${placeholders})`,
+      ).run(now, ...ids);
+    }
+
+    return findTask(db, id);
+  });
+
+  return apply.immediate();
+}
+
+/**
+ * 删除任务及其整棵子树，并清掉这些任务作为任意一端的依赖记录。
+ * 任务不存在返回 undefined；成功返回被删掉的任务记录（调用方用它定位原来的列，好返回整列）。
+ *
+ * 级联放在应用层事务里，而不是给 `tasks.parent_id` 加 `ON DELETE CASCADE`（见 docs/decisions.md D7、D25）：
+ * `task_deps` 的两端也要一起清，还要区分「只剩一端」的记录，写在这里比拆成两条迁移直白。
+ *
+ * 依赖行必须在任务行之前删：外键已开启，任务没了再删依赖会先撞上约束。
+ * 任务行则可以用一条 `DELETE ... IN (...)` 连父子一起删——SQLite 的外键是立即约束，
+ * 但检查发生在语句结束时，同一语句里删掉父子两端不构成中间态。行为由测试固定。
+ */
+export function deleteTaskSubtree(db: Db, id: string): TaskRecord | undefined {
+  const remove = db.transaction((): TaskRecord | undefined => {
+    const task = findTask(db, id);
+    if (!task) return undefined;
+
+    // 任务存在时子树至少含它自己，所以 ids 非空，`IN ()` 这种非法 SQL 不会出现。
+    const ids = listSubtreeIds(db, id);
+    const placeholders = ids.map(() => '?').join(', ');
+
+    db.prepare(
+      `DELETE FROM task_deps
+       WHERE predecessor_id IN (${placeholders}) OR successor_id IN (${placeholders})`,
+    ).run(...ids, ...ids);
+    db.prepare(`DELETE FROM tasks WHERE id IN (${placeholders})`).run(...ids);
+
+    return task;
+  });
+
+  return remove.immediate();
+}
+
+/**
  * candidateId 是否就是 taskId 本身、或位于它的子树中。用于阻止把任务挂到自己的后代下。
- * 用 UNION（不是 UNION ALL）去重，脏数据成环时递归也能终止。
+ * 直接复用子树查询：成环终止的性质已经在 listSubtreeIds 的 CTE 里保证，不再写第二份递归 SQL。
  */
 export function isSelfOrDescendant(db: Db, taskId: string, candidateId: string): boolean {
-  const row = db
-    .prepare(
-      `WITH RECURSIVE subtree(id) AS (
-         SELECT id FROM tasks WHERE id = @taskId
-         UNION
-         SELECT t.id FROM tasks t JOIN subtree s ON t.parent_id = s.id
-       )
-       SELECT 1 AS found FROM subtree WHERE id = @candidateId`,
-    )
-    .get({ taskId, candidateId });
-  return row !== undefined;
+  return listSubtreeIds(db, taskId).includes(candidateId);
 }
