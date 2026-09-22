@@ -11,3 +11,22 @@
 ## 项目定位
 
 - 个人使用
+
+## 本地运行
+
+需要 Node 22 与 pnpm 11。
+
+```sh
+pnpm install          # 安装全部工作区依赖
+pnpm dev:api          # 启动后端，默认 http://localhost:3000
+pnpm test             # 跑测试
+pnpm typecheck        # 类型检查
+pnpm build            # 编译后端到 apps/api/dist
+```
+
+环境变量（都有默认值）：
+
+- `PORT` 后端端口，默认 `3000`。
+- `KANBAN_DB_PATH` SQLite 文件路径，默认 `data/kanban.db`。
+
+数据库在启动时自动建表并执行 `apps/api/migrations/` 下未应用过的迁移。

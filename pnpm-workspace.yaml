@@ -1,0 +1,9 @@
+packages:
+  - apps/*
+
+# pnpm 默认拦截依赖的安装脚本。这里显式放行需要编译/准备原生产物的包：
+# - better-sqlite3：准备原生绑定文件
+# - esbuild：准备平台二进制
+allowBuilds:
+  better-sqlite3: true
+  esbuild: true
