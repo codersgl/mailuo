@@ -52,3 +52,31 @@ SQL 列名保持 `parent_id`、`archived_at` 这类写法，与规范里的建�
 开发机上 3000 常被别的服务占用，启动直接失败。用户确认后把默认端口改为 `3001`，常量在 `apps/api/src/config.ts` 的 `DEFAULT_PORT`，仍可用 `PORT` 覆盖。
 
 这条与规范不一致：`docs/spec.md` 的开发约定写的是「Vite 跑 5173，`server.proxy` 把 `/api` 代理到后端 3000」。规范文件只能由用户修改，待用户同步更新。做前端时 Vite 的代理目标从同一个 `PORT` 变量读取，避免两边漂移。
+
+## D10 新建任务的 orders 取目标列内的 MAX + 1000（2025-09-22）
+
+规范对 `POST /api/tasks` 写的是「在同一父任务下取 `MAX(orders) + 1000`」。同一父任务下可能同时有 `orders = 5000` 的进行中任务和 `orders = 1000` 的待办任务，按整层取 MAX 会让新任务在待办列里拿到 6000。
+
+实现按 `(parent_id, column_id)` 取 MAX，即追加到目标列末尾。理由：`orders` 只用于列内排序（索引 `idx_tasks_board` 也是 `(parent_id, column_id, orders)`），跨列比较没有意义。若规范原意是整层取 MAX，需要用户更新规范并说明用途。
+
+## D11 面包屑包含根看板与当前任务（2025-09-22）
+
+`GET /api/breadcrumb/:taskId` 返回 `{ items: [{ id, title }] }`，第一项 `id` 为 `null`、标题固定「根看板」，随后是从根到 `taskId` 自身的每一层。
+
+理由：规范里的例子是 `根看板 / 重构登录 / 前端部分`，最后一段就是当前看板所在的任务，所以接口把当前任务也返回。前端把 `id === null` 的一段链到 `/`、其余链到 `/board/:id`，不需要自己拼前缀。`id` 用 `null` 而不是特殊字符串，避免与真实 UUID 冲突。
+
+## D12 入参用 strictObject，错误体只给第一条（2025-09-22）
+
+- schema 一律 `z.strictObject`，字段名打错时返回 400 而不是被静默丢弃。未知字段的中文文案通过 `strictObject` 的 `error` 回调指定，只替换 `unrecognized_keys` 一种情况，请求体不是对象时仍用 Zod 默认描述。
+- 规范要求错误统一为 `{ error: string }`，所以 `validationHook` 只取第一条 issue，压成 `字段名: 说明`（没有字段名时只给说明）。多字段同时出错时只说第一条，不引入 `details` 数组以免偏离契约。
+
+## D13 归档任务下禁止新建子任务（2025-09-22）
+
+`POST /api/tasks` 的 `parentId` 指向已归档任务时返回 400「父任务已归档」，而不是照常创建。归档是整棵子树一起隐藏，在归档任务下建的任务会立刻变成看不见的孤儿；正常界面进不到归档看板，这条只是防御。
+
+## D14 本步的接口边界（2025-09-22）
+
+本步实现：`GET /api/board/:parentId`、`GET /api/tree`、`GET /api/breadcrumb/:taskId`、`POST /api/tasks`、`PATCH /api/tasks/:id`（仅标题、描述、工期）。
+
+未实现、留给下一步：`PATCH /api/tasks/:id` 的移动排序（`columnId` + `position`，要重写目标列 orders）、`PATCH /api/tasks/:id/parent`（要环检测）、`PATCH /api/tasks/:id/archive`（子树归档）、`DELETE /api/tasks/:id`（级联策略见 D7）。移动排序的入参 schema 也还没写，避免留下列表里没有实现的字段。
+
