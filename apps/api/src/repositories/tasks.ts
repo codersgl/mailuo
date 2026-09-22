@@ -58,6 +58,24 @@ export interface UpdateTaskFieldsInput {
   duration?: number;
 }
 
+/** 一次 PATCH 的完整入参：字段更新与列内移动可以同时出现。 */
+export interface UpdateTaskInput extends UpdateTaskFieldsInput {
+  columnId?: string;
+  /** 目标列中的插入下标，从 0 开始。 */
+  position?: number;
+}
+
+export interface MoveTaskInput {
+  columnId: string;
+  /** 目标列中的插入下标，从 0 开始；超出长度时按末尾处理。 */
+  position: number;
+}
+
+export interface ChangeTaskParentInput {
+  parentId: string | null;
+  columnId: string;
+}
+
 const TASK_COLUMNS =
   'id, parent_id, column_id, title, description, duration, orders, created_at, updated_at, archived_at';
 
@@ -227,4 +245,137 @@ export function updateTaskFields(
   });
 
   return update();
+}
+
+/**
+ * 一次 PATCH 的全部改动：字段更新与列内移动放在同一个事务里。
+ * 任务不存在返回 undefined。移动参数的成对校验由路由层的 schema 负责。
+ */
+export function applyTaskUpdate(db: Db, id: string, patch: UpdateTaskInput): TaskRecord | undefined {
+  const hasFieldUpdate =
+    patch.title !== undefined || patch.description !== undefined || patch.duration !== undefined;
+  const targetColumnId = patch.columnId;
+  const targetPosition = patch.position;
+
+  const apply = db.transaction((): TaskRecord | undefined => {
+    if (!findTask(db, id)) return undefined;
+    if (hasFieldUpdate) {
+      updateTaskFields(db, id, patch);
+    }
+    if (targetColumnId !== undefined && targetPosition !== undefined) {
+      moveTask(db, id, { columnId: targetColumnId, position: targetPosition });
+    }
+    return findTask(db, id);
+  });
+
+  return apply.immediate();
+}
+
+/**
+ * 把任务移动到目标列的指定位置，并重写该列（同一父任务下）所有未归档任务的 orders。
+ *
+ * position 是目标列里的插入下标（0 开始），按「先把任务移出、再插入」计算，超出长度按末尾处理。
+ * 已归档任务不参与重排，保留原 orders：它们不参与渲染，撞号只影响取消归档后的精确位置。
+ */
+function moveTask(db: Db, id: string, input: MoveTaskInput): void {
+  const task = findTask(db, id);
+  if (!task) return;
+
+  const siblings = db
+    .prepare(
+      `SELECT id FROM tasks
+       WHERE column_id = @columnId AND archived_at IS NULL AND id <> @id
+         AND ${task.parentId === null ? 'parent_id IS NULL' : 'parent_id = @parentId'}
+       ORDER BY orders`,
+    )
+    .all(
+      task.parentId === null
+        ? { columnId: input.columnId, id }
+        : { columnId: input.columnId, id, parentId: task.parentId },
+    ) as Array<{ id: string }>;
+
+  const insertAt = Math.min(Math.max(input.position, 0), siblings.length);
+  const orderedIds = [
+    ...siblings.slice(0, insertAt).map((row) => row.id),
+    id,
+    ...siblings.slice(insertAt).map((row) => row.id),
+  ];
+
+  const update = db.prepare(
+    'UPDATE tasks SET column_id = @columnId, orders = @orders, updated_at = @updatedAt WHERE id = @id',
+  );
+  const now = new Date().toISOString();
+  orderedIds.forEach((taskId, index) => {
+    update.run({
+      id: taskId,
+      columnId: input.columnId,
+      orders: (index + 1) * ORDERS_STEP,
+      updatedAt: now,
+    });
+  });
+}
+
+/**
+ * 改父级：任务挂到新父任务下，追加到目标列末尾（orders 取新同级该列的 MAX + ORDERS_STEP）。
+ * 任务自身的子树跟着走，不需要额外处理。任务不存在返回 undefined。
+ * 环检测由路由层先用 isSelfOrDescendant 做，这里只负责写入。
+ */
+export function changeTaskParent(
+  db: Db,
+  id: string,
+  input: ChangeTaskParentInput,
+): TaskRecord | undefined {
+  const now = new Date().toISOString();
+  const parentCondition = input.parentId === null ? 'parent_id IS NULL' : 'parent_id = @parentId';
+  const params =
+    input.parentId === null
+      ? { columnId: input.columnId, id }
+      : { columnId: input.columnId, id, parentId: input.parentId };
+
+  const apply = db.transaction((): TaskRecord | undefined => {
+    const task = findTask(db, id);
+    if (!task) return undefined;
+
+    const maxRow = db
+      .prepare(
+        `SELECT COALESCE(MAX(orders), 0) AS max_orders
+         FROM tasks
+         WHERE column_id = @columnId AND id <> @id AND ${parentCondition}`,
+      )
+      .get(params) as { max_orders: number };
+
+    db.prepare(
+      `UPDATE tasks
+       SET parent_id = @parentId, column_id = @columnId, orders = @orders, updated_at = @updatedAt
+       WHERE id = @id`,
+    ).run({
+      id,
+      parentId: input.parentId,
+      columnId: input.columnId,
+      orders: maxRow.max_orders + ORDERS_STEP,
+      updatedAt: now,
+    });
+
+    return findTask(db, id);
+  });
+
+  return apply.immediate();
+}
+
+/**
+ * candidateId 是否就是 taskId 本身、或位于它的子树中。用于阻止把任务挂到自己的后代下。
+ * 用 UNION（不是 UNION ALL）去重，脏数据成环时递归也能终止。
+ */
+export function isSelfOrDescendant(db: Db, taskId: string, candidateId: string): boolean {
+  const row = db
+    .prepare(
+      `WITH RECURSIVE subtree(id) AS (
+         SELECT id FROM tasks WHERE id = @taskId
+         UNION
+         SELECT t.id FROM tasks t JOIN subtree s ON t.parent_id = s.id
+       )
+       SELECT 1 AS found FROM subtree WHERE id = @candidateId`,
+    )
+    .get({ taskId, candidateId });
+  return row !== undefined;
 }

@@ -201,7 +201,8 @@ describe('PATCH /api/tasks/:id', () => {
     const response = await patchTask(api, id, { title: '  新标题  ', duration: 3 });
 
     expect(response.status).toBe(200);
-    const task = await response.json();
+    // 写接口统一返回 { task, columnTasks }，columnTasks 是该任务所在列的完整有序列表
+    const { task, columnTasks } = await response.json();
     expect(task).toMatchObject({
       id,
       title: '新标题',
@@ -212,6 +213,7 @@ describe('PATCH /api/tasks/:id', () => {
       orders: 1000,
     });
     expect(task.updatedAt > task.createdAt).toBe(true);
+    expect(columnTasks.map((item: { id: string }) => item.id)).toEqual([id]);
   });
 
   it('新值与旧值相同时也刷新 updatedAt，而不是返回 404', async () => {
@@ -221,7 +223,7 @@ describe('PATCH /api/tasks/:id', () => {
     const response = await patchTask(createApp(db), id, { title: '任务' });
 
     expect(response.status).toBe(200);
-    const task = await response.json();
+    const { task } = await response.json();
     expect(task.title).toBe('任务');
     expect(task.updatedAt > task.createdAt).toBe(true);
   });
@@ -234,7 +236,7 @@ describe('PATCH /api/tasks/:id', () => {
     const response = await patchTask(createApp(db), id, { description: '' });
 
     expect(response.status).toBe(200);
-    expect((await response.json()).description).toBe('');
+    expect((await response.json()).task.description).toBe('');
   });
 
   it('空对象返回 400', async () => {

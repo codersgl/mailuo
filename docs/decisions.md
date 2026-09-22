@@ -96,4 +96,40 @@ SQL 列名保持 `parent_id`、`archived_at` 这类写法，与规范里的建�
 
 `readBreadcrumb` 遇到父子成环抛 `TaskCycleError`（→500 并记日志），遇到父行缺失返回 `undefined`（→404）。这两种情况在外键开启且只走接口的前提下不可达，写出来是为了不在脏数据上返回一条看起来正常但错误的面包屑。测试用直接改库的方式固定这两个行为。
 
+## D18 写接口统一返回 `{ task, columnTasks }`（2025-09-22）
+
+`PATCH /api/tasks/:id` 与 `PATCH /api/tasks/:id/parent` 都返回 `{ task, columnTasks }`：
+
+- `task`：改动后的任务记录（用于字段编辑后刷新卡片）。
+- `columnTasks`：该任务所在列的完整有序列表，元素与看板卡片同构（含 `childTotal` / `childDone`）。
+
+理由：规范要求移动后「后端重写目标列内所有任务的 orders 并返回该列任务列表」，前端不做本地重排。字段编辑也返回整列，形状统一，前端拿到响应就能整列替换，不需要为一个接口准备两种解析分支。这是对第 2 步 `PATCH` 返回裸任务对象的改写，没有保留旧形状（个人项目，无外部调用方）。
+
+## D19 移动的 position 是目标列里的 0 基下标（2025-09-22）
+
+`PATCH /api/tasks/:id` 的 `{ columnId, position }` 中，`position` 是「任务移出原位置后，插入目标列的下标」，从 0 开始，超出列长度按末尾处理（内部 `Math.min(Math.max(position, 0), siblings.length)`）。
+
+例：待办列是 `A B C`，把 `C` 移到 `position: 1`，结果是 `A C B`（先移出 C 得到 `A B`，再插到下标 1）。前端从拖拽得到的落点下标可以直接传，不需要自己减一。
+
+重排只在 `(parent_id, column_id)` 范围内发生，只重写未归档任务，编号从 `ORDERS_STEP` 起逐个递增。
+
+## D20 已归档任务不参与重排（2025-09-22）
+
+移动只重写可见（未归档）任务的 orders，已归档任务保留原值。它们不参与渲染，重排后可能与可见任务撞号，影响仅限于「取消归档后落点不精确」。另一种做法是把归档任务也纳入编号，但那会让 `position` 的含义（可见列表下标）与内部编号错位，代价更大。行为由测试固定。
+
+## D21 改父级：子树跟随，环检测用递归 CTE（2025-09-22）
+
+`PATCH /api/tasks/:id/parent` 入参 `{ parentId, columnId }`（`parentId` 为 `null` 表示移到根看板）：
+
+- 任务挂到新父级下并追加到目标列末尾，`orders` 取新范围内该列的 `MAX + 1000`（取值时排除任务自己，避免同范围移动时多留一个空档）。
+- 子树跟着父任务走，不需要额外处理（子任务不参与列渲染）。
+- 环检测：用递归 CTE 求任务的子树，判断 `parentId` 是否落在其中（含自身）。CTE 用 `UNION` 而不是 `UNION ALL`，脏数据成环时递归也能终止。命中返回 400「不能把任务挂到自己或自己的后代下」。
+- 新父任务不存在返回 404、已归档返回 400、`columnId` 不存在返回 400；同父同级移动等价于「追加到该列末尾」。
+
+## D22 本步的接口边界（2025-09-22）
+
+本步实现：`PATCH /api/tasks/:id` 的移动（`columnId` + `position`，可与字段更新同时提交）与 `PATCH /api/tasks/:id/parent`。
+
+未实现：`PATCH /api/tasks/:id/archive`（子树归档与取消归档的父链恢复）、`DELETE /api/tasks/:id`（级联策略见 D7）。
+
 
