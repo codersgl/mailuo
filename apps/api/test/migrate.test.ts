@@ -46,6 +46,21 @@ describe('runMigrations', () => {
     expect(db.prepare('SELECT COUNT(*) AS count FROM schema_migrations').get()).toEqual({ count: 1 });
   });
 
+  it('新增的迁移只应用新增的那一个', () => {
+    const db = openDatabase(':memory:');
+    const dir = makeMigrationsDir({ '001_a.sql': 'CREATE TABLE a (id TEXT);' });
+    expect(runMigrations(db, dir)).toEqual(['001_a.sql']);
+
+    fs.writeFileSync(path.join(dir, '002_b.sql'), 'CREATE TABLE b (id TEXT);');
+
+    expect(runMigrations(db, dir)).toEqual(['002_b.sql']);
+    expect(runMigrations(db, dir)).toEqual([]);
+    expect(db.prepare('SELECT name FROM schema_migrations ORDER BY name').all()).toEqual([
+      { name: '001_a.sql' },
+      { name: '002_b.sql' },
+    ]);
+  });
+
   it('打开连接时外键约束生效', () => {
     const db = createTestDb();
 

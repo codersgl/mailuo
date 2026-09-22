@@ -1,4 +1,5 @@
 import { Hono } from 'hono';
+import { HTTPException } from 'hono/http-exception';
 import type { Db } from './db/client.js';
 import { readBoard } from './repositories/board.js';
 
@@ -20,6 +21,11 @@ export function createApp(db: Db): Hono {
   // 错误统一返回 { error: string }（见 docs/spec.md）。
   app.notFound((c) => c.json({ error: 'not found' }, 404));
   app.onError((error, c) => {
+    // HTTPException 携带有意义的状态码（例如后续 zValidator 校验失败抛的 400），
+    // 直接放行它的响应，不要压成 500。
+    if (error instanceof HTTPException) {
+      return error.getResponse();
+    }
     console.error(error);
     return c.json({ error: 'internal server error' }, 500);
   });

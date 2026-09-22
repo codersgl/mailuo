@@ -1,4 +1,5 @@
-import { describe, expect, it } from 'vitest';
+import { HTTPException } from 'hono/http-exception';
+import { describe, expect, it, vi } from 'vitest';
 import { createApp } from '../src/app.js';
 import { createTestDb, insertTask } from './helpers.js';
 
@@ -94,5 +95,35 @@ describe('未知路径', () => {
 
     expect(response.status).toBe(404);
     expect(await response.json()).toEqual({ error: 'not found' });
+  });
+});
+
+describe('错误处理', () => {
+  it('HTTPException 保留自己的状态码，不被压成 500', async () => {
+    const app = createApp(createTestDb());
+    // 后续入参校验（zValidator）失败抛的就是 HTTPException(400)。
+    app.get('/api/boom', () => {
+      throw new HTTPException(400, { message: '入参非法' });
+    });
+
+    const response = await app.request('/api/boom');
+
+    expect(response.status).toBe(400);
+  });
+
+  it('普通异常记日志并返回 500 与统一错误体', async () => {
+    const app = createApp(createTestDb());
+    app.get('/api/boom', () => {
+      throw new Error('内部错误');
+    });
+    const logged = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    const response = await app.request('/api/boom');
+
+    expect(response.status).toBe(500);
+    expect(await response.json()).toEqual({ error: 'internal server error' });
+    // 出错必须留痕，不能静默返回 500。
+    expect(logged).toHaveBeenCalledOnce();
+    logged.mockRestore();
   });
 });

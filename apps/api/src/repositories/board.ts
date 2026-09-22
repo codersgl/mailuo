@@ -75,7 +75,7 @@ export function readBoard(db: Db, parentId: string | null): Board {
        LEFT JOIN tasks c ON c.parent_id = t.id AND c.archived_at IS NULL
        WHERE ${conditions.join(' AND ')}
        GROUP BY t.id
-       ORDER BY t.orders`,
+       ORDER BY t.column_id, t.orders`,
     )
     .all(params) as BoardTaskRow[];
 
