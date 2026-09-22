@@ -30,16 +30,75 @@ export function isDurationEstimated(durationMinutes: number | null): boolean {
 
 /** 折成「N 天 M 小时 K 分」，只保留非零的部分；不到一天的时长不会显示「0 天」。 */
 function groupMinutes(total: number): string {
-  const days = Math.floor(total / MINUTES_PER_DAY);
-  const rest = total % MINUTES_PER_DAY;
-  const hours = Math.floor(rest / MINUTES_PER_HOUR);
-  const minutes = rest % MINUTES_PER_HOUR;
+  const { days, hours, minutes } = splitMinutes(total);
 
   const parts: string[] = [];
   if (days > 0) parts.push(`${days} 天`);
   if (hours > 0) parts.push(`${hours} 小时`);
   if (minutes > 0) parts.push(`${minutes} 分`);
   return parts.join(' ');
+}
+
+/** 分钟数按 480 / 60 拆成天、小时、分三段。展示与编辑输入共用同一套换算。 */
+export function splitMinutes(total: number): { days: number; hours: number; minutes: number } {
+  const days = Math.floor(total / MINUTES_PER_DAY);
+  const rest = total % MINUTES_PER_DAY;
+  return { days, hours: Math.floor(rest / MINUTES_PER_HOUR), minutes: rest % MINUTES_PER_HOUR };
+}
+
+/**
+ * 工期编辑框里的三段文本。用一个「数字 + 单位」的输入框表示不了 3 天 4 小时这种混合值
+ * （写进去只能四舍五入，保存时会悄悄改掉工期），所以按 天 / 小时 / 分 拆成三个框。
+ */
+export interface DurationParts {
+  days: string;
+  hours: string;
+  minutes: string;
+}
+
+/** 已有工期 → 三个输入框的初始文本。空串表示这一段是 0。 */
+export function splitDuration(durationMinutes: number | null): DurationParts {
+  // null 是「未估」，三个框都留空；0 是「瞬时」，必须在界面上与未估区分开，所以落到分钟段上。
+  if (durationMinutes === null) return { days: '', hours: '', minutes: '' };
+  if (durationMinutes === 0) return { days: '', hours: '', minutes: '0' };
+
+  const { days, hours, minutes } = splitMinutes(durationMinutes);
+  return {
+    days: days > 0 ? String(days) : '',
+    hours: hours > 0 ? String(hours) : '',
+    minutes: minutes > 0 ? String(minutes) : '',
+  };
+}
+
+/** 三段输入读出来的结果：未估（全空）、具体分钟数、或者输入非法。 */
+export type DurationInput =
+  | { kind: 'unset' }
+  | { kind: 'minutes'; value: number }
+  | { kind: 'invalid' };
+
+/**
+ * 读三个工期输入框。全空按「未估工期」处理（null），否则求和换算成分钟。
+ * 空串以外的内容必须是纯数字：负数、小数点、`1e3` 一律算非法，而不是被 parseInt 悄悄截断。
+ */
+export function readDurationInput(parts: DurationParts): DurationInput {
+  const values: number[] = [];
+  for (const text of [parts.days, parts.hours, parts.minutes]) {
+    const trimmed = text.trim();
+    if (trimmed === '') {
+      values.push(0);
+      continue;
+    }
+    if (!/^\d+$/.test(trimmed)) return { kind: 'invalid' };
+    values.push(Number(trimmed));
+  }
+
+  // 全空是「没估工期」；三段里只要写了一个数（哪怕写的是 0）就是估过的工期。
+  if (parts.days.trim() === '' && parts.hours.trim() === '' && parts.minutes.trim() === '') {
+    return { kind: 'unset' };
+  }
+
+  const [days, hours, minutes] = values as [number, number, number];
+  return { kind: 'minutes', value: days * MINUTES_PER_DAY + hours * MINUTES_PER_HOUR + minutes };
 }
 
 /** 子任务进度文案，例如 `1/2 子任务`。没有子任务时是 `0/0 子任务`，与原型一致。 */

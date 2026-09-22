@@ -1,4 +1,4 @@
-import type { Board, BreadcrumbItem, TreeTask } from './types';
+import type { Board, BreadcrumbItem, TaskRecord, TreeTask } from './types';
 
 /**
  * 后端错误统一是 `{ error: string }`（见 docs/spec.md），这里把它变成异常，
@@ -15,11 +15,25 @@ export class ApiError extends Error {
   }
 }
 
+/** 写请求的附加参数。只有需要写库时才传 method 与 body。 */
+interface WriteInit {
+  method: 'POST' | 'PATCH' | 'DELETE';
+  body?: unknown;
+}
+
 /** 开发时走 Vite 的代理，生产同源部署，所以路径里不写主机与端口。 */
-async function request<T>(path: string): Promise<T> {
+async function request<T>(path: string, init?: WriteInit): Promise<T> {
+  const headers: Record<string, string> = { Accept: 'application/json' };
+  // 带 body 的写请求必须声明 JSON：后端对不带 application/json 的 POST/PATCH 直接回 400（见 D15）。
+  if (init?.body !== undefined) headers['Content-Type'] = 'application/json';
+
   let response: Response;
   try {
-    response = await fetch(path, { headers: { Accept: 'application/json' } });
+    response = await fetch(path, {
+      method: init?.method ?? 'GET',
+      headers,
+      body: init?.body === undefined ? undefined : JSON.stringify(init.body),
+    });
   } catch {
     throw new ApiError(0, '连不上后端，确认 `pnpm dev:api` 已经启动');
   }
@@ -63,18 +77,19 @@ function readErrorMessage(body: unknown): string | undefined {
   return typeof error === 'string' && error !== '' ? error : undefined;
 }
 
-/** 读某一层看板。parentId 为 null 时读根看板。 */
-export function fetchBoard(parentId: string | null): Promise<Board> {
-  const path = parentId === null ? '/api/board' : `/api/board/${encodeURIComponent(parentId)}`;
-  return request<Board>(path);
-}
-
 /**
  * 「显示已归档」开关。后端认 `1` 和 `true`（见 docs/spec.md），这里统一发 `1`。
  * 开关状态只存在前端（D24），所以每次都要显式传，不能靠后端记住。
+ * 看板、文件树、以及文件树的重新取数都走这一个函数，避免三处各写一遍。
  */
 function archivedQuery(includeArchived: boolean): string {
   return includeArchived ? '?includeArchived=1' : '';
+}
+
+/** 读某一层看板。parentId 为 null 时读根看板。开关打开时列里也带归档卡片。 */
+export function fetchBoard(parentId: string | null, includeArchived: boolean): Promise<Board> {
+  const path = parentId === null ? '/api/board' : `/api/board/${encodeURIComponent(parentId)}`;
+  return request<Board>(`${path}${archivedQuery(includeArchived)}`);
 }
 
 /** 读完整任务树，用来建左侧文件树。默认不含归档节点。 */
@@ -89,4 +104,58 @@ export function fetchBreadcrumb(taskId: string): Promise<BreadcrumbItem[]> {
   return request<{ items: BreadcrumbItem[] }>(
     `/api/breadcrumb/${encodeURIComponent(taskId)}`,
   ).then((body) => body.items);
+}
+
+/** 新建任务的入参。工期与描述不在这里给：建完在面板里改（见 docs/decisions.md D33）。 */
+export interface CreateTaskInput {
+  parentId: string | null;
+  columnId: string;
+  title: string;
+}
+
+/**
+ * 新建任务，追加到目标列末尾。
+ * 响应是新建出来的任务记录本身（不含子任务计数）——新任务还没有子任务，计数一定是 0/0。
+ */
+export function createTask(input: CreateTaskInput): Promise<TaskRecord> {
+  return request<TaskRecord>('/api/tasks', { method: 'POST', body: input });
+}
+
+/** 改基础字段。省略的字段不动，`durationMinutes: null` 表示改回未估工期。 */
+export interface TaskFieldsPatch {
+  title?: string;
+  description?: string;
+  durationMinutes?: number | null;
+}
+
+/**
+ * 写接口的响应是 `{ task, columnTasks }`。这里只取 `task`：
+ * 前端在写成功后统一静默重取看板、文件树与面包屑，不用响应里的 `columnTasks` 做整列替换
+ * （理由见 docs/decisions.md D35）。接口契约不变，多余的那一半只是不消费。
+ */
+function readWrittenTask(body: { task: TaskRecord }): TaskRecord {
+  return body.task;
+}
+
+/** 改标题 / 描述 / 工期。 */
+export function updateTaskFields(id: string, patch: TaskFieldsPatch): Promise<TaskRecord> {
+  return request<{ task: TaskRecord }>(`/api/tasks/${encodeURIComponent(id)}`, {
+    method: 'PATCH',
+    body: patch,
+  }).then(readWrittenTask);
+}
+
+/** 归档或取消归档整棵子树。归档是唯一接受已归档任务的写接口，所以这里没有额外判断。 */
+export function setTaskArchived(id: string, archived: boolean): Promise<TaskRecord> {
+  return request<{ task: TaskRecord }>(`/api/tasks/${encodeURIComponent(id)}/archive`, {
+    method: 'PATCH',
+    body: { archived },
+  }).then(readWrittenTask);
+}
+
+/** 删除任务及其整棵子树。响应只有删除后那一列的任务列表，这里不需要，删掉的id由调用方知道。 */
+export function deleteTask(id: string): Promise<void> {
+  return request<unknown>(`/api/tasks/${encodeURIComponent(id)}`, { method: 'DELETE' }).then(
+    () => undefined,
+  );
 }

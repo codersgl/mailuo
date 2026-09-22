@@ -6,6 +6,8 @@ import {
   formatProgress,
   isDurationEstimated,
   progressPercent,
+  readDurationInput,
+  splitDuration,
 } from '../src/lib/format';
 
 describe('formatDuration', () => {
@@ -64,3 +66,57 @@ describe('progressPercent', () => {
     expect(progressPercent(0, -1)).toBe(0);
   });
 });
+
+describe('工期输入的三段换算', () => {
+  it('已有工期拆成天 / 小时 / 分，为零的那段留空', () => {
+    expect(splitDuration(1920)).toEqual({ days: '4', hours: '', minutes: '' });
+    expect(splitDuration(1470)).toEqual({ days: '3', hours: '', minutes: '30' });
+    expect(splitDuration(MINUTES_PER_DAY + 65)).toEqual({
+      days: '1',
+      hours: '1',
+      minutes: '5',
+    });
+  });
+
+  it('未估拆成全空，瞬时落到分钟段上：两者必须在界面上分得开', () => {
+    expect(splitDuration(null)).toEqual({ days: '', hours: '', minutes: '' });
+    expect(splitDuration(0)).toEqual({ days: '', hours: '', minutes: '0' });
+  });
+
+  it('三段全空读成未估', () => {
+    expect(readDurationInput({ days: '', hours: '', minutes: '' })).toEqual({ kind: 'unset' });
+    expect(readDurationInput({ days: ' ', hours: '', minutes: '' })).toEqual({ kind: 'unset' });
+  });
+
+  it('填了 0 就是瞬时，不能和未估混为一谈', () => {
+    expect(readDurationInput({ days: '', hours: '', minutes: '0' })).toEqual({
+      kind: 'minutes',
+      value: 0,
+    });
+    expect(readDurationInput({ days: '0', hours: '', minutes: '' })).toEqual({
+      kind: 'minutes',
+      value: 0,
+    });
+  });
+
+  it('按 1 天 = 480 分钟、1 小时 = 60 分钟求和', () => {
+    expect(readDurationInput({ days: '2', hours: '4', minutes: '30' })).toEqual({
+      kind: 'minutes',
+      value: 2 * MINUTES_PER_DAY + 4 * MINUTES_PER_HOUR + 30,
+    });
+  });
+
+  it('非整数、负数、科学计数法都算非法，而不是被 parseInt 悄悄截断', () => {
+    expect(readDurationInput({ days: '1.5', hours: '', minutes: '' })).toEqual({ kind: 'invalid' });
+    expect(readDurationInput({ days: '-1', hours: '', minutes: '' })).toEqual({ kind: 'invalid' });
+    expect(readDurationInput({ days: '1e3', hours: '', minutes: '' })).toEqual({ kind: 'invalid' });
+  });
+
+  it('拆分与求和互为逆运算', () => {
+    for (const minutes of [0, 1, 59, 60, 479, 480, 1470, 1920, 4320]) {
+      const parts = splitDuration(minutes);
+      expect(readDurationInput(parts)).toEqual({ kind: 'minutes', value: minutes });
+    }
+  });
+});
+
