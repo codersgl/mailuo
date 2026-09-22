@@ -19,14 +19,22 @@
 ```sh
 pnpm install          # 安装全部工作区依赖
 pnpm dev:api          # 启动后端，默认 http://localhost:3001
+pnpm dev:web          # 启动前端，默认 http://localhost:5173（需要后端同时在跑）
 pnpm test             # 跑测试
 pnpm typecheck        # 类型检查
-pnpm build            # 编译后端到 apps/api/dist
+pnpm build            # 编译后端到 apps/api/dist，打包前端到 apps/web/dist
 ```
+
+开发时前端由 Vite 提供服务，`/api` 请求由 Vite 代理到后端，所以浏览器里只访问 5173 即可。
 
 环境变量（都有默认值）：
 
-- `PORT` 后端端口，默认 `3001`。被占用时用 `PORT=3002 pnpm dev:api`，前端代理端口要与之一致。
+- `PORT` 后端端口，默认 `3001`。被占用时用 `PORT=3002 pnpm dev:api`；前端启动时也要传同一个值（`PORT=3002 pnpm dev:web`），代理目标跟着走。
 - `KANBAN_DB_PATH` SQLite 文件路径，默认 `data/kanban.db`。
 
 数据库在启动时自动建表并执行 `apps/api/migrations/` 下未应用过的迁移。
+
+## 目录
+
+- `apps/api` 后端：Hono + better-sqlite3，迁移在 `apps/api/migrations/`。
+- `apps/web` 前端：React + Vite + Tailwind，设计令牌在 `apps/web/src/index.css` 的 `@theme`。

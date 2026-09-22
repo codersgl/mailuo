@@ -193,3 +193,34 @@ SQL 列名保持 `parent_id`、`archived_at` 这类写法，与规范里的建�
 本步实现：`PATCH /api/tasks/:id/archive`、`DELETE /api/tasks/:id`，以及 D6 里的 `?includeArchived=1` 参数（读写接口都认，新增 `src/routes/query.ts` 存放解析函数）。
 
 未实现、留给下一批：前端（React + Vite + Tailwind）、依赖与关键路径（`PUT /api/tasks/:id/deps`、`GET /api/board/:parentId/cpm`）。`task_deps` 表从第 1 步就建好了，本步的删除会清理它，但还没有写入依赖的接口。
+
+## D27 前端脚手架与依赖选型（2026-09-22）
+
+- React 19 + Vite 7 + Tailwind 4。Tailwind 走 `@tailwindcss/vite` 插件加 CSS 里一行 `@import "tailwindcss"`，不建 `tailwind.config.js`：v4 的扫描范围和主题都放在 CSS 里。
+- tsconfig 拆两份：`apps/web/tsconfig.json`（浏览器代码，`lib` 带 DOM、`jsx: react-jsx`、`moduleResolution: bundler`、`types: [vite/client]`）与 `apps/web/tsconfig.node.json`（`vite.config.ts`、`vitest.config.ts`，`types: [node]`）。两份都继承根 `tsconfig.base.json`，只覆盖需要不同的项。拆开是因为 node 与 DOM 类型混在一起会让同一批 API 出现两套签名。
+- 前端 import 不写 `.js` 扩展名（bundler 解析），与 `apps/api` 的 NodeNext 写法不同——两边各自的运行方式决定，不要互相统一。
+- 前端测试用 vitest + jsdom + `@testing-library/react`：本步唯一的异步逻辑 `useBoard` 有竞态，不真实挂载 React 就测不到。
+
+## D28 开发时用 Vite 代理，端口与后端共用 PORT（2026-09-22）
+
+`pnpm dev:api` 起后端（默认 3001），`pnpm dev:web` 起 Vite（默认 5173），Vite 的 `server.proxy` 把 `/api` 转发到 `http://127.0.0.1:${process.env.PORT ?? '3001'}`。前端代码里只写相对路径，不出现端口号；换端口时两个命令都传同一个 `PORT`，这是 D9 定下「代理目标从同一个变量读」的落地。
+
+## D29 设计令牌来自定版原型 A（2026-09-22）
+
+按项目规则先用子代理做了三版静态 HTML 原型（浅灰工具风 / 现代卡片风 / 深色紧凑），用同一份示例数据渲染，用户选定 A 版。
+
+- 令牌集中在 `apps/web/src/index.css` 的 `@theme`：页面底色 `#f6f7f9`、卡片白、边框 `#e6e8ec`、唯一强调色 `#4c6fce`、正文 13px、圆角 5px。组件里只用令牌对应的工具类，不写魔法色值；改配色只动这一处。
+- 保留原型的两个语义样式：完成列的卡片整体降一档（标题变次要色、进度文案用强调色），未估工期的 chip 用虚线且文字弱化。
+- 原型文件在定版并实现后删除，临时产物不入版本库。
+- `done` / `doing` 两个列 id 在前端集中到 `apps/web/src/domain/columns.ts`，注释写明改 id 要同步改的三处：迁移 `001_init.sql`、`apps/api/src/domain/columns.ts`、这个文件。此前散在两个组件里，会让 D5 的同步约束从两处变成四处且没人知道。
+
+## D30 本步边界与 useBoard 的取舍（2026-09-22）
+
+本步只做：前端工作区与构建链路、读 `GET /api/board` 渲染根看板三列卡片（标题、描述一行截断、子任务进度、工期 chip）、加载与失败状态（失败显示后端的中文文案并给重试按钮）、空列显示一行「暂无任务」。
+
+未实现、留给后续步骤：左侧文件树、面包屑跳转、点卡片进入子看板、侧边编辑面板、卡片编辑入口、拖拽、归档开关、新建 / 删除 / 归档。因此卡片上没有编辑热区——不做点了没反应的控件。
+
+两点取舍：
+
+- `useBoard` 用 effect 内的 `cancelled` 闭包丢弃过期响应，不引入 `AbortController`。只读接口的重复请求无害（开发环境 StrictMode 下每次挂载会发两次），而 `AbortController` 还要额外区分「主动取消」与「真失败」两个分支。做写接口或导航时再引入。
+- 面包屑目前是前端常量「根看板」。导航那一步改成读 `GET /api/breadcrumb/:taskId`（D11），常量随之删除。

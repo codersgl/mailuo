@@ -8,6 +8,7 @@
   },
   "scripts": {
     "dev:api": "pnpm --filter @kanban/api dev",
+    "dev:web": "pnpm --filter @kanban/web dev",
     "build": "pnpm -r build",
     "test": "pnpm -r test",
     "typecheck": "pnpm -r typecheck"

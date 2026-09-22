@@ -1,0 +1,40 @@
+@import "tailwindcss";
+
+/*
+ * 设计令牌来自定版原型 A（浅灰底 + 白卡片 + 细边框 + 单一低饱和蓝强调色）。
+ * 名字直译原型里的 CSS 变量，方便以后对照；改配色只动这一处。
+ */
+@theme {
+  --color-canvas: #f6f7f9;
+  --color-surface: #ffffff;
+  --color-surface-2: #fafbfc;
+  --color-line: #e6e8ec;
+  --color-line-strong: #d5d9e0;
+  --color-accent: #4c6fce;
+  --color-accent-weak: #eef2fc;
+  --color-accent-border: #c9d5f1;
+  --color-ink: #1d2126;
+  --color-ink-2: #5b626c;
+  --color-ink-3: #8f96a1;
+  --color-track: #eceef1;
+  --font-sans:
+    -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Hiragino Sans GB",
+    "Microsoft YaHei", "Noto Sans CJK SC", sans-serif;
+}
+
+@layer base {
+  body {
+    margin: 0;
+    background: var(--color-canvas);
+    color: var(--color-ink);
+    font-family: var(--font-sans);
+    font-size: 13px;
+    line-height: 1.5;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  button {
+    font: inherit;
+    color: inherit;
+  }
+}
