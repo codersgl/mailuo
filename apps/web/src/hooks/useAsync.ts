@@ -77,7 +77,12 @@ export function useAsync<T>(
     // 依赖数组由调用方通过 deps 传入，这里刻意不列 load。
   }, [...deps, attempt]);
 
-  const reload = useCallback(() => setAttempt((value) => value + 1), []);
+  const reload = useCallback(() => {
+    // 响亮重取：顺手清掉可能还留着的静默标记。否则同一批里先 refresh() 再 reload()，
+    // 这一轮会被当成静默，重试按钮点下去看不到加载态。
+    quiet.current = false;
+    setAttempt((value) => value + 1);
+  }, []);
 
   const refresh = useCallback(() => {
     quiet.current = true;

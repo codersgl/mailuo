@@ -129,9 +129,10 @@ export interface TaskFieldsPatch {
 }
 
 /**
- * 写接口的响应是 `{ task, columnTasks }`。这里只取 `task`：
+ * PATCH 系写接口（改字段、归档）的响应是 `{ task, columnTasks }`。这里只取 `task`：
  * 前端在写成功后统一静默重取看板、文件树与面包屑，不用响应里的 `columnTasks` 做整列替换
  * （理由见 docs/decisions.md D35）。接口契约不变，多余的那一半只是不消费。
+ * `POST /api/tasks` 返回的是裸任务记录，不走这个函数（见 createTask）。
  */
 function readWrittenTask(body: { task: TaskRecord }): TaskRecord {
   return body.task;

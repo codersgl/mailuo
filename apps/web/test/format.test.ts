@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
+  MAX_DURATION_MINUTES,
   MINUTES_PER_DAY,
   MINUTES_PER_HOUR,
   formatDuration,
@@ -117,6 +118,21 @@ describe('工期输入的三段换算', () => {
       const parts = splitDuration(minutes);
       expect(readDurationInput(parts)).toEqual({ kind: 'minutes', value: minutes });
     }
+  });
+
+  it('超过上限一律算非法：否则后端会 500，或者 Infinity 被 JSON 变成 null 静默存成未估', () => {
+    expect(readDurationInput({ days: '10000000000000000000', hours: '', minutes: '' })).toEqual({
+      kind: 'invalid',
+    });
+    expect(readDurationInput({ days: '9'.repeat(400), hours: '', minutes: '' })).toEqual({
+      kind: 'invalid',
+    });
+    // 上限本身可用，再大一天就拒。
+    expect(readDurationInput({ days: '9999', hours: '', minutes: '' })).toEqual({
+      kind: 'minutes',
+      value: MAX_DURATION_MINUTES,
+    });
+    expect(readDurationInput({ days: '10000', hours: '', minutes: '' })).toEqual({ kind: 'invalid' });
   });
 });
 

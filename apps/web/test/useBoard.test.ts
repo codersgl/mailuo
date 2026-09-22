@@ -122,7 +122,7 @@ describe('useBoard', () => {
     expect(result.current.state).toMatchObject({ message: '任务不存在' });
   });
 
-  it('非 ApiError 的失败给兜底文案', async () => {
+  it('fetch 抛出的原始异常被 client 转成 ApiError(0)，文案是「连不上后端」', async () => {
     stubRejectingFetch(new TypeError('boom'));
     const { result } = renderHook(() => useBoard(null, false));
 

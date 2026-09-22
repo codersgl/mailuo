@@ -33,7 +33,7 @@ function jsonResponse(status: number, body: unknown): Response {
   });
 }
 
-/** 写接口的响应形状是 `{ task, columnTasks }`，这里只关心 task。 */
+/** PATCH 系写接口的响应形状是 `{ task, columnTasks }`，这里只关心 task。 */
 function taskRecord(overrides: Record<string, unknown> = {}) {
   return {
     id: 't1',

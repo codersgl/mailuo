@@ -45,6 +45,19 @@ function createFakeApi(initial: FakeTask[], options: { postError?: string } = {}
   const tasks = initial.map((item) => ({ ...item }));
   const calls: RecordedCall[] = [];
   let sequence = 0;
+  /**
+   * 「静默重取」是否要挂起看板读请求。写完之后把看板 GET 卡住，才能观察到这段窗口里界面
+   * 长什么样（旧卡片还在、没有「加载中」）。返回放行函数。
+   */
+  let holdingBoardReads = false;
+  const boardWaiters: Array<() => void> = [];
+  function holdBoardReads(): () => void {
+    holdingBoardReads = true;
+    return () => {
+      holdingBoardReads = false;
+      for (const release of boardWaiters.splice(0)) release();
+    };
+  }
 
   function visible(includeArchived: boolean): FakeTask[] {
     return tasks.filter((item) => includeArchived || item.archivedAt === null);
@@ -118,13 +131,20 @@ function createFakeApi(initial: FakeTask[], options: { postError?: string } = {}
     const includeArchived = query.includes('includeArchived');
     const id = (prefix: string) => decodeURIComponent(path.slice(prefix.length));
 
-    if (method === 'GET' && path === '/api/board') return json(boardFor(null, includeArchived));
+    /** 看板读请求；holdBoardReads 打开时先挂起，由放行函数决定什么时候返回。 */
+    const readBoard = (parentId: string | null) => {
+      const payload = boardFor(parentId, includeArchived);
+      if (!holdingBoardReads) return json(payload);
+      return new Promise<Response>((resolve) => boardWaiters.push(() => resolve(json(payload))));
+    };
+
+    if (method === 'GET' && path === '/api/board') return readBoard(null);
     if (method === 'GET' && path === '/api/tree') return json({ tasks: tree(includeArchived) });
     if (method === 'GET' && path.startsWith('/api/board/')) {
       const parentId = id('/api/board/');
       // 与真后端一致：看板接口对不存在的父任务回 404（仓储只查询，存在性由路由判）。
       if (!tasks.some((item) => item.id === parentId)) return json({ error: '任务不存在' }, 404);
-      return json(boardFor(parentId, includeArchived));
+      return readBoard(parentId);
     }
     if (method === 'GET' && path.startsWith('/api/breadcrumb/')) {
       const taskId = id('/api/breadcrumb/');
@@ -139,7 +159,8 @@ function createFakeApi(initial: FakeTask[], options: { postError?: string } = {}
         id: `new-${sequence}`,
         parentId: (body.parentId as string | null) ?? null,
         columnId: body.columnId as string,
-        title: body.title as string,
+        // 真后端的标题 schema 会 trim（见 apps/api/src/schemas/task.ts），这里跟上。
+        title: (body.title as string).trim(),
         description: '',
         durationMinutes: null,
         orders: 1000 + sequence,
@@ -160,7 +181,7 @@ function createFakeApi(initial: FakeTask[], options: { postError?: string } = {}
     if (method === 'PATCH' && path.startsWith('/api/tasks/')) {
       const item = tasks.find((candidate) => candidate.id === id('/api/tasks/'));
       if (!item) return json({ error: '任务不存在' }, 404);
-      if (typeof body.title === 'string') item.title = body.title;
+      if (typeof body.title === 'string') item.title = body.title.trim();
       if (typeof body.description === 'string') item.description = body.description;
       if ('durationMinutes' in body) item.durationMinutes = body.durationMinutes as number | null;
       return json({ task: toBoardTask(item), columnTasks: [] });
@@ -177,7 +198,7 @@ function createFakeApi(initial: FakeTask[], options: { postError?: string } = {}
     return json({ error: '任务不存在' }, 404);
   });
 
-  return { calls, tasks };
+  return { calls, tasks, holdBoardReads };
 }
 
 const fixtures: FakeTask[] = [
@@ -383,6 +404,67 @@ describe('App 增删改', () => {
     expect(screen.getByRole('dialog')).toBeTruthy();
   });
 
+  it('保存后草稿换成服务端归一化后的值（标题 trim、工期折算）', async () => {
+    createFakeApi(fixtures);
+    render(<App />);
+    await boardArea().findByText('支付对账');
+
+    await openEditor('支付对账');
+    fireEvent.change(dialog().getByDisplayValue('支付对账'), { target: { value: '  支付对账  ' } });
+    fireEvent.change(dialog().getByLabelText('小时'), { target: { value: '9' } });
+    fireEvent.click(dialog().getByRole('button', { name: '保存' }));
+
+    expect(await dialog().findByText('已保存')).toBeTruthy();
+    // 后端把标题 trim 了、9 小时折成 1 天 1 小时：输入框不能还留着原始输入。
+    expect((dialog().getByDisplayValue('支付对账') as HTMLInputElement).value).toBe('支付对账');
+    expect((dialog().getByLabelText('天') as HTMLInputElement).value).toBe('1');
+    expect((dialog().getByLabelText('小时') as HTMLInputElement).value).toBe('1');
+  });
+
+  it('抽屉整体是 form：标题框按 Enter 与点「保存」走同一条路', async () => {
+    const api = createFakeApi(fixtures);
+    render(<App />);
+    await boardArea().findByText('支付对账');
+
+    await openEditor('支付对账');
+    const titleInput = dialog().getByDisplayValue('支付对账');
+    const form = titleInput.closest('form');
+    expect(form).not.toBeNull();
+    expect(form!.contains(dialog().getByRole('button', { name: '保存' }))).toBe(true);
+
+    fireEvent.change(titleInput, { target: { value: '支付对账 v3' } });
+    // jsdom 不做隐式提交，这里直接提交表单；浏览器里标题框按 Enter 就是这件事。
+    fireEvent.submit(form!);
+
+    expect(await dialog().findByText('已保存')).toBeTruthy();
+    expect(api.calls.find((call) => call.method === 'PATCH')?.body).toMatchObject({
+      title: '支付对账 v3',
+    });
+  });
+
+  it('写后是静默重取：新数据路上时旧卡片留在原地，不闪「加载中」', async () => {
+    const api = createFakeApi(fixtures);
+    render(<App />);
+    await boardArea().findByText('支付对账');
+
+    // 卡住写之后的看板读请求，好观察这段窗口。
+    const release = api.holdBoardReads();
+
+    await openEditor('支付对账');
+    fireEvent.change(dialog().getByDisplayValue('支付对账'), { target: { value: '支付对账 v2' } });
+    fireEvent.click(dialog().getByRole('button', { name: '保存' }));
+    // 写响应已经回来（抽屉显示「已保存」），但看板的重取还挂在路上。
+    expect(await dialog().findByText('已保存')).toBeTruthy();
+
+    // 这一条钉住 D35 的 quiet 语义：换成响亮重取（reload）时看板会退回加载态，这里就失败。
+    expect(boardArea().queryByText('加载中…')).toBeNull();
+    expect(boardArea().getByText('支付对账')).toBeTruthy();
+
+    release();
+    // 重取结果到了之后旧卡片被换成新的。
+    expect(await boardArea().findByText('支付对账 v2')).toBeTruthy();
+  });
+
   it('归档：默认从列里消失，打开「显示已归档」后带归档样式回到列里，抽屉里可取消归档', async () => {
     const api = createFakeApi(fixtures);
     render(<App />);
@@ -394,6 +476,10 @@ describe('App 增删改', () => {
     expect(await dialog().findByText('这个任务已归档。取消归档后才能改标题、描述与工期。')).toBeTruthy();
     await waitFor(() => expect(boardArea().queryByText('支付对账')).toBeNull());
     expect(api.calls.some((call) => call.url === '/api/tasks/b/archive')).toBe(true);
+    // 已归档的抽屉里不再给「归档」入口：它与「取消归档」同屏，点下去还是幂等空操作。
+    expect(dialog().queryByRole('button', { name: '归档' })).toBeNull();
+    expect(dialog().getByRole('button', { name: '取消归档' })).toBeTruthy();
+    expect(dialog().getByRole('button', { name: '删除' })).toBeTruthy();
 
     // 打开总开关：看板列里也带归档卡片，否则界面上没有取消归档的入口。
     fireEvent.click(screen.getByRole('checkbox', { name: '显示已归档' }));
@@ -453,13 +539,29 @@ describe('App 增删改', () => {
     await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
   });
 
-  it('切到别的看板时抽屉自动收起', async () => {
+  it('抽屉打开时点面包屑切走，抽屉自动收起', async () => {
+    createFakeApi(fixtures);
+    window.history.replaceState(null, '', '/board/b');
+    render(<App />);
+    await boardArea().findByText('对账脚本');
+
+    await openEditor('对账脚本');
+    // 遮罩盖住整块看板，面包屑是抽屉打开时唯一还能点的导航（这也是不加 aria-modal 的原因）。
+    fireEvent.click(breadcrumbNav().getByRole('button', { name: '根看板' }));
+
+    await waitFor(() => expect(window.location.pathname).toBe('/'));
+    expect(screen.queryByRole('dialog')).toBeNull();
+  });
+
+  it('抽屉打开时按浏览器后退，抽屉同样收起', async () => {
     createFakeApi(fixtures);
     render(<App />);
     await boardArea().findByText('支付对账');
 
     await openEditor('支付对账');
-    fireEvent.click(await boardArea().findByText('重构登录'));
+    // 后退/前进只改 URL，useRoute 靠 popstate 把地址同步回 state，抽屉随之收到新的 boardId。
+    window.history.pushState(null, '', '/board/a');
+    fireEvent.popState(window);
 
     await waitFor(() => expect(window.location.pathname).toBe('/board/a'));
     expect(screen.queryByRole('dialog')).toBeNull();

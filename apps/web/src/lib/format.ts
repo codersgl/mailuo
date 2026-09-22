@@ -10,6 +10,16 @@ export const MINUTES_PER_HOUR = 60;
 export const MINUTES_PER_DAY = 480;
 
 /**
+ * 工期上限：9999 天，个人规划不会超过它。
+ *
+ * 不设上限时有两类输入会静默出错：20 位以上的数字让后端把值绑成 REAL，撞上
+ * `typeof(duration_minutes) = 'integer'` 的 CHECK 变成 500；300 位以上让 `Number()` 得到
+ * `Infinity`，而 `JSON.stringify(Infinity)` 是 `null`——界面预览写着「工期 Infinity 天」，
+ * 存进去却成了「未估工期」。两者都在 `readDurationInput` 里挡掉。
+ */
+export const MAX_DURATION_MINUTES = 9999 * MINUTES_PER_DAY;
+
+/**
  * 工期文案。三种状态必须能一眼分辨：未估 / 瞬时 / 具体工期。
  * 负数在契约外（后端 schema 已挡住），这里兜底按瞬时处理，免得界面上出现负的工期。
  */
@@ -98,7 +108,10 @@ export function readDurationInput(parts: DurationParts): DurationInput {
   }
 
   const [days, hours, minutes] = values as [number, number, number];
-  return { kind: 'minutes', value: days * MINUTES_PER_DAY + hours * MINUTES_PER_HOUR + minutes };
+  const total = days * MINUTES_PER_DAY + hours * MINUTES_PER_HOUR + minutes;
+  // 上限见 MAX_DURATION_MINUTES 的注释：超限不是「很大」，而是后端会 500 或静默存成未估。
+  if (!Number.isFinite(total) || total > MAX_DURATION_MINUTES) return { kind: 'invalid' };
+  return { kind: 'minutes', value: total };
 }
 
 /** 子任务进度文案，例如 `1/2 子任务`。没有子任务时是 `0/0 子任务`，与原型一致。 */
