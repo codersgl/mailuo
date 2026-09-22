@@ -74,6 +74,33 @@ describe('POST /api/tasks', () => {
     expect(rootBoard.columns[0].tasks[0]).toMatchObject({ childTotal: 1, childDone: 1 });
   });
 
+  it('orders 只在自己父任务的目标列内计算', async () => {
+    const db = createTestDb();
+    const parentA = insertTask(db, { title: 'A', columnId: 'todo', orders: 1000 });
+    const parentB = insertTask(db, { title: 'B', columnId: 'todo', orders: 2000 });
+    // A 的待办列里已有一个 orders 很大的子任务，它不该影响别的父任务或根层
+    insertTask(db, { title: 'A 的子任务', columnId: 'todo', orders: 5000, parentId: parentA });
+    const api = createApp(db);
+
+    const childOfB = await (
+      await postTask(api, { parentId: parentB, columnId: 'todo', title: 'B 的子任务' })
+    ).json();
+    const newRoot = await (await postTask(api, { columnId: 'todo', title: '新根任务' })).json();
+
+    expect(childOfB.orders).toBe(1000);
+    // 根层当前最大是 B 的 2000，而不是 A 的子任务的 5000
+    expect(newRoot.orders).toBe(3000);
+  });
+
+  it('已归档任务仍参与 orders 计算，取消归档后不会插队', async () => {
+    const db = createTestDb();
+    insertTask(db, { title: '归档任务', columnId: 'todo', orders: 9000, archived: true });
+
+    const response = await postTask(createApp(db), { columnId: 'todo', title: '新任务' });
+
+    expect((await response.json()).orders).toBe(10000);
+  });
+
   it('标题两端空格被去掉', async () => {
     const response = await postTask(app(), { columnId: 'todo', title: '  写文档  ' });
 
@@ -123,6 +150,28 @@ describe('POST /api/tasks', () => {
     expect(await response.json()).toEqual({ error: '父任务不存在' });
   });
 
+  it('列与父任务同时非法时先报列错误', async () => {
+    const response = await postTask(app(), {
+      parentId: '不存在的任务',
+      columnId: '不存在的列',
+      title: 'A',
+    });
+
+    expect(response.status).toBe(400);
+    expect(await response.json()).toEqual({ error: '列不存在: 不存在的列' });
+  });
+
+  it('Content-Type 不是 JSON 时给出明确提示', async () => {
+    const response = await createApp(createTestDb()).request('/api/tasks', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: 'title=A&columnId=todo',
+    });
+
+    expect(response.status).toBe(400);
+    expect(await response.json()).toEqual({ error: 'Content-Type 必须是 application/json' });
+  });
+
   it('父任务已归档返回 400', async () => {
     const db = createTestDb();
     const archivedParentId = insertTask(db, {
@@ -162,7 +211,19 @@ describe('PATCH /api/tasks/:id', () => {
       columnId: 'todo',
       orders: 1000,
     });
-    expect(task.updatedAt >= task.createdAt).toBe(true);
+    expect(task.updatedAt > task.createdAt).toBe(true);
+  });
+
+  it('新值与旧值相同时也刷新 updatedAt，而不是返回 404', async () => {
+    const db = createTestDb();
+    const id = insertTask(db, { title: '任务', columnId: 'todo', orders: 1000 });
+
+    const response = await patchTask(createApp(db), id, { title: '任务' });
+
+    expect(response.status).toBe(200);
+    const task = await response.json();
+    expect(task.title).toBe('任务');
+    expect(task.updatedAt > task.createdAt).toBe(true);
   });
 
   it('描述可以清空', async () => {
@@ -209,7 +270,7 @@ describe('PATCH /api/tasks/:id', () => {
     expect(await response.json()).toEqual({ error: '任务不存在' });
   });
 
-  it('请求体不是合法 JSON 时返回 400', async () => {
+  it('请求体不是合法 JSON 时返回 400 与统一错误体', async () => {
     const db = createTestDb();
     const id = insertTask(db, { title: '任务', columnId: 'todo', orders: 1000 });
 
@@ -220,5 +281,7 @@ describe('PATCH /api/tasks/:id', () => {
     });
 
     expect(response.status).toBe(400);
+    // Hono 自己抛的 HTTPException 只带 text/plain，这里必须被包成 { error: string }
+    expect(await response.json()).toEqual({ error: '请求体不是合法 JSON' });
   });
 });

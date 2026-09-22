@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { createApp } from '../src/app.js';
-import { readBreadcrumb } from '../src/repositories/tasks.js';
+import { TaskCycleError, readBreadcrumb } from '../src/repositories/tasks.js';
 import { createTestDb, insertTask } from './helpers.js';
 
 describe('GET /api/board/:parentId', () => {
@@ -117,6 +117,19 @@ describe('GET /api/breadcrumb/:taskId', () => {
     // 正常接口不会造成这种数据，这里直接改库模拟脏数据。
     db.prepare('UPDATE tasks SET parent_id = ? WHERE id = ?').run(bId, aId);
 
-    expect(() => readBreadcrumb(db, bId)).toThrow(/成环/);
+    expect(() => readBreadcrumb(db, bId)).toThrow(TaskCycleError);
+  });
+
+  it('父行缺失时返回 undefined，不假装成根任务', () => {
+    const db = createTestDb();
+    const aId = insertTask(db, { title: 'A', columnId: 'todo', orders: 1000 });
+    const bId = insertTask(db, { title: 'B', columnId: 'todo', orders: 2000, parentId: aId });
+    const cId = insertTask(db, { title: 'C', columnId: 'todo', orders: 3000, parentId: bId });
+    // 外键开启时删不掉被引用的父行，临时关掉来模拟脏数据。
+    db.pragma('foreign_keys = OFF');
+    db.prepare('DELETE FROM tasks WHERE id = ?').run(bId);
+    db.pragma('foreign_keys = ON');
+
+    expect(readBreadcrumb(db, cId)).toBeUndefined();
   });
 });

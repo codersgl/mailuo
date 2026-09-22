@@ -109,6 +109,8 @@ describe('错误处理', () => {
     const response = await app.request('/api/boom');
 
     expect(response.status).toBe(400);
+    // HTTPException 自带的响应是纯文本，必须归一化成 { error: string }
+    expect(await response.json()).toEqual({ error: '入参非法' });
   });
 
   it('普通异常记日志并返回 500 与统一错误体', async () => {

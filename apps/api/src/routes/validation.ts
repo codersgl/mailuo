@@ -11,7 +11,8 @@ interface ZodIssueLike {
 }
 
 interface ZodErrorLike {
-  issues: readonly ZodIssueLike[];
+  /** 用可选属性声明：Zod 大版本改结构时降级成「入参非法」，而不是抛异常变成 500。 */
+  issues?: readonly ZodIssueLike[];
 }
 
 /**
@@ -27,7 +28,7 @@ export function validationHook(
 ): Response | undefined {
   if (result.success) return undefined;
 
-  const issue = result.error?.issues[0];
+  const issue = result.error?.issues?.[0];
   const field = issue ? issue.path.map(String).join('.') : '';
   const message = issue?.message ?? '入参非法';
   return c.json({ error: field ? `${field}: ${message}` : message }, 400);

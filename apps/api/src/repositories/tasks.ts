@@ -104,6 +104,14 @@ export function listTreeTasks(db: Db): TreeTask[] {
   }));
 }
 
+/** 任务的父子关系成环（只可能来自手工改库的脏数据）。路由层会把它当成 500 记日志。 */
+export class TaskCycleError extends Error {
+  constructor(taskId: string) {
+    super(`任务的父子关系成环: ${taskId}`);
+    this.name = 'TaskCycleError';
+  }
+}
+
 /**
  * 面包屑：第一项是根看板（id 为 null），随后是从根到 taskId 自身的每一层。
  * 任务不存在返回 undefined。父链理论上无环，仍加 visited 集合防御脏数据导致死循环。
@@ -116,11 +124,19 @@ export function readBreadcrumb(db: Db, taskId: string): BreadcrumbItem[] | undef
   const visited = new Set<string>();
   while (current) {
     if (visited.has(current.id)) {
-      throw new Error(`任务的父子关系成环: ${current.id}`);
+      throw new TaskCycleError(current.id);
     }
     visited.add(current.id);
     items.unshift({ id: current.id, title: current.title });
-    current = current.parentId === null ? undefined : findTask(db, current.parentId);
+
+    if (current.parentId === null) break;
+    const parent = findTask(db, current.parentId);
+    if (!parent) {
+      // 父行缺失同样只可能来自脏数据（外键开启时不可达）。返回 undefined 让路由回 404，
+      // 不要把它当成根任务，否则前端会显示一条错误的面包屑。
+      return undefined;
+    }
+    current = parent;
   }
   items.unshift({ id: null, title: ROOT_BOARD_TITLE });
   return items;
@@ -129,6 +145,12 @@ export function readBreadcrumb(db: Db, taskId: string): BreadcrumbItem[] | undef
 /**
  * 新建任务，追加到目标列末尾。
  * orders 取同一父任务下该列当前的 MAX(orders) + ORDERS_STEP，取值和插入放在一个事务里。
+ *
+ * 两点刻意的取舍：
+ * - MAX 不排除已归档任务。归档任务虽然不显示，将来取消归档时应该回到原来的位置；
+ *   若把它们排除在外，新任务会插到它们前面，取消归档后顺序就乱了。
+ * - 事务用 immediate：第一条语句是读 MAX、第二条才写，DEFERRED 事务会先拿读锁再升级，
+ *   另一个进程（例如 dev watch 重启时短暂重叠）在中途写入就会抛 SQLITE_BUSY_SNAPSHOT。
  */
 export function createTask(db: Db, input: CreateTaskInput): TaskRecord {
   const now = new Date().toISOString();
@@ -168,7 +190,7 @@ export function createTask(db: Db, input: CreateTaskInput): TaskRecord {
     return created;
   });
 
-  return insert();
+  return insert.immediate();
 }
 
 /**

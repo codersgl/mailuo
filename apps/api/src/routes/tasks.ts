@@ -13,6 +13,19 @@ import { validationHook } from './validation.js';
 export function createTaskRoutes(db: Db): Hono {
   const routes = new Hono();
 
+  // zValidator 在 Content-Type 不是 JSON 时会直接跳过解析，请求体变成 undefined，
+  // 报错就成了「列 id 必须是字符串」这种误导文案（curl -d 默认发 form-urlencoded）。
+  // 先明确提示，省掉一轮排查。
+  routes.use('*', async (c, next) => {
+    if (c.req.method === 'POST' || c.req.method === 'PATCH') {
+      const contentType = c.req.header('content-type') ?? '';
+      if (!contentType.includes('application/json')) {
+        return c.json({ error: 'Content-Type 必须是 application/json' }, 400);
+      }
+    }
+    await next();
+  });
+
   routes.post('/api/tasks', zValidator('json', createTaskSchema, validationHook), (c) => {
     const input = c.req.valid('json');
 
