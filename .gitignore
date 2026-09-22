@@ -1,0 +1,14 @@
+node_modules/
+dist/
+build/
+
+# SQLite 数据文件不入版本库（见 docs/spec.md）
+data/
+
+# git worktree 工作目录，仅本地使用
+.worktrees/
+
+*.log
+.env
+.env.*
+.DS_Store
