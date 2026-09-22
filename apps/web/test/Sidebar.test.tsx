@@ -1,0 +1,205 @@
+import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { Sidebar } from '../src/components/Sidebar';
+import type { TreeTask } from '../src/api/types';
+
+/**
+ * 文件树的行为：层级与徽标、点名字导航、三角只折叠、归档样式与开关、
+ * 「当前看板被折叠在祖先里时自动展开」、以及本地偏好坏掉时的兜底。
+ */
+
+const treeTasks: TreeTask[] = [
+  { id: 'a', parentId: null, title: '重构登录', columnId: 'doing', archivedAt: null },
+  { id: 'a1', parentId: 'a', title: '抽出鉴权中间件', columnId: 'done', archivedAt: null },
+  { id: 'a2', parentId: 'a', title: '前端表单改造', columnId: 'doing', archivedAt: null },
+  { id: 'a1x', parentId: 'a1', title: '补单元测试', columnId: 'done', archivedAt: null },
+  { id: 'b', parentId: null, title: '支付对账', columnId: 'todo', archivedAt: null },
+  { id: 'b1', parentId: 'b', title: '对账脚本', columnId: 'todo', archivedAt: null },
+  {
+    id: 'z',
+    parentId: null,
+    title: '旧版导出',
+    columnId: 'todo',
+    archivedAt: '2026-09-22T00:00:00.000Z',
+  },
+];
+
+let requested: string[] = [];
+
+/** 桩照后端的实际行为：includeArchived 关着时不返回归档节点，否则「开关没生效」测不出来。 */
+function stubTreeFetch(tasks: TreeTask[] = treeTasks): void {
+  requested = [];
+  vi.stubGlobal('fetch', (input: string) => {
+    const url = String(input);
+    requested.push(url);
+    const visible = url.includes('includeArchived')
+      ? tasks
+      : tasks.filter((task) => task.archivedAt === null);
+    return Promise.resolve(
+      new Response(JSON.stringify({ tasks: visible }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      }),
+    );
+  });
+}
+
+function renderSidebar(boardId: string | null = null, onNavigate = vi.fn()) {
+  const view = render(<Sidebar boardId={boardId} onNavigate={onNavigate} />);
+  return { onNavigate, ...view };
+}
+
+beforeEach(() => {
+  window.localStorage.clear();
+});
+
+afterEach(() => {
+  vi.unstubAllGlobals();
+  // vitest 没开 globals，@testing-library 的自动清理不会注册，这里手动清 DOM。
+  cleanup();
+});
+
+describe('Sidebar', () => {
+  it('按层级渲染任务，并有子任务的节点显示完成/总数徽标', async () => {
+    stubTreeFetch();
+    renderSidebar();
+
+    expect(await screen.findByText('抽出鉴权中间件')).toBeTruthy();
+    // a 的两个未归档子任务：a1 在完成列、a2 在进行中。
+    expect(screen.getByText('1/2')).toBeTruthy();
+    // 叶子用点表示所在列，而不是 0/0 徽标。
+    expect(screen.getByRole('img', { name: '已完成' })).toBeTruthy();
+    expect(screen.queryByText('0/0')).toBeNull();
+  });
+
+  it('点任务名交给 onNavigate，点三角只折叠', async () => {
+    stubTreeFetch();
+    const { onNavigate } = renderSidebar();
+
+    fireEvent.click(await screen.findByText('前端表单改造'));
+    expect(onNavigate).toHaveBeenCalledWith('a2');
+    // 折叠是三角的事，点名字不该顺带改展开状态。
+    expect(screen.getByText('抽出鉴权中间件')).toBeTruthy();
+
+    fireEvent.click(screen.getByRole('button', { name: '折叠「重构登录」' }));
+
+    expect(onNavigate).toHaveBeenCalledTimes(1);
+    expect(screen.queryByText('抽出鉴权中间件')).toBeNull();
+    expect(screen.getByText('已折叠')).toBeTruthy();
+    expect(window.localStorage.getItem('kanban.tree.collapsed')).toBe(JSON.stringify(['a']));
+  });
+
+  it('开关关着时归档节点不出现在树里', async () => {
+    stubTreeFetch();
+    renderSidebar();
+
+    expect(await screen.findByText('重构登录')).toBeTruthy();
+    expect(screen.queryByText('旧版导出')).toBeNull();
+  });
+
+  it('打开「显示已归档」后带 includeArchived 重新取树，归档节点带「归档」标记', async () => {
+    stubTreeFetch();
+    renderSidebar();
+    await screen.findByText('重构登录');
+    expect(requested).toEqual(['/api/tree']);
+
+    fireEvent.click(screen.getByRole('checkbox', { name: '显示已归档' }));
+
+    await waitFor(() => expect(requested).toEqual(['/api/tree', '/api/tree?includeArchived=1']));
+    expect(await screen.findByText('旧版导出')).toBeTruthy();
+    expect(screen.getByText('归档')).toBeTruthy();
+    expect(window.localStorage.getItem('kanban.tree.showArchived')).toBe('true');
+  });
+
+  it('当前看板的祖先被折叠过时自动展开，用户折叠的其他分支保持折叠', async () => {
+    window.localStorage.setItem('kanban.tree.collapsed', JSON.stringify(['a', 'b']));
+    stubTreeFetch();
+    renderSidebar('a1x');
+
+    // a 是 a1x 的祖先，必须展开，否则用户看不到自己在哪里。
+    expect(await screen.findByText('补单元测试')).toBeTruthy();
+    // b 与当前看板无关，保持折叠。
+    expect(screen.getByRole('button', { name: '展开「支付对账」' })).toBeTruthy();
+    expect(window.localStorage.getItem('kanban.tree.collapsed')).toBe(JSON.stringify(['b']));
+  });
+
+  it('选中的节点用 aria-current 标出', async () => {
+    stubTreeFetch();
+    renderSidebar('a2');
+
+    const name = await screen.findByText('前端表单改造');
+    expect(name.getAttribute('aria-current')).toBe('page');
+    expect(screen.getByText('重构登录').getAttribute('aria-current')).toBeNull();
+  });
+
+  it('根看板时树里没有选中项（根看板不是任务）', async () => {
+    stubTreeFetch();
+    renderSidebar(null);
+
+    const name = await screen.findByText('重构登录');
+    expect(name.getAttribute('aria-current')).toBeNull();
+  });
+
+  it('当前看板不在树里（例如直接打开归档任务的地址）时给一行说明', async () => {
+    stubTreeFetch();
+    renderSidebar('hidden-board');
+
+    expect(await screen.findByText('当前看板不在树里，可能已归档')).toBeTruthy();
+  });
+
+  it('当前看板在树里时没有那行说明', async () => {
+    stubTreeFetch();
+    renderSidebar('a2');
+
+    await screen.findByText('前端表单改造');
+    expect(screen.queryByText('当前看板不在树里，可能已归档')).toBeNull();
+  });
+
+  it('折叠偏好里混进非字符串时整份丢弃，回到全展开', async () => {
+    // 形状校验只查「是不是数组」的话，['a', 1] 会被采纳成折叠 a，这里就会失败。
+    window.localStorage.setItem('kanban.tree.collapsed', JSON.stringify(['a', 1]));
+    stubTreeFetch();
+    renderSidebar();
+
+    expect(await screen.findByText('补单元测试')).toBeTruthy();
+    expect(screen.getByRole('button', { name: '折叠「重构登录」' })).toBeTruthy();
+  });
+
+  it('选中一个归档节点时，选中色不被归档的弱化色覆盖', async () => {
+    stubTreeFetch();
+    renderSidebar('z');
+    fireEvent.click(screen.getByRole('checkbox', { name: '显示已归档' }));
+
+    const name = await screen.findByText('旧版导出');
+    // 行上同时挂 bg-accent-weak（选中）和 text-ink-3（归档弱化）时，生成 CSS 里 ink-3 在后，
+    // 会把选中文字的颜色吃掉，所以归档那组类不能作用在选中行上。这里用类名钉住这个取舍。
+    const row = name.closest('div')!;
+    expect(row.className).toContain('bg-accent-weak');
+    expect(row.className).not.toContain('text-ink-3');
+    // 归档标记本身仍然显示。
+    expect(screen.getByText('归档')).toBeTruthy();
+  });
+
+  it('取树失败时显示后端文案并可重试', async () => {
+    vi.stubGlobal('fetch', () =>
+      Promise.resolve(
+        new Response(JSON.stringify({ error: '服务挂了' }), {
+          status: 500,
+          headers: { 'Content-Type': 'application/json' },
+        }),
+      ),
+    );
+    const { onNavigate } = renderSidebar();
+
+    expect(await screen.findByText('服务挂了')).toBeTruthy();
+    expect(onNavigate).not.toHaveBeenCalled();
+    expect(screen.queryByText('重构登录')).toBeNull();
+  });
+
+  it('空库时给一行弱提示', async () => {
+    stubTreeFetch([]);
+    renderSidebar();
+
+    expect(await screen.findByText('暂无任务')).toBeTruthy();
+  });
+});

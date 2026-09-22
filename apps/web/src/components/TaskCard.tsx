@@ -3,29 +3,41 @@ import { cx } from '../lib/cx';
 import { formatDuration, formatProgress, isDurationEstimated, progressPercent } from '../lib/format';
 import type { BoardTask } from '../api/types';
 
-/** 看板里的一张卡片。本步只读：点卡片进子看板、右上角编辑入口都还没做。 */
-export function TaskCard({ task }: { task: BoardTask }) {
+/**
+ * 看板里的一张卡片。
+ *
+ * 卡片主体是一个按钮，点它进入该任务的看板。子元素全用 span：
+ * button 里只允许短语内容（phrasing content），塞 div / h3 是无效 HTML。
+ * 右上角的编辑入口后续做成这个按钮的兄弟节点（article 上加 relative），不能嵌在它里面。
+ */
+export function TaskCard({ task, onOpen }: { task: BoardTask; onOpen: (taskId: string) => void }) {
   const isDone = task.columnId === DONE_COLUMN_ID;
   const estimated = isDurationEstimated(task.durationMinutes);
 
   return (
-    <article className="rounded-[5px] border border-line bg-surface hover:border-accent-border">
-      <div className="px-[11px] py-[9px]">
-        <h3
+    <article className="relative rounded-[5px] border border-line bg-surface hover:border-accent-border">
+      <button
+        type="button"
+        onClick={() => onOpen(task.id)}
+        className="block w-full rounded-[5px] px-[11px] py-[9px] text-left"
+      >
+        <span
           className={cx(
-            'text-[13px] leading-[1.35]',
+            'block text-[13px] leading-[1.35]',
             isDone ? 'font-medium text-ink-2' : 'font-semibold',
           )}
         >
           {task.title}
-        </h3>
+        </span>
 
         {/* 没有描述就整行不显示，而不是显示一个占位词（原型 A 的做法）。 */}
         {task.description !== '' && (
-          <p className="mt-[3px] truncate text-[12px] text-ink-2">{task.description}</p>
+          <span className="mt-[3px] block truncate text-[12px] text-ink-2">
+            {task.description}
+          </span>
         )}
 
-        <div className="mt-2 flex items-center gap-2">
+        <span className="mt-2 flex items-center gap-2">
           {/* 进度条是纯装饰，信息由旁边「1/2 子任务」的文字表达。 */}
           <span
             className="h-[3px] w-14 flex-none overflow-hidden rounded-[2px] bg-track"
@@ -49,8 +61,8 @@ export function TaskCard({ task }: { task: BoardTask }) {
           >
             {formatDuration(task.durationMinutes)}
           </span>
-        </div>
-      </div>
+        </span>
+      </button>
     </article>
   );
 }

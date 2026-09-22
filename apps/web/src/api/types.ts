@@ -34,3 +34,23 @@ export interface Board {
   parentId: string | null;
   columns: BoardColumn[];
 }
+
+/**
+ * 文件树里的一个节点（`GET /api/tree`）。只有建树需要的字段：描述、工期、
+ * 子任务计数都在点进它的看板后由看板接口给出；树上的进度徽标是用这份列表就地算的
+ * （见 lib/tree.ts 的 countChildren）。
+ */
+export interface TreeTask {
+  id: string;
+  parentId: string | null;
+  title: string;
+  columnId: string;
+  /** 非空表示已归档。用它把归档节点画成另一种样式。 */
+  archivedAt: string | null;
+}
+
+/** 面包屑的一项。id 为 null 表示根看板，也就是面包屑的第一段。 */
+export interface BreadcrumbItem {
+  id: string | null;
+  title: string;
+}
