@@ -391,3 +391,16 @@ SQL 列名保持 `parent_id`、`archived_at` 这类写法，与规范里的建�
 ### D38 补充：本轮原型的处置
 
 三版原型（`prototypes/card-actions-a|b|c.html`）在定版后按前端规则删除，不入版本库。
+
+## D39 条件类不要叠加同一个属性（2026-09-22）
+
+问题：`cx()` 只做字符串拼接、不去重。同一个 CSS 属性写两遍时，谁生效由**生成样式表的源序**决定，跟 class 的书写顺序无关。实例：菜单项写成 `cx(MENU_ITEM, 'text-danger hover:text-danger')`，而 `MENU_ITEM` 里已经有 `text-ink-2 hover:text-ink`；Tailwind 按 theme key 的字母序输出，`.text-danger` 排在 `.text-ink-2` 之前 → 灰色赢。结果卡片菜单里的「删除」在真实浏览器里和「编辑 / 归档」一样灰，而当时的 148 个用例全绿——jsdom 不解析 CSS，这类问题测试挡不住。
+
+这是同一个坑第二次出现：D34 里文件树的选中色 `text-accent` 被归档弱化色 `text-ink-3` 吃掉，当时的绕法是让两组类互斥。
+
+规则：
+
+- 条件类只用来在不同属性之间切换（边框虚实、尺寸、透明度这类）；颜色、字号这类**同一属性的取值**一律拆成互斥的完整类串常量，不要用 `cx` 叠加。`TaskCard.tsx` 的 `MENU_ITEM` / `MENU_ITEM_DANGER` 是示范。
+- 判断一个条件类是否真的生效，不能只看 jsdom 用例：要么在真实浏览器里量 `getComputedStyle`，要么把两组类做成互斥后由测试断言「另一组类不在」。
+
+`docs/spec.md` 第 204 行关于卡片编辑入口的描述在本步之后也不再准确（编辑入口现在是「⋯」菜单，抽屉只改字段），待用户更新规范。
