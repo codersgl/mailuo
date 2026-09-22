@@ -21,11 +21,15 @@ export function Column({
   column,
   onOpenTask,
   onEditTask,
+  onSetArchived,
+  onDeleteTask,
   create,
 }: {
   column: BoardColumn;
   onOpenTask: (taskId: string) => void;
   onEditTask: (task: BoardTask) => void;
+  onSetArchived: (task: BoardTask, archived: boolean) => void;
+  onDeleteTask: (task: BoardTask) => void;
   create: NewTaskControls;
 }) {
   const creating = create.creatingColumnId === column.id;
@@ -71,7 +75,14 @@ export function Column({
           <p className="px-0.5 text-[11px] text-ink-3">暂无任务</p>
         )}
         {column.tasks.map((task) => (
-          <TaskCard key={task.id} task={task} onOpen={onOpenTask} onEdit={onEditTask} />
+          <TaskCard
+            key={task.id}
+            task={task}
+            onOpen={onOpenTask}
+            onEdit={onEditTask}
+            onSetArchived={onSetArchived}
+            onDelete={onDeleteTask}
+          />
         ))}
         {creating && (
           <NewTaskForm

@@ -41,7 +41,10 @@ function task(overrides: Partial<FakeTask> & Pick<FakeTask, 'id' | 'title'>): Fa
   };
 }
 
-function createFakeApi(initial: FakeTask[], options: { postError?: string } = {}) {
+function createFakeApi(
+  initial: FakeTask[],
+  options: { postError?: string; archiveError?: string } = {},
+) {
   const tasks = initial.map((item) => ({ ...item }));
   const calls: RecordedCall[] = [];
   let sequence = 0;
@@ -171,6 +174,7 @@ function createFakeApi(initial: FakeTask[], options: { postError?: string } = {}
     }
 
     if (method === 'PATCH' && path.endsWith('/archive')) {
+      if (options.archiveError !== undefined) return json({ error: options.archiveError }, 400);
       const item = tasks.find((candidate) => candidate.id === id('/api/tasks/').replace(/\/archive$/, ''));
       if (!item) return json({ error: '任务不存在' }, 404);
       // 真实后端归档的是整棵子树；这里的用例没有子任务，只改自己。
@@ -221,9 +225,15 @@ function dialog() {
   return within(screen.getByRole('dialog'));
 }
 
-/** 打开某张卡片的编辑抽屉。 */
+/** 打开某张卡片的「⋯」菜单。 */
+async function openCardMenu(title: string): Promise<void> {
+  fireEvent.click(await boardArea().findByRole('button', { name: `「${title}」的更多操作` }));
+}
+
+/** 打开某张卡片的编辑抽屉：⋯ 菜单 → 编辑。 */
 async function openEditor(title: string): Promise<void> {
-  fireEvent.click(await boardArea().findByRole('button', { name: `编辑「${title}」` }));
+  await openCardMenu(title);
+  fireEvent.click(boardArea().getByRole('menuitem', { name: '编辑' }));
   await screen.findByRole('dialog');
 }
 
@@ -465,21 +475,16 @@ describe('App 增删改', () => {
     expect(await boardArea().findByText('支付对账 v2')).toBeTruthy();
   });
 
-  it('归档：默认从列里消失，打开「显示已归档」后带归档样式回到列里，抽屉里可取消归档', async () => {
+  it('归档：从卡片菜单归档，打开「显示已归档」后能取消归档', async () => {
     const api = createFakeApi(fixtures);
     render(<App />);
     await boardArea().findByText('支付对账');
 
-    await openEditor('支付对账');
-    fireEvent.click(dialog().getByRole('button', { name: '归档' }));
+    await openCardMenu('支付对账');
+    fireEvent.click(boardArea().getByRole('menuitem', { name: '归档' }));
 
-    expect(await dialog().findByText('这个任务已归档。取消归档后才能改标题、描述与工期。')).toBeTruthy();
     await waitFor(() => expect(boardArea().queryByText('支付对账')).toBeNull());
     expect(api.calls.some((call) => call.url === '/api/tasks/b/archive')).toBe(true);
-    // 已归档的抽屉里不再给「归档」入口：它与「取消归档」同屏，点下去还是幂等空操作。
-    expect(dialog().queryByRole('button', { name: '归档' })).toBeNull();
-    expect(dialog().getByRole('button', { name: '取消归档' })).toBeTruthy();
-    expect(dialog().getByRole('button', { name: '删除' })).toBeTruthy();
 
     // 打开总开关：看板列里也带归档卡片，否则界面上没有取消归档的入口。
     fireEvent.click(screen.getByRole('checkbox', { name: '显示已归档' }));
@@ -493,32 +498,50 @@ describe('App 增删改', () => {
     expect(window.localStorage.getItem('kanban.tree.showArchived')).toBe('true');
     expect(api.calls.some((call) => call.url === '/api/board?includeArchived=1')).toBe(true);
 
-    fireEvent.click(dialog().getByRole('button', { name: '取消归档' }));
+    // 归档卡片没有「编辑」（后端不接受已归档任务的字段改动），但给「取消归档」。
+    fireEvent.click(archivedCard.getByRole('button', { name: '「支付对账」的更多操作' }));
+    expect(archivedCard.queryByRole('menuitem', { name: '编辑' })).toBeNull();
+    fireEvent.click(archivedCard.getByRole('menuitem', { name: '取消归档' }));
 
     await waitFor(() =>
-      expect(dialog().queryByText('这个任务已归档。取消归档后才能改标题、描述与工期。')).toBeNull(),
+      expect(
+        within(boardArea().getByText('支付对账').closest('article')!).queryByText('归档'),
+      ).toBeNull(),
     );
-    expect(dialog().getByRole('button', { name: '保存' })).toBeTruthy();
   });
 
-  it('删除：先内联二次确认，确认后卡片消失', async () => {
+  it('删除：卡片菜单里先就地确认，确认后卡片消失', async () => {
     const api = createFakeApi(fixtures);
     render(<App />);
     await boardArea().findByText('支付对账');
 
-    await openEditor('支付对账');
-    fireEvent.click(dialog().getByRole('button', { name: '删除' }));
+    await openCardMenu('支付对账');
+    fireEvent.click(boardArea().getByRole('menuitem', { name: '删除' }));
 
-    // 内联确认，不是浏览器原生 confirm。
-    expect(dialog().getByText('确认删除？会连带删除全部子任务')).toBeTruthy();
+    // 就地确认，不是浏览器原生 confirm。
+    expect(boardArea().getByText('确认删除？')).toBeTruthy();
     expect(api.calls.some((call) => call.method === 'DELETE')).toBe(false);
 
-    fireEvent.click(dialog().getByRole('button', { name: '确认删除' }));
+    fireEvent.click(boardArea().getByRole('menuitem', { name: '确认' }));
 
     await waitFor(() => expect(boardArea().queryByText('支付对账')).toBeNull());
     expect(api.calls.some((call) => call.method === 'DELETE' && call.url === '/api/tasks/b')).toBe(true);
-    // 删掉的正是抽屉里那个任务，所以抽屉自己收起来。
-    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+  });
+
+  it('卡片菜单里的归档失败时，看板顶部给一行可关闭的提示', async () => {
+    createFakeApi(fixtures, { archiveError: '任务已归档' });
+    render(<App />);
+    await boardArea().findByText('支付对账');
+
+    await openCardMenu('支付对账');
+    fireEvent.click(boardArea().getByRole('menuitem', { name: '归档' }));
+
+    expect(await boardArea().findByText('任务已归档')).toBeTruthy();
+    // 写失败，卡片必须还在。
+    expect(boardArea().getByText('支付对账')).toBeTruthy();
+
+    fireEvent.click(boardArea().getByRole('button', { name: '关闭' }));
+    expect(boardArea().queryByText('任务已归档')).toBeNull();
   });
 
   it('抽屉的遮罩、关闭按钮与 Esc 都能关掉面板', async () => {

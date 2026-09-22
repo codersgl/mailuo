@@ -13,11 +13,15 @@ export function BoardView({
   board,
   onOpenTask,
   onEditTask,
+  onSetArchived,
+  onDeleteTask,
   create,
 }: {
   board: Board;
   onOpenTask: (taskId: string) => void;
   onEditTask: (task: BoardTask) => void;
+  onSetArchived: (task: BoardTask, archived: boolean) => void;
+  onDeleteTask: (task: BoardTask) => void;
   create: NewTaskControls;
 }) {
   return (
@@ -28,6 +32,8 @@ export function BoardView({
           column={column}
           onOpenTask={onOpenTask}
           onEditTask={onEditTask}
+          onSetArchived={onSetArchived}
+          onDeleteTask={onDeleteTask}
           create={create}
         />
       ))}

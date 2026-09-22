@@ -10,10 +10,10 @@ import { useBreadcrumb } from './hooks/useBreadcrumb';
 import { usePersistentState } from './hooks/usePersistentState';
 import { useRoute } from './hooks/useRoute';
 import { useTaskActions } from './hooks/useTaskActions';
-import type { DeleteResult, WriteResult } from './hooks/useTaskActions';
+import type { WriteResult } from './hooks/useTaskActions';
 import { SHOW_ARCHIVED_KEY } from './lib/preferences';
 import type { TaskFieldsPatch } from './api/client';
-import type { BoardTask, TaskRecord } from './api/types';
+import type { BoardTask } from './api/types';
 
 const isBoolean = (value: unknown): boolean => typeof value === 'boolean';
 
@@ -52,12 +52,14 @@ function BoardPage({
 
   /** 写操作成功后自增，让 Sidebar 静默重取一次任务树（D34 遗留的那条待办）。 */
   const [treeRefreshToken, setTreeRefreshToken] = useState(0);
-  /**
-   * 正在编辑的任务快照。刻意不按 id 去 board 里现查：归档之后（开关关着时）它就查不到了，
-   * 而抽屉还要继续显示「已归档」并给出取消归档的入口。
-   */
+  /** 正在编辑的任务快照。抽屉的字段与保存后的归一化都以它起步。 */
   const [editing, setEditing] = useState<BoardTask | null>(null);
   const [creatingColumnId, setCreatingColumnId] = useState<string | null>(null);
+  /**
+   * 卡片菜单里的归档与删除没有表单可以就地报错（抽屉不再是它们的入口），
+   * 失败时在看板顶部给一行可关闭的提示。
+   */
+  const [actionError, setActionError] = useState<string | null>(null);
 
   const { refresh: refreshBoard } = board;
   const { refresh: refreshBreadcrumb } = breadcrumb;
@@ -78,30 +80,28 @@ function BoardPage({
   const closeEditor = useCallback(() => setEditing(null), []);
   const cancelCreate = useCallback(() => setCreatingColumnId(null), []);
 
-  /** 写成功后把响应里的任务并回快照：归档状态立刻反映到抽屉上，不必等重取回来。 */
-  function applyWritten(task: TaskRecord) {
-    setEditing((current) => (current && current.id === task.id ? { ...current, ...task } : current));
-  }
-
   async function saveTask(patch: TaskFieldsPatch): Promise<WriteResult> {
     if (editing === null) return { ok: false, message: '没有正在编辑的任务' };
-    const result = await actions.update(editing.id, patch);
-    if (result.ok) applyWritten(result.task);
-    return result;
+    return actions.update(editing.id, patch);
   }
 
-  async function setEditingArchived(archived: boolean): Promise<WriteResult> {
-    if (editing === null) return { ok: false, message: '没有正在编辑的任务' };
-    const result = await actions.setArchived(editing.id, archived);
-    if (result.ok) applyWritten(result.task);
-    return result;
+  /** 卡片的「⋯」菜单里归档或取消归档。 */
+  async function setTaskArchived(task: BoardTask, archived: boolean) {
+    setActionError(null);
+    const result = await actions.setArchived(task.id, archived);
+    if (!result.ok) {
+      setActionError(result.message);
+      return;
+    }
+    // 归档正在编辑的任务时把抽屉收掉：已归档的任务不能改字段，留着一个改不动的抽屉没有意义。
+    if (archived) setEditing((current) => (current?.id === task.id ? null : current));
   }
 
-  async function deleteEditing(): Promise<DeleteResult> {
-    if (editing === null) return { ok: false, message: '没有正在编辑的任务' };
-    const result = await actions.remove(editing.id);
-    if (result.ok) setEditing(null);
-    return result;
+  /** 卡片的「⋯」菜单里删除（确认步骤在卡片上完成）。 */
+  async function deleteTask(task: BoardTask) {
+    setActionError(null);
+    const result = await actions.remove(task.id);
+    if (!result.ok) setActionError(result.message);
   }
 
   const create: NewTaskControls = {
@@ -131,6 +131,18 @@ function BoardPage({
           refreshToken={treeRefreshToken}
         />
         <main className="min-w-0 flex-1 overflow-auto">
+          {actionError !== null && (
+            <div className="mx-4 mt-3 flex items-start gap-2 rounded-[5px] border border-line bg-surface px-2.5 py-1.5">
+              <p className="min-w-0 flex-1 text-[11.5px] text-danger">{actionError}</p>
+              <button
+                type="button"
+                onClick={() => setActionError(null)}
+                className="flex-none text-[11.5px] text-ink-3 hover:text-ink"
+              >
+                关闭
+              </button>
+            </div>
+          )}
           {board.state.status === 'loading' && <LoadingNote />}
           {board.state.status === 'failed' && (
             <ErrorNote message={board.state.message} onRetry={board.reload} />
@@ -140,6 +152,8 @@ function BoardPage({
               board={board.state.data}
               onOpenTask={onNavigate}
               onEditTask={setEditing}
+              onSetArchived={setTaskArchived}
+              onDeleteTask={deleteTask}
               create={create}
             />
           )}
@@ -147,14 +161,7 @@ function BoardPage({
 
         {editing !== null && (
           // key 用任务 id：换一个任务就整体重置表单草稿，不用写 effect 去同步 props。
-          <TaskEditorPanel
-            key={editing.id}
-            task={editing}
-            onClose={closeEditor}
-            onSave={saveTask}
-            onSetArchived={setEditingArchived}
-            onDelete={deleteEditing}
-          />
+          <TaskEditorPanel key={editing.id} task={editing} onClose={closeEditor} onSave={saveTask} />
         )}
       </div>
     </div>

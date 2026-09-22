@@ -11,14 +11,12 @@ import {
 import type { DurationParts } from '../lib/format';
 import type { TaskFieldsPatch } from '../api/client';
 import type { BoardTask } from '../api/types';
-import type { DeleteResult, WriteResult } from '../hooks/useTaskActions';
+import type { WriteResult } from '../hooks/useTaskActions';
 
 const PRIMARY_BUTTON =
   'h-[26px] rounded-[5px] bg-accent px-2.5 text-[12px] text-white hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-45';
 const SECONDARY_BUTTON =
   'h-[26px] rounded-[5px] border border-line bg-surface px-2.5 text-[12px] text-ink-2 hover:border-line-strong hover:bg-surface-2 hover:text-ink';
-const DANGER_BUTTON =
-  'h-[26px] rounded-[5px] bg-danger px-2.5 text-[12px] text-white hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-45';
 const FIELD_LABEL = 'text-[11.5px] font-semibold text-ink-2';
 const FIELD_INPUT =
   'mt-1 w-full rounded-[5px] border border-line bg-surface-2 px-2 py-1 text-[13px] outline-none focus:border-accent-border disabled:cursor-not-allowed disabled:text-ink-3';
@@ -29,8 +27,12 @@ const QUICK_BUTTON =
 const DURATION_INVALID_HINT = `工期必须是 0 到 ${MAX_DURATION_MINUTES / MINUTES_PER_DAY} 天之间的整数`;
 
 /**
- * 任务详情抽屉（定版原型 A）。编辑的是当前看板里的某张卡片，也就是当前看板所在任务的子任务，
- * 所以这里永远不会删掉「正在看的这一层」。
+ * 任务详情抽屉（定版原型 B）。**只做字段编辑**：标题、描述、工期。
+ * 归档与删除在卡片的「⋯」菜单里（用户的判断：破坏性与状态类操作不该和「改字段」同处一屏）。
+ *
+ * 编辑的是当前看板里的某张卡片，也就是当前看板所在任务的子任务，所以这里永远不会删掉
+ * 「正在看的这一层」。已归档的卡片没有编辑入口（卡片菜单里不给），所以这里不处理归档态：
+ * 归档正在编辑的任务时父组件会把抽屉收掉（见 App.tsx）。
  *
  * 组件内保存着表单的草稿副本，靠父组件的 `key={task.id}` 在换任务时整体重置，
  * 不需要用一个 effect 去同步 props（保存成功后的归一化是显式回写，见 handleSave）。
@@ -39,26 +41,20 @@ export function TaskEditorPanel({
   task,
   onClose,
   onSave,
-  onSetArchived,
-  onDelete,
 }: {
   task: BoardTask;
   onClose: () => void;
   onSave: (patch: TaskFieldsPatch) => Promise<WriteResult>;
-  onSetArchived: (archived: boolean) => Promise<WriteResult>;
-  onDelete: () => Promise<DeleteResult>;
 }) {
-  const archived = task.archivedAt !== null;
   const [title, setTitle] = useState(task.title);
   const [description, setDescription] = useState(task.description);
   const [duration, setDuration] = useState<DurationParts>(() => splitDuration(task.durationMinutes));
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [saved, setSaved] = useState(false);
-  const [confirmingDelete, setConfirmingDelete] = useState(false);
   const panelRef = useRef<HTMLElement>(null);
 
-  // 打开就把焦点收进抽屉：否则焦点留在遮罩后面的铅笔按钮上，Tab 要先走完整块看板才轮到表单。
+  // 打开就把焦点收进抽屉：否则焦点留在遮罩后面的「⋯」按钮上，Tab 要先走完整块看板才轮到表单。
   // 这里只保证「Tab 从抽屉内部开始」，不做完整的焦点陷阱——顶栏在遮罩之外仍然可点，
   // 那是抽屉打开时唯一可用的导航（面包屑）。也因此不加 aria-modal。
   useEffect(() => {
@@ -119,23 +115,6 @@ export function TaskEditorPanel({
     void handleSave();
   }
 
-  async function handleSetArchived(archivedNext: boolean) {
-    setBusy(true);
-    markEdited();
-    const result = await onSetArchived(archivedNext);
-    setBusy(false);
-    if (!result.ok) setError(result.message);
-  }
-
-  async function handleDelete() {
-    setBusy(true);
-    markEdited();
-    const result = await onDelete();
-    setBusy(false);
-    // 成功时父组件会把抽屉收起来；失败留在原地报错。
-    if (!result.ok) setError(result.message);
-  }
-
   return (
     <div className="absolute inset-0 z-20 flex justify-end">
       {/* 遮罩：点它关闭。用 button 而不是 div，键盘与读屏都能用。 */}
@@ -178,17 +157,10 @@ export function TaskEditorPanel({
 
         <form className="flex min-h-0 flex-1 flex-col" onSubmit={handleSubmit}>
           <div className="min-h-0 flex-1 overflow-y-auto px-3.5 py-3">
-            {archived && (
-              <p className="mb-3 rounded-[5px] border border-dashed border-line-strong px-2 py-1.5 text-[11.5px] text-ink-2">
-                这个任务已归档。取消归档后才能改标题、描述与工期。
-              </p>
-            )}
-
             <label className="block">
               <span className={FIELD_LABEL}>标题</span>
               <input
                 value={title}
-                disabled={archived}
                 maxLength={200}
                 onChange={(event) => {
                   markEdited();
@@ -198,7 +170,7 @@ export function TaskEditorPanel({
               />
             </label>
             {/* 提示放在 label 外面：否则它会被算进输入框的无障碍名称里，读屏会念成「标题标题不能为空」。 */}
-            {trimmedTitle === '' && !archived && (
+            {trimmedTitle === '' && (
               <span className="mt-1 block text-[11px] text-danger">标题不能为空</span>
             )}
 
@@ -206,7 +178,6 @@ export function TaskEditorPanel({
               <span className={FIELD_LABEL}>描述</span>
               <textarea
                 value={description}
-                disabled={archived}
                 rows={6}
                 maxLength={10000}
                 onChange={(event) => {
@@ -222,7 +193,7 @@ export function TaskEditorPanel({
               工期用三个输入框而不是「一个数字 + 单位下拉」：3 天 4 小时这种值在单个输入框里
               只能四舍五入，保存时会悄悄改掉工期。空着表示未估，填 0 表示瞬时。
             */}
-            <fieldset className="mt-3" disabled={archived}>
+            <fieldset className="mt-3">
               <legend className={FIELD_LABEL}>工期</legend>
               <div className="mt-1 flex items-center gap-2">
                 <DurationField
@@ -280,77 +251,13 @@ export function TaskEditorPanel({
             </div>
           </div>
 
-          <footer className="flex-none border-t border-line px-3.5 py-3">
-            {archived ? (
-              <div className="flex gap-1.5">
-                <button
-                  type="button"
-                  disabled={busy}
-                  onClick={() => handleSetArchived(false)}
-                  className={PRIMARY_BUTTON}
-                >
-                  取消归档
-                </button>
-                <button type="button" onClick={onClose} className={SECONDARY_BUTTON}>
-                  关闭
-                </button>
-              </div>
-            ) : (
-              <div className="flex gap-1.5">
-                <button type="submit" disabled={!canSave} className={PRIMARY_BUTTON}>
-                  保存
-                </button>
-                <button type="button" onClick={onClose} className={SECONDARY_BUTTON}>
-                  取消
-                </button>
-              </div>
-            )}
-
-            {confirmingDelete ? (
-              <div className="mt-2.5 flex items-center gap-1.5 border-t border-line pt-2.5">
-                <span className="text-[11.5px] text-ink-2">确认删除？会连带删除全部子任务</span>
-                <button
-                  type="button"
-                  disabled={busy}
-                  onClick={handleDelete}
-                  className={cx(DANGER_BUTTON, 'ml-auto')}
-                >
-                  确认删除
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setConfirmingDelete(false)}
-                  className={SECONDARY_BUTTON}
-                >
-                  取消删除
-                </button>
-              </div>
-            ) : (
-              <div className="mt-2.5 flex items-center gap-2.5 border-t border-line pt-2.5">
-                {/* 归档与删除都保留草稿不提交：它们是「把任务整个收起来 / 清掉」，
-                    与标题描述这些字段的改动是两件事。已归档的任务不再给「归档」入口，
-                    否则会和上面的「取消归档」同时出现，而点下去是幂等空操作。 */}
-                {!archived && (
-                  <button
-                    type="button"
-                    disabled={busy}
-                    onClick={() => handleSetArchived(true)}
-                    className="text-[12px] text-ink-2 hover:text-ink disabled:cursor-not-allowed disabled:opacity-45"
-                  >
-                    归档
-                  </button>
-                )}
-                <button
-                  type="button"
-                  disabled={busy}
-                  onClick={() => setConfirmingDelete(true)}
-                  className="text-[12px] text-danger hover:underline disabled:cursor-not-allowed disabled:opacity-45"
-                >
-                  删除
-                </button>
-                <span className="ml-auto text-[10.5px] text-ink-3">删除会连带删除全部子任务</span>
-              </div>
-            )}
+          <footer className="flex flex-none gap-1.5 border-t border-line px-3.5 py-3">
+            <button type="submit" disabled={!canSave} className={PRIMARY_BUTTON}>
+              保存
+            </button>
+            <button type="button" onClick={onClose} className={SECONDARY_BUTTON}>
+              取消
+            </button>
           </footer>
         </form>
       </aside>
