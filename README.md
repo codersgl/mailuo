@@ -26,7 +26,7 @@ pnpm build            # 编译后端到 apps/api/dist
 
 环境变量（都有默认值）：
 
-- `PORT` 后端端口，默认 `3000`。
+- `PORT` 后端端口，默认 `3000`。若 3000 被占用，用 `PORT=3100 pnpm dev:api`，前端代理端口要与之一致。
 - `KANBAN_DB_PATH` SQLite 文件路径，默认 `data/kanban.db`。
 
 数据库在启动时自动建表并执行 `apps/api/migrations/` 下未应用过的迁移。
