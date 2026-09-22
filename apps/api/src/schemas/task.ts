@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { MAX_DURATION_MINUTES, MINUTES_PER_DAY } from '../domain/duration.js';
 
 /**
  * 入参校验 schema。字段说明用中文，`validationHook` 会把第一条报错转成 `{ error: string }`，
@@ -41,10 +42,12 @@ export const updateTaskSchema = z
       title: titleSchema.optional(),
       description: z.string({ error: '描述必须是字符串' }).max(10000, '描述最多 10000 字').optional(),
       // 单位是分钟；传 null 表示改回未估工期，省略表示不动这一项。
+      // 上界见 domain/duration.ts：把合法取值域收敛到 9999 天（不安全整数在 .int() 就已挡住）。
       durationMinutes: z
         .number({ error: '工期必须是数字' })
         .int('工期必须是整数分钟')
         .min(0, '工期不能为负')
+        .max(MAX_DURATION_MINUTES, `工期最多 ${MAX_DURATION_MINUTES / MINUTES_PER_DAY} 天`)
         .nullable()
         .optional(),
       columnId: z.string({ error: '列 id 必须是字符串' }).min(1, '列 id 不能为空').optional(),
