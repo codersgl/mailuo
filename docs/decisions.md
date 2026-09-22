@@ -52,3 +52,48 @@ SQL 列名保持 `parent_id`、`archived_at` 这类写法，与规范里的建�
 开发机上 3000 常被别的服务占用，启动直接失败。用户确认后把默认端口改为 `3001`，常量在 `apps/api/src/config.ts` 的 `DEFAULT_PORT`，仍可用 `PORT` 覆盖。
 
 这条与规范不一致：`docs/spec.md` 的开发约定写的是「Vite 跑 5173，`server.proxy` 把 `/api` 代理到后端 3000」。规范文件只能由用户修改，待用户同步更新。做前端时 Vite 的代理目标从同一个 `PORT` 变量读取，避免两边漂移。
+
+## D10 新建任务的 orders 取目标列内的 MAX + 1000（2025-09-22）
+
+规范对 `POST /api/tasks` 写的是「在同一父任务下取 `MAX(orders) + 1000`」。同一父任务下可能同时有 `orders = 5000` 的进行中任务和 `orders = 1000` 的待办任务，按整层取 MAX 会让新任务在待办列里拿到 6000。
+
+实现按 `(parent_id, column_id)` 取 MAX，即追加到目标列末尾。理由：`orders` 只用于列内排序（索引 `idx_tasks_board` 也是 `(parent_id, column_id, orders)`），跨列比较没有意义。若规范原意是整层取 MAX，需要用户更新规范并说明用途。
+
+这条 MAX 刻意不排除已归档任务：归档任务将来取消归档时应回到原位，若把它们排除，新任务会插到它们前面。行为由测试固定，避免被「顺手过滤归档」改掉。
+
+## D11 面包屑包含根看板与当前任务（2025-09-22）
+
+`GET /api/breadcrumb/:taskId` 返回 `{ items: [{ id, title }] }`，第一项 `id` 为 `null`、标题固定「根看板」，随后是从根到 `taskId` 自身的每一层。
+
+理由：规范里的例子是 `根看板 / 重构登录 / 前端部分`，最后一段就是当前看板所在的任务，所以接口把当前任务也返回。前端把 `id === null` 的一段链到 `/`、其余链到 `/board/:id`，不需要自己拼前缀。`id` 用 `null` 而不是特殊字符串，避免与真实 UUID 冲突。
+
+## D12 入参用 strictObject，错误体只给第一条（2025-09-22）
+
+- schema 一律 `z.strictObject`，字段名打错时返回 400 而不是被静默丢弃。未知字段的中文文案通过 `strictObject` 的 `error` 回调指定，只替换 `unrecognized_keys` 一种情况，请求体不是对象时仍用 Zod 默认描述。
+- 规范要求错误统一为 `{ error: string }`，所以 `validationHook` 只取第一条 issue，压成 `字段名: 说明`（没有字段名时只给说明）。多字段同时出错时只说第一条，不引入 `details` 数组以免偏离契约。
+
+## D13 归档任务下禁止新建子任务（2025-09-22）
+
+`POST /api/tasks` 的 `parentId` 指向已归档任务时返回 400「父任务已归档」，而不是照常创建。归档是整棵子树一起隐藏，在归档任务下建的任务会立刻变成看不见的孤儿；正常界面进不到归档看板，这条只是防御。
+
+## D14 本步的接口边界（2025-09-22）
+
+本步实现：`GET /api/board/:parentId`、`GET /api/tree`、`GET /api/breadcrumb/:taskId`、`POST /api/tasks`、`PATCH /api/tasks/:id`（仅标题、描述、工期）。
+
+未实现、留给下一步：`PATCH /api/tasks/:id` 的移动排序（`columnId` + `position`，要重写目标列 orders）、`PATCH /api/tasks/:id/parent`（要环检测）、`PATCH /api/tasks/:id/archive`（子树归档）、`DELETE /api/tasks/:id`（级联策略见 D7）。移动排序的入参 schema 也还没写，避免留下列表里没有实现的字段。
+
+## D15 错误体统一与写接口的 Content-Type（2025-09-22）
+
+- `onError` 里对 `HTTPException` 做归一化。原因：Hono 在请求体不是合法 JSON 时抛出的是 `HTTPException(400, { message })`，它自带的响应是 `text/plain` 的纯文本，直接放行会违反「错误统一为 `{ error: string }`」的契约。现在只要响应不是 `application/json` 就包成 JSON 错误体，文案也把 Hono 的 `Malformed JSON in request body` 换成中文。
+- 写接口（POST/PATCH）要求 `Content-Type` 含 `application/json`，否则返回 400「Content-Type 必须是 application/json」。原因：zValidator 在 Content-Type 不匹配时会跳过解析，请求体变成 `undefined`，报错会变成「列 id 必须是字符串」，而字段其实就在 body 里（`curl -d` 默认发 `application/x-www-form-urlencoded`，很容易踩）。
+- `POST /api/tasks` 的校验顺序固定为：字段格式 → `columnId` 存在（400）→ `parentId` 存在（404）→ 父任务未归档（400）。两者同时非法时先报列错误，顺序由测试钉死，调整顺序会改变状态码。
+
+## D16 已归档任务：写接口拒绝，读接口照常（2025-09-22）
+
+`POST /api/tasks` 拒绝在归档父任务下新建（D13，400），但 `GET /api/board/:parentId` 对归档任务返回 200 与空看板。读接口只做存在性判断，不加归档判断：归档任务的子树整体已归档，看板本来就被过滤成空列，多一个 404 判定只会让「归档任务被恢复后再点进去」这类边界多一次失败路径，收益不大。
+
+## D17 成环与父行缺失按脏数据处理（2025-09-22）
+
+`readBreadcrumb` 遇到父子成环抛 `TaskCycleError`（→500 并记日志），遇到父行缺失返回 `undefined`（→404）。这两种情况在外键开启且只走接口的前提下不可达，写出来是为了不在脏数据上返回一条看起来正常但错误的面包屑。测试用直接改库的方式固定这两个行为。
+
+

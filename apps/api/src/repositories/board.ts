@@ -1,19 +1,11 @@
 import type { Db } from '../db/client.js';
 import { DONE_COLUMN_ID } from '../domain/columns.js';
+import { listColumns } from './columns.js';
+import type { TaskRecord, TaskRow } from './tasks.js';
+import { toTaskRecord } from './tasks.js';
 
-/** 看板里的一个任务卡片。字段名对前端统一用 camelCase，数据库列名保持 snake_case。 */
-export interface BoardTask {
-  id: string;
-  parentId: string | null;
-  columnId: string;
-  title: string;
-  description: string;
-  /** 工期，单位天；0 表示未估工期。 */
-  duration: number;
-  orders: number;
-  createdAt: string;
-  updatedAt: string;
-  archivedAt: string | null;
+/** 看板里的一个任务卡片：任务基础字段 + 直接子任务进度。 */
+export interface BoardTask extends TaskRecord {
   /** 直接子任务中未归档的数量。 */
   childTotal: number;
   /** childTotal 里处于完成列的数量。 */
@@ -33,18 +25,8 @@ export interface Board {
   columns: BoardColumn[];
 }
 
-/** 与 SQL 查询列一一对应的原始行。 */
-interface BoardTaskRow {
-  id: string;
-  parent_id: string | null;
-  column_id: string;
-  title: string;
-  description: string;
-  duration: number;
-  orders: number;
-  created_at: string;
-  updated_at: string;
-  archived_at: string | null;
+/** 在任务行基础上多两列进度计数。 */
+interface BoardTaskRow extends TaskRow {
   child_total: number;
   child_done: number;
 }
@@ -79,9 +61,7 @@ export function readBoard(db: Db, parentId: string | null): Board {
     )
     .all(params) as BoardTaskRow[];
 
-  const columnRows = db
-    .prepare('SELECT id, name, orders FROM columns ORDER BY orders')
-    .all() as Array<{ id: string; name: string; orders: number }>;
+  const columnRows = listColumns(db);
 
   const tasksByColumn = new Map<string, BoardTask[]>();
   for (const row of rows) {
@@ -103,16 +83,7 @@ export function readBoard(db: Db, parentId: string | null): Board {
 
 function toBoardTask(row: BoardTaskRow): BoardTask {
   return {
-    id: row.id,
-    parentId: row.parent_id,
-    columnId: row.column_id,
-    title: row.title,
-    description: row.description,
-    duration: row.duration,
-    orders: row.orders,
-    createdAt: row.created_at,
-    updatedAt: row.updated_at,
-    archivedAt: row.archived_at,
+    ...toTaskRecord(row),
     childTotal: row.child_total,
     childDone: row.child_done,
   };
