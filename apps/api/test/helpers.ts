@@ -24,19 +24,22 @@ export function insertTask(
     orders: number;
     parentId?: string | null;
     archived?: boolean;
+    /** 工期，单位分钟；不传表示未估。 */
+    durationMinutes?: number | null;
   },
 ): string {
   sequence += 1;
   const id = `task-${sequence}`;
   db.prepare(
-    `INSERT INTO tasks (id, parent_id, column_id, title, description, duration, orders, created_at, updated_at, archived_at)
-     VALUES (@id, @parentId, @columnId, @title, '', 0, @orders, @createdAt, @updatedAt, @archivedAt)`,
+    `INSERT INTO tasks (id, parent_id, column_id, title, description, duration_minutes, orders, created_at, updated_at, archived_at)
+     VALUES (@id, @parentId, @columnId, @title, '', @durationMinutes, @orders, @createdAt, @updatedAt, @archivedAt)`,
   ).run({
     id,
     parentId: options.parentId ?? null,
     columnId: options.columnId,
     title: options.title,
     orders: options.orders,
+    durationMinutes: options.durationMinutes ?? null,
     createdAt: FIXED_TIME,
     updatedAt: FIXED_TIME,
     archivedAt: options.archived ? FIXED_TIME : null,

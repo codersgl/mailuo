@@ -1,21 +1,44 @@
 import { describe, expect, it } from 'vitest';
-import { formatDuration, formatProgress, isDurationEstimated, progressPercent } from '../src/lib/format';
+import {
+  MINUTES_PER_DAY,
+  MINUTES_PER_HOUR,
+  formatDuration,
+  formatProgress,
+  isDurationEstimated,
+  progressPercent,
+} from '../src/lib/format';
 
 describe('formatDuration', () => {
-  it('工期为 0 时显示未估工期，而不是 0 天', () => {
-    expect(formatDuration(0)).toBe('未估工期');
-    expect(isDurationEstimated(0)).toBe(false);
+  it('null 表示未估工期', () => {
+    expect(formatDuration(null)).toBe('未估工期');
+    expect(isDurationEstimated(null)).toBe(false);
   });
 
-  it('有工期时带上单位', () => {
-    expect(formatDuration(1)).toBe('工期 1 天');
-    expect(formatDuration(5)).toBe('工期 5 天');
-    expect(isDurationEstimated(5)).toBe(true);
+  it('0 表示瞬时任务，和未估是两种状态', () => {
+    expect(formatDuration(0)).toBe('瞬时');
+    expect(isDurationEstimated(0)).toBe(true);
   });
 
-  it('契约外的负数也按未估工期处理，不显示「工期 -1 天」', () => {
-    expect(formatDuration(-1)).toBe('未估工期');
-    expect(isDurationEstimated(-1)).toBe(false);
+  it('不到一小时只显示分钟', () => {
+    expect(formatDuration(1)).toBe('工期 1 分');
+    expect(formatDuration(45)).toBe('工期 45 分');
+  });
+
+  it('不到一天按小时和分钟组合', () => {
+    expect(formatDuration(MINUTES_PER_HOUR)).toBe('工期 1 小时');
+    expect(formatDuration(90)).toBe('工期 1 小时 30 分');
+    expect(formatDuration(MINUTES_PER_DAY - 1)).toBe('工期 7 小时 59 分');
+  });
+
+  it('一天以上按天、小时、分钟组合，只保留非零部分', () => {
+    expect(formatDuration(MINUTES_PER_DAY)).toBe('工期 1 天');
+    expect(formatDuration(MINUTES_PER_DAY + 60)).toBe('工期 1 天 1 小时');
+    expect(formatDuration(MINUTES_PER_DAY + 65)).toBe('工期 1 天 1 小时 5 分');
+    expect(formatDuration(4320)).toBe('工期 9 天');
+  });
+
+  it('契约外的负数兜底按瞬时处理，不显示负工期', () => {
+    expect(formatDuration(-1)).toBe('瞬时');
   });
 });
 

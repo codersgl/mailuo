@@ -25,10 +25,10 @@ afterEach(() => {
 });
 
 describe('runMigrations', () => {
-  it('首次执行应用 001 并写入 schema_migrations', () => {
+  it('首次执行应用全部迁移并写入 schema_migrations', () => {
     const db = openDatabase(':memory:');
 
-    expect(runMigrations(db, migrationsDir)).toEqual(['001_init.sql']);
+    expect(runMigrations(db, migrationsDir)).toEqual(['001_init.sql', '002_duration_minutes.sql']);
 
     const columns = db.prepare('SELECT id, name, orders FROM columns ORDER BY orders').all();
     expect(columns).toEqual([
@@ -36,14 +36,14 @@ describe('runMigrations', () => {
       { id: 'doing', name: '进行中', orders: 2000 },
       { id: 'done', name: '完成', orders: 3000 },
     ]);
-    expect(db.prepare('SELECT COUNT(*) AS count FROM schema_migrations').get()).toEqual({ count: 1 });
+    expect(db.prepare('SELECT COUNT(*) AS count FROM schema_migrations').get()).toEqual({ count: 2 });
   });
 
   it('重复执行不重复应用', () => {
     const db = createTestDb();
 
     expect(runMigrations(db, migrationsDir)).toEqual([]);
-    expect(db.prepare('SELECT COUNT(*) AS count FROM schema_migrations').get()).toEqual({ count: 1 });
+    expect(db.prepare('SELECT COUNT(*) AS count FROM schema_migrations').get()).toEqual({ count: 2 });
   });
 
   it('新增的迁移只应用新增的那一个', () => {
@@ -84,6 +84,77 @@ describe('runMigrations', () => {
     expect(() => runMigrations(db, dir)).toThrow();
     expect(db.prepare('SELECT COUNT(*) AS count FROM schema_migrations').get()).toEqual({ count: 0 });
     expect(db.prepare("SELECT name FROM sqlite_master WHERE name = 'ok'").get()).toBeUndefined();
+  });
+
+  it('002 把工期从天折算成分钟，并把旧的 0（未估）转成 NULL', () => {
+    // 先用只有 001 的目录造出旧结构的数据，再补上 002 走一次真实的升级路径。
+    const onlyInit = makeMigrationsDir({
+      '001_init.sql': fs.readFileSync(path.join(migrationsDir, '001_init.sql'), 'utf8'),
+    });
+    const db = openDatabase(':memory:');
+    expect(runMigrations(db, onlyInit)).toEqual(['001_init.sql']);
+    db.prepare(
+      `INSERT INTO tasks (id, parent_id, column_id, title, description, duration, orders, created_at, updated_at)
+       VALUES ('p', NULL, 'todo', '父任务', '', 5, 1000, 't', 't'),
+              ('c', 'p', 'doing', '子任务', '', 0, 1000, 't', 't'),
+              ('n', NULL, 'todo', '脏数据', '', -3, 2000, 't', 't')`,
+    ).run();
+    db.prepare(`INSERT INTO task_deps (predecessor_id, successor_id) VALUES ('p', 'c')`).run();
+
+    fs.copyFileSync(
+      path.join(migrationsDir, '002_duration_minutes.sql'),
+      path.join(onlyInit, '002_duration_minutes.sql'),
+    );
+    expect(runMigrations(db, onlyInit)).toEqual(['002_duration_minutes.sql']);
+
+    expect(db.prepare('SELECT id, duration_minutes FROM tasks ORDER BY id').all()).toEqual([
+      { id: 'c', duration_minutes: null },
+      // 001 没有 CHECK，手改库可能留下负数；负数按「未估」处理，不能让迁移永久失败。
+      { id: 'n', duration_minutes: null },
+      { id: 'p', duration_minutes: 2400 },
+    ]);
+    // 重建表不能动依赖、索引和外键：这三样都断言一遍。
+    expect(db.prepare('SELECT * FROM task_deps').all()).toEqual([
+      { predecessor_id: 'p', successor_id: 'c' },
+    ]);
+    const indexes = db
+      .prepare("SELECT name FROM sqlite_master WHERE type = 'index' AND tbl_name = 'tasks'")
+      .all()
+      .map((row) => (row as { name: string }).name);
+    expect(indexes).toEqual(expect.arrayContaining(['idx_tasks_board', 'idx_tasks_parent']));
+    expect(db.pragma('foreign_keys', { simple: true })).toBe(1);
+    expect(db.pragma('foreign_key_check')).toEqual([]);
+
+    const columns = db
+      .prepare('PRAGMA table_info(tasks)')
+      .all()
+      .map((row) => (row as { name: string }).name);
+    expect(columns).toContain('duration_minutes');
+    expect(columns).not.toContain('duration');
+
+    // 重建（DROP + RENAME）最容易出的事故是把引用指错表，这里钉死 task_deps 的外键仍然生效。
+    expect(() =>
+      db.prepare(`INSERT INTO task_deps (predecessor_id, successor_id) VALUES ('p', '不存在')`).run(),
+    ).toThrow(/FOREIGN KEY/i);
+  });
+
+  it('标记了 no-foreign-keys 的迁移留下悬空引用时报错、整份回滚，并恢复外键开关', () => {
+    const db = openDatabase(':memory:');
+    const dir = makeMigrationsDir({
+      '001_dangling.sql': `-- kanban:no-foreign-keys
+        CREATE TABLE parent (id TEXT PRIMARY KEY);
+        CREATE TABLE child (id TEXT PRIMARY KEY, parent_id TEXT REFERENCES parent(id));
+        INSERT INTO parent (id) VALUES ('p');
+        INSERT INTO child (id, parent_id) VALUES ('c', 'p');
+        DELETE FROM parent;`,
+    });
+
+    expect(() => runMigrations(db, dir)).toThrow(/悬空的外键引用/);
+    // 外键开关必须恢复，否则之后的写入都没有保护。
+    expect(db.pragma('foreign_keys', { simple: true })).toBe(1);
+    // 校验在提交前做，所以整份文件回滚：建表语句也一起撤销了，迁移没被记录。
+    expect(db.prepare("SELECT name FROM sqlite_master WHERE name = 'parent'").get()).toBeUndefined();
+    expect(db.prepare('SELECT COUNT(*) AS count FROM schema_migrations').get()).toEqual({ count: 0 });
   });
 
   it('文件名缺数字前缀时报错', () => {

@@ -6,7 +6,7 @@ import type { BoardTask } from '../api/types';
 /** 看板里的一张卡片。本步只读：点卡片进子看板、右上角编辑入口都还没做。 */
 export function TaskCard({ task }: { task: BoardTask }) {
   const isDone = task.columnId === DONE_COLUMN_ID;
-  const estimated = isDurationEstimated(task.duration);
+  const estimated = isDurationEstimated(task.durationMinutes);
 
   return (
     <article className="rounded-[5px] border border-line bg-surface hover:border-accent-border">
@@ -47,7 +47,7 @@ export function TaskCard({ task }: { task: BoardTask }) {
                 : 'border-dashed border-line-strong bg-transparent text-ink-3',
             )}
           >
-            {formatDuration(task.duration)}
+            {formatDuration(task.durationMinutes)}
           </span>
         </div>
       </div>

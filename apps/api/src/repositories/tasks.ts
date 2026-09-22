@@ -10,8 +10,8 @@ export interface TaskRecord {
   columnId: string;
   title: string;
   description: string;
-  /** 工期，单位天；0 表示未估工期。 */
-  duration: number;
+  /** 工期，单位分钟；null 表示未估工期，0 表示瞬时任务。 */
+  durationMinutes: number | null;
   orders: number;
   createdAt: string;
   updatedAt: string;
@@ -25,7 +25,7 @@ export interface TaskRow {
   column_id: string;
   title: string;
   description: string;
-  duration: number;
+  duration_minutes: number | null;
   orders: number;
   created_at: string;
   updated_at: string;
@@ -57,7 +57,8 @@ export interface CreateTaskInput {
 export interface UpdateTaskFieldsInput {
   title?: string;
   description?: string;
-  duration?: number;
+  /** 传 null 表示把工期改回未估（见 docs/decisions.md D32）。 */
+  durationMinutes?: number | null;
 }
 
 /** 一次 PATCH 的完整入参：字段更新与列内移动可以同时出现。 */
@@ -79,7 +80,7 @@ export interface ChangeTaskParentInput {
 }
 
 const TASK_COLUMNS =
-  'id, parent_id, column_id, title, description, duration, orders, created_at, updated_at, archived_at';
+  'id, parent_id, column_id, title, description, duration_minutes, orders, created_at, updated_at, archived_at';
 
 /**
  * 递归求子树的 CTE。用 UNION（不是 UNION ALL）去重：父子关系成环的脏数据下递归也能终止。
@@ -111,7 +112,7 @@ export function toTaskRecord(row: TaskRow): TaskRecord {
     columnId: row.column_id,
     title: row.title,
     description: row.description,
-    duration: row.duration,
+    durationMinutes: row.duration_minutes,
     orders: row.orders,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
@@ -223,8 +224,8 @@ export function createTask(db: Db, input: CreateTaskInput): TaskRecord {
       .get(params) as { max_orders: number };
 
     db.prepare(
-      `INSERT INTO tasks (id, parent_id, column_id, title, description, duration, orders, created_at, updated_at, archived_at)
-       VALUES (@id, @parentId, @columnId, @title, '', 0, @orders, @createdAt, @updatedAt, NULL)`,
+      `INSERT INTO tasks (id, parent_id, column_id, title, description, duration_minutes, orders, created_at, updated_at, archived_at)
+       VALUES (@id, @parentId, @columnId, @title, '', NULL, @orders, @createdAt, @updatedAt, NULL)`,
     ).run({
       id,
       parentId: input.parentId,
@@ -246,7 +247,7 @@ export function createTask(db: Db, input: CreateTaskInput): TaskRecord {
 }
 
 /**
- * 改标题、描述、工期。只更新传入的字段，同时刷新 updated_at。
+ * 改标题、描述、工期（分钟）。只更新传入的字段，同时刷新 updated_at。
  * 任务不存在返回 undefined。路由层已保证至少传一个字段，这里的空 patch 分支只是防御。
  */
 export function updateTaskFields(
@@ -264,9 +265,9 @@ export function updateTaskFields(
     assignments.push('description = @description');
     params.description = patch.description;
   }
-  if (patch.duration !== undefined) {
-    assignments.push('duration = @duration');
-    params.duration = patch.duration;
+  if (patch.durationMinutes !== undefined) {
+    assignments.push('duration_minutes = @durationMinutes');
+    params.durationMinutes = patch.durationMinutes;
   }
 
   const update = db.transaction((): TaskRecord | undefined => {
@@ -287,7 +288,9 @@ export function updateTaskFields(
  */
 export function applyTaskUpdate(db: Db, id: string, patch: UpdateTaskInput): TaskRecord | undefined {
   const hasFieldUpdate =
-    patch.title !== undefined || patch.description !== undefined || patch.duration !== undefined;
+    patch.title !== undefined ||
+    patch.description !== undefined ||
+    patch.durationMinutes !== undefined;
   const targetColumnId = patch.columnId;
   const targetPosition = patch.position;
 

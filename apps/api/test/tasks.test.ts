@@ -36,12 +36,22 @@ describe('POST /api/tasks', () => {
       columnId: 'todo',
       title: '写文档',
       description: '',
-      duration: 0,
+      // 新建时工期是「未估」，不是 0 分钟（0 表示瞬时任务）
+      durationMinutes: null,
       orders: 1000,
       archivedAt: null,
     });
     expect(task.id).toMatch(UUID_V4);
     expect(task.createdAt).toBe(task.updatedAt);
+  });
+
+  it('显式传 parentId: null 表示建在根看板下', async () => {
+    const api = app();
+
+    const response = await postTask(api, { parentId: null, columnId: 'todo', title: '根任务' });
+
+    expect(response.status).toBe(201);
+    expect((await response.json()).parentId).toBeNull();
   });
 
   it('同列追加取该列 MAX(orders) + 1000，不同列各自独立', async () => {
@@ -198,7 +208,7 @@ describe('PATCH /api/tasks/:id', () => {
     const id = insertTask(db, { title: '原标题', columnId: 'todo', orders: 1000 });
     const api = createApp(db);
 
-    const response = await patchTask(api, id, { title: '  新标题  ', duration: 3 });
+    const response = await patchTask(api, id, { title: '  新标题  ', durationMinutes: 90 });
 
     expect(response.status).toBe(200);
     // 写接口统一返回 { task, columnTasks }，columnTasks 是该任务所在列的完整有序列表
@@ -206,7 +216,7 @@ describe('PATCH /api/tasks/:id', () => {
     expect(task).toMatchObject({
       id,
       title: '新标题',
-      duration: 3,
+      durationMinutes: 90,
       // 没传的字段保持原值
       description: '',
       columnId: 'todo',
@@ -254,15 +264,41 @@ describe('PATCH /api/tasks/:id', () => {
     const id = insertTask(db, { title: '任务', columnId: 'todo', orders: 1000 });
     const api = createApp(db);
 
-    for (const [duration, expected] of [
-      [-1, 'duration: 工期不能为负'],
-      [1.5, 'duration: 工期必须是整数'],
-      ['3', 'duration: 工期必须是数字'],
+    for (const [durationMinutes, expected] of [
+      [-1, 'durationMinutes: 工期不能为负'],
+      [1.5, 'durationMinutes: 工期必须是整数分钟'],
+      ['3', 'durationMinutes: 工期必须是数字'],
     ] as const) {
-      const response = await patchTask(api, id, { duration });
+      const response = await patchTask(api, id, { durationMinutes });
       expect(response.status).toBe(400);
       expect(await response.json()).toEqual({ error: expected });
     }
+  });
+
+  it('工期可以改回未估（传 null），0 表示瞬时', async () => {
+    const db = createTestDb();
+    const id = insertTask(db, { title: '任务', columnId: 'todo', orders: 1000, durationMinutes: 2400 });
+    const api = createApp(db);
+
+    const cleared = await patchTask(api, id, { durationMinutes: null });
+    expect(cleared.status).toBe(200);
+    expect((await cleared.json()).task.durationMinutes).toBeNull();
+
+    const instant = await patchTask(api, id, { durationMinutes: 0 });
+    expect(instant.status).toBe(200);
+    expect((await instant.json()).task.durationMinutes).toBe(0);
+  });
+
+  it('省略 durationMinutes 不动已有工期，只有显式传 null 才清空', async () => {
+    const db = createTestDb();
+    const id = insertTask(db, { title: '任务', columnId: 'todo', orders: 1000, durationMinutes: 2400 });
+    const api = createApp(db);
+
+    const kept = await patchTask(api, id, { title: '只改标题' });
+    expect((await kept.json()).task.durationMinutes).toBe(2400);
+
+    const cleared = await patchTask(api, id, { durationMinutes: null });
+    expect((await cleared.json()).task.durationMinutes).toBeNull();
   });
 
   it('任务不存在返回 404', async () => {

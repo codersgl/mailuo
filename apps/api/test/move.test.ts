@@ -119,13 +119,18 @@ describe('PATCH /api/tasks/:id 移动', () => {
 
     const response = await patchJson(api, `/api/tasks/${id}`, {
       title: '新标题',
-      duration: 2,
+      durationMinutes: 2,
       columnId: 'doing',
       position: 0,
     });
 
     const { task } = await response.json();
-    expect(task).toMatchObject({ title: '新标题', duration: 2, columnId: 'doing', orders: 1000 });
+    expect(task).toMatchObject({
+      title: '新标题',
+      durationMinutes: 2,
+      columnId: 'doing',
+      orders: 1000,
+    });
   });
 
   it('只给一个移动参数返回 400', async () => {
