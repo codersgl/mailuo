@@ -1,8 +1,11 @@
 import { serve } from '@hono/node-server';
 import { createApp } from './app.js';
-import { loadConfig } from './config.js';
+import { loadConfig, loadEnvFileIfPresent } from './config.js';
 import { openDatabase } from './db/client.js';
 import { runMigrations } from './db/migrate.js';
+
+// 先读本机 .env（可选），再读配置：这样 `pnpm dev:api` 不带前缀也能拿到 .env 里的 PORT。
+loadEnvFileIfPresent();
 
 const config = loadConfig();
 const db = openDatabase(config.dbPath);

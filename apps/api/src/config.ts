@@ -9,6 +9,9 @@ const apiRoot = path.resolve(import.meta.dirname, '..');
 /** 仓库根目录，用于定位 data/ 下的 SQLite 文件。 */
 export const repoRoot = path.resolve(apiRoot, '..', '..');
 
+/** 本机配置文件：仓库根目录的 .env，不入版本库（见 .gitignore）。 */
+export const envFilePath = path.join(repoRoot, '.env');
+
 export interface Config {
   port: number;
   /** SQLite 文件路径。 */
@@ -22,6 +25,26 @@ export interface Config {
  * 注意 docs/spec.md 的开发约定里写的是 3000，改端口后需要用户同步更新规范。
  */
 export const DEFAULT_PORT = 3001;
+
+/**
+ * 把根目录 .env 里的键值读进 process.env。
+ *
+ * 为什么需要它：开发时端口要同时告诉 apps/api 和 apps/web（Vite 的代理目标）。两边都靠
+ * `PORT=3003 pnpm dev:xxx` 前缀传时，漏掉一个就会出现「后端正常、前端 404」这种难查的状态
+ * ——前端的代理还指着旧端口。写进 .env 后两边自动一致（见 docs/decisions.md D41）。
+ *
+ * Node 的 process.loadEnvFile 不覆盖已存在的环境变量，所以命令行的 `PORT=3003` 仍然优先于文件。
+ * 文件不存在是正常情况（新克隆的仓库没有 .env），静默跳过；其它读取错误照常抛出。
+ */
+export function loadEnvFileIfPresent(filePath: string = envFilePath): void {
+  try {
+    process.loadEnvFile(filePath);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== 'ENOENT') {
+      throw error;
+    }
+  }
+}
 
 /**
  * 从环境变量读取配置，全部有默认值，直接 `pnpm dev:api` 即可跑起来。

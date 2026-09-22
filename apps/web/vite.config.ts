@@ -1,11 +1,23 @@
+import path from 'node:path';
 import { defineConfig } from 'vite';
 import react from '@vitejs/plugin-react';
 import tailwindcss from '@tailwindcss/vite';
 
 /**
- * 后端端口与 apps/api 读同一个环境变量，避免两边漂移（见 docs/decisions.md D9）：
- * `PORT=3002 pnpm dev:api` 时，前端也要用 `PORT=3002 pnpm dev:web` 启动，代理才会跟着走。
+ * 后端端口与 apps/api 同一个来源：仓库根目录的 .env（可选），见 docs/decisions.md D41。
+ * 以前要求两个终端各带一次 `PORT=3003` 前缀，漏掉一个就会「后端正常、前端 404」。
  */
+const repoRoot = path.resolve(import.meta.dirname, '..', '..');
+try {
+  // 与 apps/api/src/config.ts 的 loadEnvFileIfPresent 是同一套规则：文件不存在就跳过，
+  // 已存在的环境变量（`PORT=3003 pnpm dev:web`）优先于文件里的值。
+  process.loadEnvFile(path.join(repoRoot, '.env'));
+} catch (error) {
+  if ((error as NodeJS.ErrnoException).code !== 'ENOENT') {
+    throw error;
+  }
+}
+
 const apiPort = process.env.PORT ?? '3001';
 
 export default defineConfig({
