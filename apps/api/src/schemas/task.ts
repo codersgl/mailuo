@@ -40,10 +40,12 @@ export const updateTaskSchema = z
     {
       title: titleSchema.optional(),
       description: z.string({ error: '描述必须是字符串' }).max(10000, '描述最多 10000 字').optional(),
-      duration: z
+      // 单位是分钟；传 null 表示改回未估工期，省略表示不动这一项。
+      durationMinutes: z
         .number({ error: '工期必须是数字' })
-        .int('工期必须是整数')
+        .int('工期必须是整数分钟')
         .min(0, '工期不能为负')
+        .nullable()
         .optional(),
       columnId: z.string({ error: '列 id 必须是字符串' }).min(1, '列 id 不能为空').optional(),
       position: z

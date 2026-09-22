@@ -34,6 +34,23 @@ describe('readBoard', () => {
     expect(child.columns[0]!.tasks[0]).toMatchObject({ id: childTodo, childTotal: 0, childDone: 0 });
   });
 
+  it('看板卡片带上工期字段，三种状态都能读出来', () => {
+    const db = createTestDb();
+    insertTask(db, { title: '未估', columnId: 'todo', orders: 1000 });
+    insertTask(db, { title: '瞬时', columnId: 'todo', orders: 2000, durationMinutes: 0 });
+    insertTask(db, { title: '九十分钟', columnId: 'todo', orders: 3000, durationMinutes: 90 });
+
+    const board = readBoard(db, null);
+
+    // 这条断言盯的是 SELECT 列表：漏掉 t.duration_minutes 时前端会收到 undefined，
+    // 卡片 chip 会显示成「工期 」这种没有数字的文案。
+    expect(board.columns[0]!.tasks.map((task) => [task.title, task.durationMinutes])).toEqual([
+      ['未估', null],
+      ['瞬时', 0],
+      ['九十分钟', 90],
+    ]);
+  });
+
   it('子看板同样过滤已归档子任务', () => {
     const db = createTestDb();
     const parentId = insertTask(db, { title: '父任务', columnId: 'todo', orders: 1000 });

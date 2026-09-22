@@ -224,3 +224,46 @@ SQL 列名保持 `parent_id`、`archived_at` 这类写法，与规范里的建�
 
 - `useBoard` 用 effect 内的 `cancelled` 闭包丢弃过期响应，不引入 `AbortController`。只读接口的重复请求无害（开发环境 StrictMode 下每次挂载会发两次），而 `AbortController` 还要额外区分「主动取消」与「真失败」两个分支。做写接口或导航时再引入。
 - 面包屑目前是前端常量「根看板」。导航那一步改成读 `GET /api/breadcrumb/:taskId`（D11），常量随之删除。
+
+## D31 迁移 runner 支持「重建表」的 no-foreign-keys 标记（2026-09-22）
+
+问题：SQLite 不支持修改已有列的类型或约束，改列名之外的 schema 变化只能重建表（建新表、搬数据、DROP 旧表、改名）。重建过程要 DROP 掉的 `tasks` 被 `task_deps` 和新建的 `tasks_new.parent_id` 引用，而外键开启时 `DROP TABLE` 会先做一次隐式 DELETE，直接撞上约束报错。SQLite 官方建议重建时关闭外键，但 `PRAGMA foreign_keys` 在事务内是空操作，我们的迁移又是「一个文件一个事务」。
+
+方案：迁移文件里用 `-- kanban:no-foreign-keys` 声明，runner 看到标记就
+
+1. 在事务外 `PRAGMA foreign_keys = OFF`；
+2. 在事务内执行文件内容，并在提交前跑一次 `PRAGMA foreign_key_check`，发现悬空引用就抛错；
+3. 无论成功失败，在 `finally` 里恢复 `PRAGMA foreign_keys = ON`。
+
+校验放在提交前的理由：有悬空引用时整个文件回滚，磁盘上不会留下坏库，`schema_migrations` 也不记录，下次启动可以重试。测试用一份故意删掉父行、留下悬空引用的标记迁移固定这三条行为（抛错、回滚、外键开关恢复）。
+
+标记用整行正则匹配（`^--\s*kanban:no-foreign-keys\s*$`），不是 `includes`：说明性注释里提到这个字符串不该误关外键保护。runner 还会拒绝在有外层事务时运行——那会让 `PRAGMA foreign_keys` 静默失效。
+
+重建表迁移的两条照抄规则（写在 002 的注释里）：重建会连带丢掉旧表上的索引，必须在 RENAME 后手工重建；新表最后必须 RENAME 回原名，否则 `task_deps` 里按名字写的 `REFERENCES tasks(id)` 会静默指错表。
+
+`foreign_key_check` 是全库范围的，因此迁移之前就存在的坏数据（手改库造出的悬空引用）也会拦下这次迁移。这里刻意选择响亮失败而不是跳过：带着悬空引用的库继续跑只会更晚更难查。恢复方式写在报错信息里——按表名与 rowid 修好那些行再重启，迁移已回滚会在下次启动重试。
+
+代价：迁移文件多了一个必须照做的约定；不需要重建表的迁移不要加这个标记——关闭外键期间执行的 SQL 没有外键保护。
+
+## D32 工期最小刻度改成分钟，NULL 表示未估、0 表示瞬时（2026-09-22，用户拍板）
+
+问题：工期原来的单位是「天」且只允许整数。原型里「工期 0.5 天」这种常见的个人任务没法表达；更糟的是 `0` 同时被规范定义为「未估工期」（数据模型一节）和「瞬时」（关键路径一节），两个含义共用一个值，界面无法区分。
+
+决定（用户确认的三条）：
+
+- 最小刻度是分钟，整数存储。CPM 全程按这个整数刻度做加减与比较，不会出现浮点比较松弛时间的问题。
+- `NULL` 表示未估工期，`0` 表示瞬时任务，`> 0` 是工期分钟数。三者在界面上必须能分辨。
+- 1 天 = 480 分钟（8 小时工作制），只用于展示与输入换算。CPM 不引入工作日、周末或节假日的日历模型——那会把这一步变成另一个量级的工作。
+
+连带改动：
+
+- 字段重命名 `duration` → `duration_minutes`（API 里 `durationMinutes`）。单位换了名字不改，后面每次读代码都要回去查单位；项目没有外部调用方，按规则不留兼容。
+- `PATCH /api/tasks/:id` 的 `durationMinutes` 传 `null` 表示改回未估，省略表示不动。`POST /api/tasks` 仍然不接受工期（工期录入属于后续步骤）。
+- 迁移 `002_duration_minutes.sql` 重建表：加 `CHECK (duration_minutes IS NULL OR (typeof(duration_minutes) = 'integer' AND duration_minutes >= 0))`（`typeof` 是为了让「整数存储」在数据库层也成立，不只是靠 API 的 Zod），旧的正数乘以 480，旧的 0 与负数一律按「未估」转成 `NULL`（001 没有 CHECK，手改库可能出现负数；历史数据里的 0 只可能是没填）。
+- 前端 `formatDuration` 吃分钟数：`null` → 「未估工期」（虚线弱化 chip）、`0` → 「瞬时」、其余折成「N 天 M 小时 K 分」，只保留非零部分。`isDurationEstimated(0)` 为 `true`，因为 0 是一个估过的值。
+
+## D33 本步边界（2026-09-22）
+
+本步只改工期刻度：规范里的单位与换算三处、迁移 002、迁移 runner 的标记支持、后端字段与入参 schema、前端展示与类型。
+
+未做、留给后续步骤：工期录入 UI（新建任务时仍然不能填工期，只能建完再用 `PATCH` 改）、依赖与关键路径（第三批）。`apps/web` 的卡片已经能正确显示三种状态，但演示数据里的工期要靠接口改。

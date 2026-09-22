@@ -82,16 +82,18 @@ CREATE TABLE columns (
 );
 
 CREATE TABLE tasks (
-  id          TEXT    PRIMARY KEY,
-  parent_id   TEXT    REFERENCES tasks(id),
-  column_id   TEXT    NOT NULL REFERENCES columns(id),
-  title       TEXT    NOT NULL,
-  description TEXT    NOT NULL DEFAULT '',
-  duration    INTEGER NOT NULL DEFAULT 0,
-  orders      INTEGER NOT NULL,
-  created_at  TEXT    NOT NULL,
-  updated_at  TEXT    NOT NULL,
-  archived_at TEXT
+  id               TEXT    PRIMARY KEY,
+  parent_id        TEXT    REFERENCES tasks(id),
+  column_id        TEXT    NOT NULL REFERENCES columns(id),
+  title            TEXT    NOT NULL,
+  description      TEXT    NOT NULL DEFAULT '',
+  duration_minutes INTEGER CHECK (
+    duration_minutes IS NULL OR (typeof(duration_minutes) = 'integer' AND duration_minutes >= 0)
+  ),
+  orders           INTEGER NOT NULL,
+  created_at       TEXT    NOT NULL,
+  updated_at       TEXT    NOT NULL,
+  archived_at      TEXT
 );
 
 CREATE TABLE task_deps (
@@ -113,7 +115,7 @@ CREATE INDEX idx_deps_successor ON task_deps(successor_id);
 - `orders` 为间隔 1000 的整数。同一 `(parent_id, column_id)` 内整体重写。
 - 三列在迁移里写死，`orders` 分别为 1000、2000、3000。
 - `archived_at` 非空表示归档。
-- `duration` 单位天，为 0 表示未估工期。
+- `duration_minutes` 单位分钟（整数）：`NULL` 表示未估工期，`0` 表示瞬时任务，其余是工期分钟数。
 - `task_deps` 是无环有向图（DAG）。写入前必须检测环，检测到则拒绝并返回 `409`。
 - 依赖两端必须 `parent_id` 相同。跨层依赖拒绝并返回 `400`。
 
@@ -136,7 +138,9 @@ CREATE INDEX idx_deps_successor ON task_deps(successor_id);
 - 按 CPM（关键路径法，Critical Path Method）实现：任务为顶点，依赖为有向边。
 - 不引入 AOE 的事件顶点表。AOE 要求单源单汇，而个人规划中多起点多终点是常态。
 - 计算过程：拓扑排序得到正向序，按正向序算出每个任务的最早开始时间；按反向序算出最晚开始时间；松弛时间 `slack = 最晚开始 - 最早开始`，`slack = 0` 的任务构成关键路径。
-- 工期单位为天。工期为 0 的任务视为瞬时，不阻断关键路径传递，并在界面上提示未估工期。
+- 工期以分钟为最小刻度存储（`duration_minutes`），CPM 全程按这个整数刻度做加减与比较。
+- 未估工期（`NULL`）按 0 参与计算，并在界面上明确提示未估；`0` 表示瞬时任务，不阻断关键路径传递。
+- 界面上的「天」「小时」只是换算：1 天 = 480 分钟（8 小时工作制）。这条换算只用于展示与输入，CPM 不引入工作日、周末或节假日的日历模型。
 - 计算结果不落库，每次读取时重算。依赖或工期一变缓存即失效，个人规模下重算成本可忽略。
 
 ## API 契约
@@ -173,6 +177,8 @@ ORDER BY t.column_id, t.orders;
 `GET /api/tree` 一次返回任务的 `{ id, parentId, title, columnId, archivedAt }`，默认不含归档任务，前端据此建树，展开时按需再取看板数据。`archivedAt` 非空表示该节点已归档，前端用它把归档节点画成另一种样式，而不是靠「节点是否出现在列表里」推断。树层级不深，个人规模下一次性返回比逐层懒加载简单。
 
 `POST /api/tasks` 入参 `{ parentId, columnId, title }`。后端在同一父任务下取 `MAX(orders) + 1000` 作为新 `orders`，事务内完成。
+
+`PATCH /api/tasks/:id` 的字段更新入参是 `title`、`description`、`durationMinutes`（分钟）。`durationMinutes` 传 `null` 表示改回未估工期，省略表示不动这一项，`0` 表示瞬时任务。
 
 `PATCH /api/tasks/:id` 移动入参 `{ columnId, position }`。后端重写目标列内所有任务的 `orders` 并返回该列任务列表。排序逻辑只存在于后端，前端不做本地重排。
 

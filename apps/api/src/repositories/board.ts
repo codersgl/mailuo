@@ -98,7 +98,7 @@ function selectBoardTasks(
 
   const rows = db
     .prepare(
-      `SELECT t.id, t.parent_id, t.column_id, t.title, t.description, t.duration, t.orders,
+      `SELECT t.id, t.parent_id, t.column_id, t.title, t.description, t.duration_minutes, t.orders,
               t.created_at, t.updated_at, t.archived_at,
               COUNT(c.id) AS child_total,
               COALESCE(SUM(CASE WHEN c.column_id = @doneColumnId THEN 1 ELSE 0 END), 0) AS child_done

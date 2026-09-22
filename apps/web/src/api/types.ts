@@ -10,8 +10,8 @@ export interface BoardTask {
   columnId: string;
   title: string;
   description: string;
-  /** 工期，单位天；0 表示未估工期。 */
-  duration: number;
+  /** 工期，单位分钟；null 表示未估工期，0 表示瞬时任务。 */
+  durationMinutes: number | null;
   orders: number;
   createdAt: string;
   updatedAt: string;
