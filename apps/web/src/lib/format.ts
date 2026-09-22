@@ -10,12 +10,16 @@ export const MINUTES_PER_HOUR = 60;
 export const MINUTES_PER_DAY = 480;
 
 /**
- * 工期上限：9999 天，个人规划不会超过它。
+ * 工期上限：9999 天。后端 `apps/api/src/domain/duration.ts` 的 `MAX_DURATION_MINUTES` 是同一个数，
+ * 那边负责拒绝（400），这边负责在输入时就给出提示。改一处要改两处。
  *
- * 不设上限时有两类输入会静默出错：20 位以上的数字让后端把值绑成 REAL，撞上
- * `typeof(duration_minutes) = 'integer'` 的 CHECK 变成 500；300 位以上让 `Number()` 得到
- * `Infinity`，而 `JSON.stringify(Infinity)` 是 `null`——界面预览写着「工期 Infinity 天」，
- * 存进去却成了「未估工期」。两者都在 `readDurationInput` 里挡掉。
+ * 前端这一侧挡住的是两类输入：
+ *
+ * - 极长的数字（300 位以上）让 `Number()` 得到 `Infinity`，而 `JSON.stringify(Infinity)` 是 `null`
+ *   ——界面预览写着「工期 Infinity 天」，请求发出去却成了「未估工期」，还会提示「已保存」。
+ *   这是静默改数据，后端拦不住（它收到的是合法的 null），只能在发请求前挡住。
+ * - 大到超过上限、但仍是安全整数的值（例如 `Number.MAX_SAFE_INTEGER`）：后端会返回 400，只是文案是
+ *   「工期最多 9999 天」，不如在输入框旁边直接显示「工期必须是 0 到 9999 天之间的整数」。
  */
 export const MAX_DURATION_MINUTES = 9999 * MINUTES_PER_DAY;
 
@@ -109,7 +113,8 @@ export function readDurationInput(parts: DurationParts): DurationInput {
 
   const [days, hours, minutes] = values as [number, number, number];
   const total = days * MINUTES_PER_DAY + hours * MINUTES_PER_HOUR + minutes;
-  // 上限见 MAX_DURATION_MINUTES 的注释：超限不是「很大」，而是后端会 500 或静默存成未估。
+  // 上限与 Infinity 都在这里挡住，理由见 MAX_DURATION_MINUTES 的注释：超限要走前端的提示，
+  // Infinity 则是必须在发请求前拦下（发出去会变成 null，静默存成未估）。
   if (!Number.isFinite(total) || total > MAX_DURATION_MINUTES) return { kind: 'invalid' };
   return { kind: 'minutes', value: total };
 }

@@ -368,7 +368,7 @@ SQL 列名保持 `parent_id`、`archived_at` 这类写法，与规范里的建�
 
 文件树的重取方式：树的数据获取仍在 Sidebar 内部（`useTree`），BoardPage 用一个自增的 `refreshToken` 通知它静默重取。没有顺手把 `useTree` 上移到 BoardPage，是因为那要把 Sidebar 的十几个用例全部改写成受控组件，而本步的写入口只有 BoardPage 一处，一个令牌足以表达「数据过期了」。若以后写入口分散到多个组件，应改成把树的数据获取上移，或引入统一的数据层。
 
-- 工期输入的**上界**是 9999 天（`MAX_DURATION_MINUTES`，`lib/format.ts`）。没有上界时两类输入会静默出错：20 位以上的数字让后端把值绑成 REAL，撞上 `typeof(duration_minutes) = 'integer'` 的 CHECK 变成 500；300 位以上让 `Number()` 得到 `Infinity`，而 `JSON.stringify(Infinity)` 是 `null`——界面预览写着「工期 Infinity 天」，存进去却成了「未估工期」。前端挡住之后，直接调接口传超大工期仍然会 500：后端入参 schema 只有 `.min(0)` 没有 `.max()`，而规范的数据模型也没写上限，留给后面决定（本步不动后端）。
+- 工期输入的**上界**是 9999 天（`MAX_DURATION_MINUTES`，`lib/format.ts`）。没有上界时两类输入会静默出错：20 位以上的数字让后端把值绑成 REAL，撞上 `typeof(duration_minutes) = 'integer'` 的 CHECK 变成 500；300 位以上让 `Number()` 得到 `Infinity`，而 `JSON.stringify(Infinity)` 是 `null`——界面预览写着「工期 Infinity 天」，存进去却成了「未估工期」。前端挡住之后，直接调接口传超大工期仍然会 500：后端入参 schema 只有 `.min(0)` 没有 `.max()`，而规范的数据模型也没写上限，留给后面决定（本步不动后端）。**（这段里的两句推断都被 D40 实测推翻：「值被绑成 REAL 撞 CHECK」这件事本身没错，但那条路走不到——不安全整数在 Zod 的 `.int()` 就被挡住，根本到不了数据库；所以「直接调接口传超大工期会 500」不成立。真正的缺口是「安全但无意义」的大整数会被存下来，上限已由 D40 落到接口层。）**
 
 原型文件（`.worktrees/feat-task-crud/prototypes/`）在定版并实现后按前端规则删除，不入版本库。
 
@@ -404,3 +404,26 @@ SQL 列名保持 `parent_id`、`archived_at` 这类写法，与规范里的建�
 - 判断一个条件类是否真的生效，不能只看 jsdom 用例：要么在真实浏览器里量 `getComputedStyle`，要么把两组类做成互斥后由测试断言「另一组类不在」。
 
 `docs/spec.md` 第 204 行关于卡片编辑入口的描述在本步之后也不再准确（编辑入口现在是「⋯」菜单，抽屉只改字段），待用户更新规范。
+
+## D40 工期上限落到接口层；规范批次顺序对齐（2026-09-22，用户拍板）
+
+**工期上限 9999 天（4799520 分钟），但它不是「修一个 500」——那句话本身是错的。**
+
+第 8 步的审阅报告里写「超出 64 位整数的工期会被 better-sqlite3 绑成 REAL，撞上 `typeof(duration_minutes) = 'integer'` 的 CHECK 变成 500」，D37 照抄了这句。这次真动手前先量了一遍（加上限之前的 main，`PATCH /api/tasks/:id`）：
+
+```
+{"durationMinutes": 100000000000000000000} -> 400 {"error":"durationMinutes: 工期必须是整数分钟"}
+{"durationMinutes": 9007199254740991}      -> 200，存下来了
+```
+
+Zod 的 `.int()` 拒绝的是**不安全整数**，而所有大于 2^53 的值都是不安全整数，于是它们根本到不了数据库，也就没机会被绑成 REAL。那条路不可达。审阅报告在「我没能确认的疑点」里自己写了没跑过 HTTP，是从 SQLite 探针推断的——我不该照抄进 D37。
+
+真正的缺口是第二行：`Number.MAX_SAFE_INTEGER`（约 1.7e10 年）这种「安全但毫无意义」的值会被正常接受并存下来。所以上限做的是**把接口的合法取值域收敛到与界面一致**，`.int()` 那一层继续管不安全整数。测试钉住这个分工：`MAX_DURATION_MINUTES + 1` 与 `Number.MAX_SAFE_INTEGER` → 「工期最多 9999 天」，`1e20` → 「工期必须是整数分钟」。
+
+做法：`apps/api/src/domain/duration.ts` 定义 `MINUTES_PER_DAY` 与 `MAX_DURATION_MINUTES`，`updateTaskSchema` 的 `durationMinutes` 加 `.max(...)`。前端 `apps/web/src/lib/format.ts` 的 `MAX_DURATION_MINUTES` 是同一个数，两处注释互相指向。
+
+**前端那侧挡的不是同一件事**：界面上的上界真正防的是「300 位数字 → `Number()` 得到 `Infinity` → `JSON.stringify` 变 `null` → 静默存成未估工期、还提示已保存」。后端拦不住这个（它收到的是合法的 `null`），所以两处都要有。
+
+**不改数据库 CHECK**：加时间上界要重建表（D31 那套机制），而接口是唯一写入口。规范的数据模型里写明了这层分工：数据库的 CHECK 只保证非负整数，上限由接口拒绝。
+
+**规范批次顺序对齐**：`任务描述编辑面板`（原第二批）与 `工期录入`（原第三批）在第 8 步就已实现，用户确认挪进第一批——第二批只剩「搜索」，第三批只剩「任务依赖（DAG）」与「关键路径计算与可视化」。规范文件平时只能由用户改（见 AGENTS.md），D38 的界面行为那条与这次两处，都是用户明确授权后由我落笔的。

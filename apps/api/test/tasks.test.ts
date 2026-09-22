@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { createApp } from '../src/app.js';
+import { MAX_DURATION_MINUTES } from '../src/domain/duration.js';
 import { createTestDb, insertTask } from './helpers.js';
 
 const app = () => createApp(createTestDb());
@@ -268,11 +269,28 @@ describe('PATCH /api/tasks/:id', () => {
       [-1, 'durationMinutes: 工期不能为负'],
       [1.5, 'durationMinutes: 工期必须是整数分钟'],
       ['3', 'durationMinutes: 工期必须是数字'],
+      // 超过上限、但仍是安全整数的值：由 .max() 拒绝。改造前这类值（例如 MAX_SAFE_INTEGER，
+      // 约等于 1.7e10 年）会被正常存下来，所以上限收敛的是取值域，不是防 500。
+      [MAX_DURATION_MINUTES + 1, 'durationMinutes: 工期最多 9999 天'],
+      [Number.MAX_SAFE_INTEGER, 'durationMinutes: 工期最多 9999 天'],
+      // 不安全整数在 .int() 这一步就被挡下（改造前也是 400，到不了数据库）。
+      [1e20, 'durationMinutes: 工期必须是整数分钟'],
     ] as const) {
       const response = await patchTask(api, id, { durationMinutes });
       expect(response.status).toBe(400);
       expect(await response.json()).toEqual({ error: expected });
     }
+  });
+
+  it('工期上界本身可以存下来', async () => {
+    const db = createTestDb();
+    const id = insertTask(db, { title: '任务', columnId: 'todo', orders: 1000 });
+    const api = createApp(db);
+
+    const response = await patchTask(api, id, { durationMinutes: MAX_DURATION_MINUTES });
+
+    expect(response.status).toBe(200);
+    expect((await response.json()).task.durationMinutes).toBe(MAX_DURATION_MINUTES);
   });
 
   it('工期可以改回未估（传 null），0 表示瞬时', async () => {
