@@ -2,13 +2,22 @@ import { describe, expect, it } from 'vitest';
 import { createApp } from '../src/app.js';
 import type { Db } from '../src/db/client.js';
 import { MAX_QUERY_LENGTH, SEARCH_LIMIT, toLikePattern } from '../src/domain/search.js';
-import { createTestDb, insertTask } from './helpers.js';
+import {
+  createTestDb,
+  insertTask,
+  readJson,
+  type ErrorBody,
+  type SearchBody,
+} from './helpers.js';
 
 /** 发一次搜索请求。用 URLSearchParams 拼查询串，免得中文与空格要手工编码。 */
-async function search(db: Db, params: Record<string, string>) {
+async function search(
+  db: Db,
+  params: Record<string, string>,
+): Promise<{ status: number; body: SearchBody }> {
   const query = new URLSearchParams(params).toString();
   const response = await createApp(db).request(`/api/search?${query}`);
-  return { status: response.status, body: await response.json() };
+  return { status: response.status, body: await readJson<SearchBody>(response) };
 }
 
 describe('搜索上限常量', () => {
@@ -105,7 +114,7 @@ describe('GET /api/search', () => {
     const { body } = await search(db, { q: '目标  乙' });
 
     expect(body.results).toHaveLength(1);
-    expect(body.results[0].snippet).toBe('甲 目标 乙');
+    expect(body.results[0]!.snippet).toBe('甲 目标 乙');
   });
 
   it('摘要不会切出半个代理对（emoji 只占一个码元宽度时也不能断在中间）', async () => {
@@ -120,7 +129,7 @@ describe('GET /api/search', () => {
 
     const { body } = await search(db, { q: 'key' });
 
-    const snippet = body.results[0].snippet as string;
+    const snippet = body.results[0]!.snippet as string;
     // 切出来的字符串里不能有孤立的高/低代理（界面上会渲染成 U+FFFD）。
     expect(/[\uD800-\uDBFF](?![\uDC00-\uDFFF])/.test(snippet)).toBe(false);
     expect(/(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/.test(snippet)).toBe(false);
@@ -142,7 +151,7 @@ describe('GET /api/search', () => {
     expect(status).toBe(200);
     expect(body.results).toHaveLength(3);
     const pathOf = (id: string) =>
-      body.results.find((result: { id: string }) => result.id === id).path;
+      body.results.find((result: { id: string }) => result.id === id)!.path;
     expect(pathOf(aId)).toEqual([]);
     expect(pathOf(bId)).toEqual([]);
     // 关键：坏数据没有把整个搜索带下去，正常的那条路径照样算出来。
@@ -164,7 +173,7 @@ describe('GET /api/search', () => {
     expect(status).toBe(200);
     expect(body.results).toHaveLength(2);
     const pathOf = (id: string) =>
-      body.results.find((result: { id: string }) => result.id === id).path;
+      body.results.find((result: { id: string }) => result.id === id)!.path;
     // 成环与父行缺失走的是同一条降级路径：批量读里一条脏数据不该让整页 500。
     expect(pathOf(bId)).toEqual([]);
     expect(pathOf(normalId)).toEqual([{ id: null, title: '根看板' }]);
@@ -177,7 +186,7 @@ describe('GET /api/search', () => {
     const response = await createApp(db).request('/api/search?q=%E7%99%BB%E5%BD%95&foo=1');
 
     expect(response.status).toBe(200);
-    expect((await response.json()).results).toHaveLength(1);
+    expect((await readJson<SearchBody>(response)).results).toHaveLength(1);
   });
 
   it('根层任务的路径只有「根看板」', async () => {
@@ -186,7 +195,7 @@ describe('GET /api/search', () => {
 
     const { body } = await search(db, { q: '重构' });
 
-    expect(body.results[0]).toMatchObject({ id, path: [{ id: null, title: '根看板' }] });
+    expect(body.results[0]!).toMatchObject({ id, path: [{ id: null, title: '根看板' }] });
   });
 
   it('带上工期：估过给分钟数，未估给 null', async () => {
@@ -222,7 +231,7 @@ describe('GET /api/search', () => {
 
     const { body } = await search(db, { q: '目标' });
 
-    expect(body.results[0].snippet).toBe(`…${'前'.repeat(24)}目标${'后'.repeat(24)}…`);
+    expect(body.results[0]!.snippet).toBe(`…${'前'.repeat(24)}目标${'后'.repeat(24)}…`);
   });
 
   it('描述里的换行与连续空白压成单个空格', async () => {
@@ -236,7 +245,7 @@ describe('GET /api/search', () => {
 
     const { body } = await search(db, { q: '目标' });
 
-    expect(body.results[0].snippet).toBe('第一行 目标 第三行');
+    expect(body.results[0]!.snippet).toBe('第一行 目标 第三行');
   });
 
   it('标题命中而描述不含关键词时不给摘要', async () => {
@@ -250,7 +259,7 @@ describe('GET /api/search', () => {
 
     const { body } = await search(db, { q: '登录' });
 
-    expect(body.results[0].snippet).toBeNull();
+    expect(body.results[0]!.snippet).toBeNull();
   });
 
   it('ASCII 大小写不敏感', async () => {
@@ -296,7 +305,7 @@ describe('GET /api/search', () => {
       [activeId, archivedId].sort(),
     );
     expect(
-      withArchived.body.results.find((result: { id: string }) => result.id === archivedId)
+      withArchived.body.results.find((result: { id: string }) => result.id === archivedId)!
         .archivedAt,
     ).toBe('2024-01-01T00:00:00.000Z');
   });
@@ -342,7 +351,7 @@ describe('GET /api/search', () => {
 
     const { body } = await search(db, { q: '登录' });
 
-    expect(body.results[0].id).toBe(newerId);
+    expect(body.results[0]!.id).toBe(newerId);
   });
 
   it('命中数超过上限时只返回前 SEARCH_LIMIT 条并标记 truncated', async () => {
@@ -384,23 +393,28 @@ describe('GET /api/search', () => {
     const id = insertTask(db, { title: '重构登录', columnId: 'todo', orders: 1000 });
 
     const trimmed = await search(db, { q: '  登录  ' });
-    const blank = await search(db, { q: '   ' });
+    // 这一条读的是 400 错误体，所以不走 search()（它把响应体钉成 SearchBody）。
+    const blankQuery = new URLSearchParams({ q: '   ' }).toString();
+    const blank = await createApp(db).request(`/api/search?${blankQuery}`);
 
     expect(trimmed.body.results.map((result: { id: string }) => result.id)).toEqual([id]);
     expect(blank.status).toBe(400);
+    expect((await readJson<ErrorBody>(blank)).error).toContain('搜索词');
   });
 
   it('缺少 q 返回 400', async () => {
     const response = await createApp(createTestDb()).request('/api/search');
 
     expect(response.status).toBe(400);
-    expect((await response.json()).error).toContain('搜索词');
+    expect((await readJson<ErrorBody>(response)).error).toContain('搜索词');
   });
 
   it('搜索词超长返回 400', async () => {
-    const { status, body } = await search(createTestDb(), { q: 'x'.repeat(MAX_QUERY_LENGTH + 1) });
+    // 这一条断言的是错误体，所以不用 search() 那个把响应体钉成 SearchBody 的封装。
+    const query = new URLSearchParams({ q: 'x'.repeat(MAX_QUERY_LENGTH + 1) }).toString();
+    const response = await createApp(createTestDb()).request(`/api/search?${query}`);
 
-    expect(status).toBe(400);
-    expect(body.error).toBe(`q: 搜索词最多 ${MAX_QUERY_LENGTH} 字`);
+    expect(response.status).toBe(400);
+    expect((await readJson<ErrorBody>(response)).error).toBe(`q: 搜索词最多 ${MAX_QUERY_LENGTH} 字`);
   });
 });

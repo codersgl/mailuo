@@ -10,7 +10,7 @@ import { createTestDb } from './helpers.js';
  */
 
 /** 用绝对 URL 造请求：Host 头由 URL 的主机名决定。 */
-function health(app: ReturnType<typeof createApp>, host: string): Promise<Response> {
+async function health(app: ReturnType<typeof createApp>, host: string): Promise<Response> {
   return app.request(`http://${host}/api/health`);
 }
 

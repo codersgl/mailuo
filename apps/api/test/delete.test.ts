@@ -1,7 +1,13 @@
 import { describe, expect, it } from 'vitest';
 import { createApp } from '../src/app.js';
 import type { Db } from '../src/db/client.js';
-import { createTestDb, insertTask } from './helpers.js';
+import {
+  createTestDb,
+  insertTask,
+  readJson,
+  type BoardBody,
+  type ColumnTasksBody,
+} from './helpers.js';
 
 type App = ReturnType<typeof createApp>;
 
@@ -53,7 +59,7 @@ describe('DELETE /api/tasks/:id', () => {
     const response = await remove(api, aId);
 
     expect(response.status).toBe(200);
-    const { columnTasks } = await response.json();
+    const { columnTasks } = await readJson<ColumnTasksBody>(response);
     expect(columnTasks.map((item: { title: string }) => item.title)).toEqual(['E']);
     // 一条 DELETE 连父子一起删：外键检查在语句结束时做，不构成中间态。
     expect(remainingIds(db)).toEqual([keepId]);
@@ -86,9 +92,9 @@ describe('DELETE /api/tasks/:id', () => {
 
     await remove(api, bId);
 
-    const board = await (await api.request('/api/board')).json();
+    const board = await readJson<BoardBody>(await api.request('/api/board'));
     expect(
-      board.columns[0].tasks.map((task: { title: string; orders: number }) => [task.title, task.orders]),
+      board.columns[0]!.tasks.map((task: { title: string; orders: number }) => [task.title, task.orders]),
     ).toEqual([
       ['A', 1000],
       ['C', 3000],
@@ -107,7 +113,7 @@ describe('DELETE /api/tasks/:id', () => {
     const response = await remove(api, aId);
 
     expect(response.status).toBe(200);
-    expect((await response.json()).columnTasks).toEqual([]);
+    expect((await readJson<ColumnTasksBody>(response)).columnTasks).toEqual([]);
     expect(remainingIds(db)).toEqual([]);
   });
 
@@ -119,8 +125,8 @@ describe('DELETE /api/tasks/:id', () => {
 
     await remove(api, bId);
 
-    const board = await (await api.request('/api/board')).json();
-    expect(board.columns[0].tasks).toMatchObject([{ id: aId, childTotal: 0 }]);
+    const board = await readJson<BoardBody>(await api.request('/api/board'));
+    expect(board.columns[0]!.tasks).toMatchObject([{ id: aId, childTotal: 0 }]);
     expect(await (await api.request('/api/tree')).json()).toEqual({
       tasks: [
         {

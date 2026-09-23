@@ -1,7 +1,14 @@
 import { describe, expect, it } from 'vitest';
 import { createApp } from '../src/app.js';
 import { MAX_DURATION_MINUTES } from '../src/domain/duration.js';
-import { createTestDb, insertTask } from './helpers.js';
+import {
+  createTestDb,
+  insertTask,
+  readJson,
+  type BoardBody,
+  type TaskBody,
+  type TaskMutationBody,
+} from './helpers.js';
 
 const app = () => createApp(createTestDb());
 
@@ -31,7 +38,7 @@ describe('POST /api/tasks', () => {
     const response = await postTask(api, { columnId: 'todo', title: '写文档' });
 
     expect(response.status).toBe(201);
-    const task = await response.json();
+    const task = await readJson<TaskBody>(response);
     expect(task).toMatchObject({
       parentId: null,
       columnId: 'todo',
@@ -52,7 +59,7 @@ describe('POST /api/tasks', () => {
     const response = await postTask(api, { parentId: null, columnId: 'todo', title: '根任务' });
 
     expect(response.status).toBe(201);
-    expect((await response.json()).parentId).toBeNull();
+    expect((await readJson<TaskBody>(response)).parentId).toBeNull();
   });
 
   it('同列追加取该列 MAX(orders) + 1000，不同列各自独立', async () => {
@@ -62,9 +69,9 @@ describe('POST /api/tasks', () => {
 
     const third = await postTask(api, { columnId: 'doing', title: 'C' });
 
-    expect((await third.json()).orders).toBe(1000);
-    const board = await (await api.request('/api/board')).json();
-    expect(board.columns[0].tasks.map((task: { title: string; orders: number }) => [task.title, task.orders])).toEqual([
+    expect((await readJson<TaskBody>(third)).orders).toBe(1000);
+    const board = await readJson<BoardBody>(await api.request('/api/board'));
+    expect(board.columns[0]!.tasks.map((task: { title: string; orders: number }) => [task.title, task.orders])).toEqual([
       ['A', 1000],
       ['B', 2000],
     ]);
@@ -72,17 +79,17 @@ describe('POST /api/tasks', () => {
 
   it('建子任务后出现在父看板，并计入父卡片进度', async () => {
     const api = app();
-    const parent = await (await postTask(api, { columnId: 'todo', title: '父任务' })).json();
-    const child = await (
-      await postTask(api, { parentId: parent.id, columnId: 'done', title: '子任务' })
-    ).json();
+    const parent = await readJson<TaskBody>(await postTask(api, { columnId: 'todo', title: '父任务' }));
+    const child = await readJson<TaskBody>(
+      await postTask(api, { parentId: parent.id, columnId: 'done', title: '子任务' }),
+    );
 
     expect(child.parentId).toBe(parent.id);
-    const board = await (await api.request(`/api/board/${parent.id}`)).json();
+    const board = await readJson<BoardBody>(await api.request(`/api/board/${parent.id}`));
     expect(board.parentId).toBe(parent.id);
-    expect(board.columns[2].tasks.map((task: { id: string }) => task.id)).toEqual([child.id]);
-    const rootBoard = await (await api.request('/api/board')).json();
-    expect(rootBoard.columns[0].tasks[0]).toMatchObject({ childTotal: 1, childDone: 1 });
+    expect(board.columns[2]!.tasks.map((task: { id: string }) => task.id)).toEqual([child.id]);
+    const rootBoard = await readJson<BoardBody>(await api.request('/api/board'));
+    expect(rootBoard.columns[0]!.tasks[0]!).toMatchObject({ childTotal: 1, childDone: 1 });
   });
 
   it('orders 只在自己父任务的目标列内计算', async () => {
@@ -93,10 +100,10 @@ describe('POST /api/tasks', () => {
     insertTask(db, { title: 'A 的子任务', columnId: 'todo', orders: 5000, parentId: parentA });
     const api = createApp(db);
 
-    const childOfB = await (
-      await postTask(api, { parentId: parentB, columnId: 'todo', title: 'B 的子任务' })
-    ).json();
-    const newRoot = await (await postTask(api, { columnId: 'todo', title: '新根任务' })).json();
+    const childOfB = await readJson<TaskBody>(
+      await postTask(api, { parentId: parentB, columnId: 'todo', title: 'B 的子任务' }),
+    );
+    const newRoot = await readJson<TaskBody>(await postTask(api, { columnId: 'todo', title: '新根任务' }));
 
     expect(childOfB.orders).toBe(1000);
     // 根层当前最大是 B 的 2000，而不是 A 的子任务的 5000
@@ -109,13 +116,13 @@ describe('POST /api/tasks', () => {
 
     const response = await postTask(createApp(db), { columnId: 'todo', title: '新任务' });
 
-    expect((await response.json()).orders).toBe(10000);
+    expect((await readJson<TaskBody>(response)).orders).toBe(10000);
   });
 
   it('标题两端空格被去掉', async () => {
     const response = await postTask(app(), { columnId: 'todo', title: '  写文档  ' });
 
-    expect((await response.json()).title).toBe('写文档');
+    expect((await readJson<TaskBody>(response)).title).toBe('写文档');
   });
 
   it('标题为空或全是空格返回 400', async () => {
@@ -213,7 +220,7 @@ describe('PATCH /api/tasks/:id', () => {
 
     expect(response.status).toBe(200);
     // 写接口统一返回 { task, columnTasks }，columnTasks 是该任务所在列的完整有序列表
-    const { task, columnTasks } = await response.json();
+    const { task, columnTasks } = await readJson<TaskMutationBody>(response);
     expect(task).toMatchObject({
       id,
       title: '新标题',
@@ -234,7 +241,7 @@ describe('PATCH /api/tasks/:id', () => {
     const response = await patchTask(createApp(db), id, { title: '任务' });
 
     expect(response.status).toBe(200);
-    const { task } = await response.json();
+    const { task } = await readJson<TaskMutationBody>(response);
     expect(task.title).toBe('任务');
     expect(task.updatedAt > task.createdAt).toBe(true);
   });
@@ -247,7 +254,7 @@ describe('PATCH /api/tasks/:id', () => {
     const response = await patchTask(createApp(db), id, { description: '' });
 
     expect(response.status).toBe(200);
-    expect((await response.json()).task.description).toBe('');
+    expect((await readJson<TaskMutationBody>(response)).task.description).toBe('');
   });
 
   it('空对象返回 400', async () => {
@@ -290,7 +297,7 @@ describe('PATCH /api/tasks/:id', () => {
     const response = await patchTask(api, id, { durationMinutes: MAX_DURATION_MINUTES });
 
     expect(response.status).toBe(200);
-    expect((await response.json()).task.durationMinutes).toBe(MAX_DURATION_MINUTES);
+    expect((await readJson<TaskMutationBody>(response)).task.durationMinutes).toBe(MAX_DURATION_MINUTES);
   });
 
   it('工期可以改回未估（传 null），0 表示瞬时', async () => {
@@ -300,11 +307,11 @@ describe('PATCH /api/tasks/:id', () => {
 
     const cleared = await patchTask(api, id, { durationMinutes: null });
     expect(cleared.status).toBe(200);
-    expect((await cleared.json()).task.durationMinutes).toBeNull();
+    expect((await readJson<TaskMutationBody>(cleared)).task.durationMinutes).toBeNull();
 
     const instant = await patchTask(api, id, { durationMinutes: 0 });
     expect(instant.status).toBe(200);
-    expect((await instant.json()).task.durationMinutes).toBe(0);
+    expect((await readJson<TaskMutationBody>(instant)).task.durationMinutes).toBe(0);
   });
 
   it('省略 durationMinutes 不动已有工期，只有显式传 null 才清空', async () => {
@@ -313,10 +320,10 @@ describe('PATCH /api/tasks/:id', () => {
     const api = createApp(db);
 
     const kept = await patchTask(api, id, { title: '只改标题' });
-    expect((await kept.json()).task.durationMinutes).toBe(2400);
+    expect((await readJson<TaskMutationBody>(kept)).task.durationMinutes).toBe(2400);
 
     const cleared = await patchTask(api, id, { durationMinutes: null });
-    expect((await cleared.json()).task.durationMinutes).toBeNull();
+    expect((await readJson<TaskMutationBody>(cleared)).task.durationMinutes).toBeNull();
   });
 
   it('任务不存在返回 404', async () => {

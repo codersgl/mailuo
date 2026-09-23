@@ -1,7 +1,14 @@
 import { describe, expect, it } from 'vitest';
 import { createApp } from '../src/app.js';
 import type { Db } from '../src/db/client.js';
-import { createTestDb, insertTask } from './helpers.js';
+import {
+  createTestDb,
+  insertTask,
+  readJson,
+  type BoardBody,
+  type TaskMutationBody,
+  type TreeBody,
+} from './helpers.js';
 
 type App = ReturnType<typeof createApp>;
 
@@ -33,14 +40,14 @@ function updatedAt(db: Db, id: string): string {
 
 async function columnTitles(app: App, parentId: string | null, columnId: string): Promise<string[]> {
   const path = parentId === null ? '/api/board' : `/api/board/${parentId}`;
-  const board = await (await app.request(path)).json();
-  const column = board.columns.find((item: { id: string }) => item.id === columnId);
+  const board = await readJson<BoardBody>(await app.request(path));
+  const column = board.columns.find((item: { id: string }) => item.id === columnId)!;
   return column.tasks.map((task: { title: string }) => task.title);
 }
 
 async function treeIds(app: App, includeArchived = false): Promise<string[]> {
   const path = includeArchived ? '/api/tree?includeArchived=1' : '/api/tree';
-  const body = await (await app.request(path)).json();
+  const body = await readJson<TreeBody>(await app.request(path));
   return body.tasks.map((task: { id: string }) => task.id);
 }
 
@@ -56,7 +63,7 @@ describe('PATCH /api/tasks/:id/archive', () => {
     const response = await archive(api, aId, true);
 
     expect(response.status).toBe(200);
-    const { task, columnTasks } = await response.json();
+    const { task, columnTasks } = await readJson<TaskMutationBody>(response);
     expect(task.archivedAt).not.toBeNull();
     // 归档后任务不在任何列里，所以返回的整列里没有它，同列的 D 还在原位。
     expect(columnTasks.map((item: { title: string }) => item.title)).toEqual(['D']);
@@ -78,8 +85,8 @@ describe('PATCH /api/tasks/:id/archive', () => {
 
     await archive(api, aId, true);
 
-    const board = await (await api.request('/api/board?includeArchived=1')).json();
-    expect(board.columns[0].tasks.map((t: { title: string }) => t.title)).toEqual(['A']);
+    const board = await readJson<BoardBody>(await api.request('/api/board?includeArchived=1'));
+    expect(board.columns[0]!.tasks.map((t: { title: string }) => t.title)).toEqual(['A']);
     expect(await treeIds(api, true)).toEqual([aId, bId]);
   });
 
@@ -96,15 +103,15 @@ describe('PATCH /api/tasks/:id/archive', () => {
     const yId = insertTask(db, { title: 'Y', columnId: 'todo', orders: 2000, parentId: pId });
     const api = createApp(db);
 
-    const visible = await (await api.request(`/api/board/${pId}`)).json();
-    expect(visible.columns[0].tasks.map((t: { id: string }) => t.id)).toEqual([yId]);
+    const visible = await readJson<BoardBody>(await api.request(`/api/board/${pId}`));
+    expect(visible.columns[0]!.tasks.map((t: { id: string }) => t.id)).toEqual([yId]);
 
     for (const value of ['1', 'true']) {
-      const full = await (await api.request(`/api/board/${pId}?includeArchived=${value}`)).json();
-      expect(full.columns[0].tasks.map((t: { id: string }) => t.id)).toEqual([xId, yId]);
+      const full = await readJson<BoardBody>(await api.request(`/api/board/${pId}?includeArchived=${value}`));
+      expect(full.columns[0]!.tasks.map((t: { id: string }) => t.id)).toEqual([xId, yId]);
     }
 
-    const tree = await (await api.request('/api/tree?includeArchived=true')).json();
+    const tree = await readJson<TreeBody>(await api.request('/api/tree?includeArchived=true'));
     expect(tree.tasks.map((t: { id: string }) => t.id).sort()).toEqual([pId, xId, yId].sort());
   });
 
@@ -118,12 +125,12 @@ describe('PATCH /api/tasks/:id/archive', () => {
     const response = await patchJson(api, `/api/tasks/${yId}?includeArchived=1`, { title: 'Y2' });
 
     expect(response.status).toBe(200);
-    const { columnTasks } = await response.json();
+    const { columnTasks } = await readJson<TaskMutationBody>(response);
     expect(columnTasks.map((item: { title: string }) => item.title)).toEqual(['X', 'Y2']);
 
     // 不带参数时保持原样：写响应的整列只含可见任务。
     const plain = await patchJson(api, `/api/tasks/${yId}`, { title: 'Y3' });
-    expect((await plain.json()).columnTasks.map((item: { title: string }) => item.title)).toEqual([
+    expect((await readJson<TaskMutationBody>(plain)).columnTasks.map((item: { title: string }) => item.title)).toEqual([
       'Y3',
     ]);
   });
@@ -135,15 +142,15 @@ describe('PATCH /api/tasks/:id/archive', () => {
     insertTask(db, { title: 'todo', columnId: 'todo', orders: 1000, parentId: pId });
     const api = createApp(db);
 
-    const before = await (await api.request('/api/board')).json();
-    expect(before.columns[0].tasks[0]).toMatchObject({ childTotal: 2, childDone: 1 });
+    const before = await readJson<BoardBody>(await api.request('/api/board'));
+    expect(before.columns[0]!.tasks[0]).toMatchObject({ childTotal: 2, childDone: 1 });
 
     await archive(api, doneChild, true);
 
-    const after = await (await api.request('/api/board')).json();
-    expect(after.columns[0].tasks[0]).toMatchObject({ childTotal: 1, childDone: 0 });
-    const withArchived = await (await api.request('/api/board?includeArchived=1')).json();
-    expect(withArchived.columns[0].tasks[0]).toMatchObject({ childTotal: 1, childDone: 0 });
+    const after = await readJson<BoardBody>(await api.request('/api/board'));
+    expect(after.columns[0]!.tasks[0]).toMatchObject({ childTotal: 1, childDone: 0 });
+    const withArchived = await readJson<BoardBody>(await api.request('/api/board?includeArchived=1'));
+    expect(withArchived.columns[0]!.tasks[0]).toMatchObject({ childTotal: 1, childDone: 0 });
   });
 
   it('取消归档恢复整棵子树，任务回到原列原位置', async () => {
@@ -158,7 +165,7 @@ describe('PATCH /api/tasks/:id/archive', () => {
     const response = await archive(api, aId, false);
 
     expect(response.status).toBe(200);
-    const { task, columnTasks } = await response.json();
+    const { task, columnTasks } = await readJson<TaskMutationBody>(response);
     expect(task.archivedAt).toBeNull();
     // orders 不因归档而变化，所以回到原位而不是列末。
     expect(task.orders).toBe(1000);
@@ -237,7 +244,7 @@ describe('PATCH /api/tasks/:id/archive', () => {
     await archive(api, aId, false);
     const accepted = await patchJson(api, `/api/tasks/${aId}`, { title: '新标题' });
     expect(accepted.status).toBe(200);
-    expect((await accepted.json()).task.title).toBe('新标题');
+    expect((await readJson<TaskMutationBody>(accepted)).task.title).toBe('新标题');
   });
 
   it('任务不存在返回 404', async () => {
@@ -298,5 +305,35 @@ describe('PATCH /api/tasks/:id/archive', () => {
     expect((await archive(api, bId, false)).status).toBe(200);
     expect(archivedAt(db, aId)).toBeNull();
     expect(archivedAt(db, bId)).toBeNull();
+  });
+});
+
+describe('includeArchived 的取值口径', () => {
+  it('只有 1 与 true 算打开，0 / false / yes / TRUE / 空 / 缺省都算关闭', async () => {
+    // 审计的变异检验实测：把 query.ts 的判定改成「带参数就算开」，66 条相关用例全绿
+    // （见审计报告 E1）。表现是用户关掉「显示已归档」后归档卡片却还在，所以取值表要全。
+    const db = createTestDb();
+    const visibleId = insertTask(db, { title: '正常任务', columnId: 'todo', orders: 1000 });
+    const archivedId = insertTask(db, {
+      title: '归档任务',
+      columnId: 'todo',
+      orders: 2000,
+      archived: true,
+    });
+    const api = createApp(db);
+
+    const visibleIds = async (query: string) => {
+      const board = await readJson<BoardBody>(await api.request(`/api/board${query}`));
+      return board.columns[0]!.tasks.map((task: { id: string }) => task.id);
+    };
+
+    for (const value of ['1', 'true']) {
+      expect(await visibleIds(`?includeArchived=${value}`)).toEqual([visibleId, archivedId]);
+    }
+    for (const value of ['0', 'false', 'yes', 'TRUE', '']) {
+      expect(await visibleIds(`?includeArchived=${value}`)).toEqual([visibleId]);
+    }
+    // 不带参数：缺省关闭。
+    expect(await visibleIds('')).toEqual([visibleId]);
   });
 });

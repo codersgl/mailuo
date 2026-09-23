@@ -2,7 +2,13 @@ import { describe, expect, it, vi } from 'vitest';
 import { createApp } from '../src/app.js';
 import type { Db } from '../src/db/client.js';
 import { DependencyCycleError, computeSchedule } from '../src/domain/cpm.js';
-import { createTestDb, insertTask } from './helpers.js';
+import {
+  createTestDb,
+  insertTask,
+  readJson,
+  type BoardBody,
+  type CpmBody,
+} from './helpers.js';
 
 type App = ReturnType<typeof createApp>;
 
@@ -14,7 +20,7 @@ function addDep(db: Db, predecessorId: string, successorId: string) {
 }
 
 /** 按 id 找节点，断言时不用关心节点的排列次序。 */
-function node(body: { nodes: Array<{ id: string }> }, id: string) {
+function node(body: CpmBody, id: string) {
   const found = body.nodes.find((item) => item.id === id);
   if (!found) throw new Error(`结果里没有节点: ${id}`);
   return found;
@@ -233,7 +239,7 @@ describe('GET /api/board/cpm', () => {
     const response = await api.request('/api/board/cpm');
 
     expect(response.status).toBe(200);
-    const body = await response.json();
+    const body = await readJson<CpmBody>(response);
     expect(body.parentId).toBeNull();
     expect(body.projectDuration).toBe(210);
     // 节点顺序跟着看板走：列序 + 列内 orders。
@@ -266,7 +272,7 @@ describe('GET /api/board/cpm', () => {
     addDep(db, bId, cId);
     const api = createApp(db);
 
-    const body = await (await api.request('/api/board/cpm')).json();
+    const body = await readJson<CpmBody>(await api.request('/api/board/cpm'));
 
     expect(body.projectDuration).toBe(110);
     expect(node(body, bId)).toMatchObject({ slack: 70, critical: false });
@@ -283,7 +289,7 @@ describe('GET /api/board/cpm', () => {
     addDep(db, aId, bId);
     const api = createApp(db);
 
-    const body = await (await api.request('/api/board/cpm')).json();
+    const body = await readJson<CpmBody>(await api.request('/api/board/cpm'));
 
     expect(body.projectDuration).toBe(60);
     expect(node(body, aId)).toMatchObject({ durationMinutes: null, earliestFinish: 0 });
@@ -297,11 +303,11 @@ describe('GET /api/board/cpm', () => {
     addDep(db, xId, yId);
     const api = createApp(db);
 
-    const root = await (await api.request('/api/board/cpm')).json();
+    const root = await readJson<CpmBody>(await api.request('/api/board/cpm'));
     expect(root.nodes.map((item: { id: string }) => item.id)).toEqual([parentId]);
     expect(root.edges).toEqual([]);
 
-    const layer = await (await api.request(`/api/board/${parentId}/cpm`)).json();
+    const layer = await readJson<CpmBody>(await api.request(`/api/board/${parentId}/cpm`));
     expect(layer.parentId).toBe(parentId);
     expect(layer.projectDuration).toBe(30);
     expect(layer.nodes.map((item: { id: string }) => item.id)).toEqual([xId, yId]);
@@ -321,12 +327,12 @@ describe('GET /api/board/cpm', () => {
     addDep(db, aId, bId);
     const api = createApp(db);
 
-    const visible = await (await api.request('/api/board/cpm')).json();
+    const visible = await readJson<CpmBody>(await api.request('/api/board/cpm'));
     expect(visible.nodes.map((item: { id: string }) => item.id)).toEqual([aId]);
     expect(visible.edges).toEqual([]);
     expect(visible.projectDuration).toBe(10);
 
-    const full = await (await api.request('/api/board/cpm?includeArchived=1')).json();
+    const full = await readJson<CpmBody>(await api.request('/api/board/cpm?includeArchived=1'));
     expect(full.nodes.map((item: { id: string }) => item.id)).toEqual([aId, bId]);
     expect(full.edges).toEqual([{ predecessorId: aId, successorId: bId, critical: true }]);
     expect(node(full, bId).archivedAt).not.toBeNull();
@@ -341,7 +347,7 @@ describe('GET /api/board/cpm', () => {
     addDep(db, childId, rootId);
     const api = createApp(db);
 
-    const root = await (await api.request('/api/board/cpm')).json();
+    const root = await readJson<CpmBody>(await api.request('/api/board/cpm'));
 
     expect(root.nodes.map((item: { id: string }) => item.id)).toEqual([rootId, parentId]);
     expect(root.edges).toEqual([]);
@@ -353,14 +359,14 @@ describe('GET /api/board/cpm', () => {
     const api = createApp(db);
 
     // 根层只有一个没有依赖的任务：图里只有它自己，没有边。
-    const root = await (await api.request('/api/board/cpm')).json();
+    const root = await readJson<CpmBody>(await api.request('/api/board/cpm'));
     expect(root.parentId).toBeNull();
     expect(root.nodes.map((item: { id: string }) => item.id)).toEqual([parentId]);
     expect(root.edges).toEqual([]);
     expect(root.projectDuration).toBe(0);
 
     // 它自己的看板里一个任务都没有。
-    const layer = await (await api.request(`/api/board/${parentId}/cpm`)).json();
+    const layer = await readJson<CpmBody>(await api.request(`/api/board/${parentId}/cpm`));
     expect(layer).toEqual({ parentId, projectDuration: 0, nodes: [], edges: [] });
   });
 
@@ -395,14 +401,14 @@ describe('GET /api/board/cpm', () => {
     const taskId = insertTask(db, { title: 'A', columnId: 'todo', orders: 1000 });
     const api = createApp(db);
 
-    const cpm = await (await api.request('/api/board/cpm')).json();
+    const cpm = await readJson<CpmBody>(await api.request('/api/board/cpm'));
     expect(cpm).toHaveProperty('nodes');
     expect(cpm).not.toHaveProperty('columns');
 
     // 根看板照常，任务看板也照常（taskId 没有子任务，所以是三列空）。
-    const root = await (await api.request('/api/board')).json();
+    const root = await readJson<BoardBody>(await api.request('/api/board'));
     expect(root.columns.flatMap((column: { tasks: unknown[] }) => column.tasks)).toHaveLength(1);
-    const childBoard = await (await api.request(`/api/board/${taskId}`)).json();
+    const childBoard = await readJson<BoardBody>(await api.request(`/api/board/${taskId}`));
     expect(childBoard.parentId).toBe(taskId);
     expect(childBoard.columns.every((column: { tasks: unknown[] }) => column.tasks.length === 0)).toBe(
       true,

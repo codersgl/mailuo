@@ -1337,3 +1337,54 @@ D10 那三处「拿仓储返回值再判一次 404」同时收敛成 `requireTas
 - `docs/spec.md` 未改：D11 不需要（规范只约束形状与状态码）。
 - `requireTask` 的 500 分支零覆盖——按设计不可达，没有为它造一次「校验后任务消失」的假命中。
 - 报告第 5 步里没有的条目一律没碰；第 4、6、8 步留给后续工作树。
+
+
+## D60 第 23 步：api 测试纳入类型检查，并补上四组零覆盖用例（2026-09-23）
+
+对应审计报告 F 节第 6 步（D3 E1 E2 E3 E7；E8/E4 的取舍见下）。这一步的口径是「让日常命令重新可信」：`pnpm typecheck` 是改完代码第一个会跑的命令，而它此前**完全不看 `apps/api/test`**——`apps/api/tsconfig.json` 的 include 只有 `src/**/*.ts`，15 个测试文件不在类型检查范围内。审计给的例子是「`TaskRecord` 字段改名、`insertTask` 选项改名只能靠运行期才发现」，这是审计里唯一一条「日常命令给不出正确信号」的问题（D3，高）。
+
+**为什么要在编译期管测试，而不是继续「运行时再说」**：`response.json()` 的类型是 `unknown`，测试直接访问字段本来就得靠断言绕过；一旦绕过方式写成 `as any`，接口改字段后测试只是继续跑、继续绿，直到某条 `toMatchObject` 在运行期红——而 `toMatchObject` 只覆盖它列出的字段，删掉或改名一个没被它列出的字段就是彻底静默。类型检查让 15 个测试文件与 `src` 共享同一份形状定义。
+
+**改了什么**：
+
+- 新增 `apps/api/tsconfig.test.json`：extends 主 tsconfig，`rootDir: "."` + `noEmit: true`，include 收 `src/**/*.ts` 与 `test/**/*.ts`。不直接改主 tsconfig，因为它的 `rootDir: "src"` 与 `outDir` 会和 `test/**` 打架（审计已写明），而 `build` 仍然只编译 `src`。
+- `apps/api/package.json` 的 `typecheck` 改成两个 project 都跑。
+- 让测试过类型检查：`test/helpers.ts` 新增 `readJson<T>` 与一组响应体类型，10 个测试文件里约 90 处 `await response.json()` 改成 `await readJson<X>(response)`，并在 `noUncheckedIndexedAccess` 要求的地方补 `!`。**既有断言一条没动**，只换读取方式。
+- 形状的来源分两档：`BoardBody`/`SearchBody`/`CpmBody`/`TaskBody` 直接别名到 `src` 的 `Board`/`SearchOutcome`/`LayerSchedule`/`TaskRecord`，后端给字段改名时**直接访问该字段**的调用点在 `tsc` 阶段红（`toMatchObject` 那种整体比对仍是运行期才红，见下面的审阅）；只有路由内联拼出来的包装在 helpers 里手写（`TaskMutationBody` = `{ task, columnTasks }`、`TreeBody` = `{ tasks }`、`ColumnTasksBody` = `{ columnTasks }`、`DepsBody` = `{ task, predecessorIds }`、`ErrorBody` = `{ error }`），它们与规范契约表逐条对应。
+- 新增 `test/duration.test.ts`（E2）：钉 `MINUTES_PER_DAY === 480`、`MAX_DURATION_MINUTES === 9999 * 480 === 4_799_520`。此前把 480 改成 60，api 264 条用例全绿。
+- `archive.test.ts` 末尾新增「includeArchived 取值口径」（E1）：`1`/`true` 开，`0`/`false`/`yes`/`TRUE`/空串/缺省一律关。此前把判定改成「带参数就算开」，66 条相关用例全绿。
+- `migrate.test.ts` 新增「在事务里执行直接报错」的守卫用例（E3）。
+- E7 走「修正注释」而不是「补一条裸连接断言」：原文写「better-sqlite3 默认关闭外键」，本机实测 better-sqlite3 13 的默认值就是 1，注释与事实相反。补一条「裸连接外键是开的」用例在任何实现下都会绿（删掉 `foreign_keys = ON` 那行也绿），没有意义；真正能区分实现的是已有的「标记了 no-foreign-keys 的迁移」用例——它断言重建表后开关被恢复成 1。于是 `client.ts` 的注释改成「不依赖驱动默认值，把约定钉在代码里，恢复职责在 migrate.ts」，并把那条外键用例改名为「迁移之后外键约束生效（真正兜底的是迁移 runner 的恢复逻辑）」，把「守得住什么、守不住什么」写进注释。
+
+**验证**：
+
+- `pnpm typecheck` 全过（api 两个 project + web 两个）；`pnpm --filter @mailuo/api test` 268 项全过（基线 264 + 新增 4：duration 2、E1 1、E3 1）。
+- 变异检验（我自己跑的，改完立刻还原）：
+  - D3 的价值：把 `BoardTask.childTotal` 临时改名 → `tsc -p tsconfig.json`（src）退 0，`tsc -p tsconfig.test.json` 报 `TS2551 Property 'childTotal' does not exist on type 'BoardTask'`，同时 6 条用例运行期红。改这一步之前，同一处改名在 typecheck 里完全看不见。
+  - E1：`wantsArchived` 改成 `return value !== undefined;` → 新增用例红。
+  - E2：`MINUTES_PER_DAY` 480 改成 60 → duration 的两条都红。
+  - E3：守卫条件改成 `if (false)` → 新增用例红。
+
+**审阅（子代理，只读；变异检验在副本 `.tmp-review/` 上做，已还原并删除）**：结论**可合并，无阻断项**。它自己做了 7 处变异：
+
+- D3：`BoardTask.childTotal` 改名 → `tsc -p tsconfig.json` 退 0、`tsc -p tsconfig.test.json` 报 `TS2551`；把唯一命中那处 `readJson<BoardBody>` 还原成 `as any` 后，同一改名在 test project 里也变绿——所以编译期保护只覆盖**直接访问该字段**的调用点，`toMatchObject({ childTotal })` 那几处仍是运行期才红。
+- E1/E2/E3 三处变异各自只让新增用例红。E7：删 `client.ts` 的 `foreign_keys = ON` 全量仍绿（印证那行本身无法被测试区分），删 `migrate.ts` 的 finally 恢复则 3 条红、含被改名的那条（印证 E7 新注释指向恢复逻辑）。
+- 机械核对：16 个既有文件的 `expect(` 数与改动前逐一相等，只有 archive/migrate 因新用例增加、duration 是新文件——「既有断言一条没动」成立。
+
+它指出的四条低问题已全部改掉：
+
+1. `typecheck` 脚本给 test project 也传 `--noEmit`，与 web 对齐：万一 `tsconfig.test.json` 的 `noEmit` 被误删，`tsc -p tsconfig.test.json` 会按继承的 `outDir: "dist"` 把测试 JS 吐进 `dist`。
+2. 两处注释说大了：`readJson` 原写「后端给字段改名时这些用例会在 tsc 阶段一起变红」，已改成「只覆盖直接属性访问，`toMatchObject` 仍是运行期」；`TaskMutationBody` 原写「其余写接口」，实际只对应三条 PATCH（DELETE 与 PUT deps 另有类型），已改准。
+3. `search()` 这个封装把响应体一律钉成 `SearchBody`，而「只有空白算空」那条读的是 400 错误体（只读了 `status`，没有假断言）；那条已改成内联请求 + `readJson<ErrorBody>`，顺带补了错误文案断言。
+4. 清掉 `.tmp-tsc/` 临时目录。
+
+它未能验证的：只跑了 api 侧（web 的 E8/E4 本就留给 web 步骤）；`better-sqlite3` 默认 `foreign_keys = 1` 只在本机这个版本上确认。另一条它注意到的现象是审阅期间 `docs/decisions.md` 在被写入（就是本条目），它据此核对过被审的 api 文件 blob 全程未变。
+
+**没做的**：
+
+- 审计第 6 步里的 E8（`App.test.tsx` 的假后端把 `includeArchived` 解析得比真实现宽）与 E4（App 用例显式调大超时）都在 web 侧，而 `apps/web/test/App.test.tsx` 正是同时在飞的前端健壮性分支在改的文件——留给那一步或后续 web 步骤，本步只动 `apps/api`。
+- E5 的三处同义反复断言在审计第 8 步，不在本步范围。
+- 不做响应形状的运行期校验（那是审计 C2，前端的事）。因此 `readJson` 里保留唯一一处 `as T`，并在注释里写明：测试无法在运行期验形状，形状由 `src` 类型在编译期管。
+- 没有引入 ESLint 或 CI（审计 D7）。
+
+**与其它步骤的关系 / 编号说明**：第 21 步（前端健壮性）与第 22 步（后端审计修复）与本步同时在飞，按项目步序它们分别占 D58、D59，本步取 D60。三条分支都会在 `docs/decisions.md` 末尾追加，合并时按 D58 → D59 → D60 的顺序排即可。本分支从 `main`（38792bd）切出，没有依赖其它在飞分支的改动，也没有碰它们各自在改的文件（前端分支的 `apps/web/*`、后端分支的 `apps/api/src/repositories/*` 与 `apps/api/src/routes/tasks.ts`）。

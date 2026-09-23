@@ -1,7 +1,16 @@
 import { describe, expect, it } from 'vitest';
 import { createApp } from '../src/app.js';
 import type { Db } from '../src/db/client.js';
-import { createTestDb, insertTask } from './helpers.js';
+import {
+  createTestDb,
+  insertTask,
+  readJson,
+  type BoardBody,
+  type SearchBody,
+  type TaskBody,
+  type TaskMutationBody,
+  type TreeBody,
+} from './helpers.js';
 
 type App = ReturnType<typeof createApp>;
 
@@ -55,7 +64,7 @@ describe('工期计时的写入口', () => {
     });
 
     expect(response.status).toBe(201);
-    const task = await response.json();
+    const task = await readJson<TaskBody>(response);
     expect(task.spentMinutes).toBe(0);
     expect(typeof task.runningSince).toBe('string');
     expect(clockViolations(db)).toEqual([]);
@@ -69,7 +78,7 @@ describe('工期计时的写入口', () => {
       title: '先记下来',
     });
 
-    const task = await response.json();
+    const task = await readJson<TaskBody>(response);
     expect(task.spentMinutes).toBe(0);
     expect(task.runningSince).toBeNull();
     expect(clockViolations(db)).toEqual([]);
@@ -91,7 +100,7 @@ describe('工期计时的写入口', () => {
     });
 
     expect(response.status).toBe(200);
-    const { task } = await response.json();
+    const { task } = await readJson<TaskMutationBody>(response);
     expect(task.spentMinutes).toBe(61);
     expect(task.runningSince).toBeNull();
     expect(clockViolations(db)).toEqual([]);
@@ -107,9 +116,9 @@ describe('工期计时的写入口', () => {
     });
     startSegmentAgo(db, id, 10);
 
-    const { task } = await (
-      await jsonRequest(createApp(db), 'PATCH', `/api/tasks/${id}`, { columnId: 'done', position: 0 })
-    ).json();
+    const { task } = await readJson<TaskMutationBody>(
+      await jsonRequest(createApp(db), 'PATCH', `/api/tasks/${id}`, { columnId: 'done', position: 0 }),
+    );
 
     expect(task.spentMinutes).toBe(10);
     expect(task.runningSince).toBeNull();
@@ -125,7 +134,7 @@ describe('工期计时的写入口', () => {
     startSegmentAgo(db, id, 40);
     const response = await jsonRequest(api, 'PATCH', `/api/tasks/${id}`, { columnId: 'todo', position: 0 });
 
-    const { task } = await response.json();
+    const { task } = await readJson<TaskMutationBody>(response);
     expect(task.spentMinutes).toBe(70);
     expect(task.runningSince).toBeNull();
     expect(clockViolations(db)).toEqual([]);
@@ -144,12 +153,12 @@ describe('工期计时的写入口', () => {
       runningSince: new Date().toISOString(),
     });
 
-    const { task } = await (
+    const { task } = await readJson<TaskMutationBody>(
       await jsonRequest(createApp(db), 'PATCH', `/api/tasks/${moved}`, {
         columnId: 'doing',
         position: 1,
-      })
-    ).json();
+      }),
+    );
 
     // 逐字不变：既没有把当前这一段吞进 spent_minutes，也没有把开始时刻重置成「现在」。
     // 这是个很容易写错的边界——moveTask 里若按「旧列停表 + 新列开表」结算，同列重排一次
@@ -164,9 +173,9 @@ describe('工期计时的写入口', () => {
     const runningSince = '2024-01-01T00:00:00.000Z';
     const id = insertTask(db, { title: '旧标题', columnId: 'doing', orders: 1000, runningSince });
 
-    const { task } = await (
-      await jsonRequest(createApp(db), 'PATCH', `/api/tasks/${id}`, { title: '新标题' })
-    ).json();
+    const { task } = await readJson<TaskMutationBody>(
+      await jsonRequest(createApp(db), 'PATCH', `/api/tasks/${id}`, { title: '新标题' }),
+    );
 
     expect(task.title).toBe('新标题');
     expect(task.runningSince).toBe(runningSince);
@@ -179,9 +188,9 @@ describe('工期计时的写入口', () => {
     const runningSince = '2024-01-01T00:00:00.000Z';
     const id = insertTask(db, { title: '换个父级', columnId: 'doing', orders: 1000, runningSince });
 
-    const { task } = await (
-      await jsonRequest(createApp(db), 'PATCH', `/api/tasks/${id}/parent`, { parentId, columnId: 'doing' })
-    ).json();
+    const { task } = await readJson<TaskMutationBody>(
+      await jsonRequest(createApp(db), 'PATCH', `/api/tasks/${id}/parent`, { parentId, columnId: 'doing' }),
+    );
 
     expect(task.parentId).toBe(parentId);
     expect(task.runningSince).toBe(runningSince);
@@ -199,9 +208,9 @@ describe('工期计时的写入口', () => {
     });
     startSegmentAgo(db, id, 5);
 
-    const { task } = await (
-      await jsonRequest(createApp(db), 'PATCH', `/api/tasks/${id}/parent`, { parentId, columnId: 'todo' })
-    ).json();
+    const { task } = await readJson<TaskMutationBody>(
+      await jsonRequest(createApp(db), 'PATCH', `/api/tasks/${id}/parent`, { parentId, columnId: 'todo' }),
+    );
 
     expect(task.spentMinutes).toBe(5);
     expect(task.runningSince).toBeNull();
@@ -219,16 +228,16 @@ describe('工期计时的写入口', () => {
     startSegmentAgo(db, id, 61);
     const api = createApp(db);
 
-    const archived = await (
-      await jsonRequest(api, 'PATCH', `/api/tasks/${id}/archive`, { archived: true })
-    ).json();
+    const archived = await readJson<TaskMutationBody>(
+      await jsonRequest(api, 'PATCH', `/api/tasks/${id}/archive`, { archived: true }),
+    );
     expect(archived.task.spentMinutes).toBe(61);
     expect(archived.task.runningSince).toBeNull();
     expect(clockViolations(db)).toEqual([]);
 
-    const restored = await (
-      await jsonRequest(api, 'PATCH', `/api/tasks/${id}/archive`, { archived: false })
-    ).json();
+    const restored = await readJson<TaskMutationBody>(
+      await jsonRequest(api, 'PATCH', `/api/tasks/${id}/archive`, { archived: false }),
+    );
     // 已用不因为归档往返而清零，重新计时从恢复那一刻算起。
     expect(restored.task.spentMinutes).toBe(61);
     expect(typeof restored.task.runningSince).toBe('string');
@@ -270,8 +279,8 @@ describe('工期计时字段的读出口', () => {
     });
     const api = createApp(db);
 
-    const board = await (await api.request('/api/board')).json();
-    const doing = board.columns.find((column: { id: string }) => column.id === 'doing');
+    const board = await readJson<BoardBody>(await api.request('/api/board'));
+    const doing = board.columns.find((column: { id: string }) => column.id === 'doing')!;
     expect(doing.tasks[0]).toMatchObject({
       id,
       durationMinutes: 480,
@@ -279,7 +288,7 @@ describe('工期计时字段的读出口', () => {
       runningSince,
     });
 
-    const tree = await (await api.request('/api/tree')).json();
+    const tree = await readJson<TreeBody>(await api.request('/api/tree'));
     expect(tree.tasks[0]).toMatchObject({
       id,
       durationMinutes: 480,
@@ -292,7 +301,7 @@ describe('工期计时字段的读出口', () => {
     const db = createTestDb();
     insertTask(db, { title: '关键词', columnId: 'doing', orders: 1000, durationMinutes: 60 });
 
-    const { results } = await (await createApp(db).request('/api/search?q=关键词')).json();
+    const { results } = await readJson<SearchBody>(await createApp(db).request('/api/search?q=关键词'));
 
     expect(results[0]).not.toHaveProperty('spentMinutes');
     expect(results[0]).not.toHaveProperty('runningSince');

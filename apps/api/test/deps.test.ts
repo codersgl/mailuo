@@ -1,7 +1,12 @@
 import { describe, expect, it } from 'vitest';
 import { createApp } from '../src/app.js';
 import type { Db } from '../src/db/client.js';
-import { createTestDb, insertTask } from './helpers.js';
+import {
+  createTestDb,
+  insertTask,
+  readJson,
+  type DepsBody,
+} from './helpers.js';
 
 type App = ReturnType<typeof createApp>;
 
@@ -51,7 +56,7 @@ describe('PUT /api/tasks/:id/deps', () => {
     const response = await setDeps(api, cId, [bId, aId]);
 
     expect(response.status).toBe(200);
-    const { task, predecessorIds } = await response.json();
+    const { task, predecessorIds } = await readJson<DepsBody>(response);
     expect(task.id).toBe(cId);
     expect(predecessorIds).toEqual([aId, bId].sort());
     expect(depRows(db)).toEqual([`${aId}->${cId}`, `${bId}->${cId}`].sort());
@@ -79,12 +84,12 @@ describe('PUT /api/tasks/:id/deps', () => {
 
     await setDeps(api, cId, [aId, bId]);
     const replaced = await setDeps(api, cId, [bId]);
-    expect((await replaced.json()).predecessorIds).toEqual([bId]);
+    expect((await readJson<DepsBody>(replaced)).predecessorIds).toEqual([bId]);
     expect(depRows(db)).toEqual([`${bId}->${cId}`]);
 
     const cleared = await setDeps(api, cId, []);
     expect(cleared.status).toBe(200);
-    expect((await cleared.json()).predecessorIds).toEqual([]);
+    expect((await readJson<DepsBody>(cleared)).predecessorIds).toEqual([]);
     expect(depRows(db)).toEqual([]);
   });
 

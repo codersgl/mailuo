@@ -5,8 +5,13 @@ import {
   TaskParentMissingError,
   readBreadcrumb,
 } from '../src/repositories/tasks.js';
-import { createTestDb, insertTask } from './helpers.js';
-
+import {
+  createTestDb,
+  insertTask,
+  readJson,
+  type BoardBody,
+  type TreeBody,
+} from './helpers.js';
 describe('GET /api/board/:parentId', () => {
   it('返回子看板，只含该层任务并按列分组', async () => {
     const db = createTestDb();
@@ -17,7 +22,7 @@ describe('GET /api/board/:parentId', () => {
     const response = await createApp(db).request(`/api/board/${parentId}`);
 
     expect(response.status).toBe(200);
-    const board = await response.json();
+    const board = await readJson<BoardBody>(response);
     expect(board.parentId).toBe(parentId);
     expect(
       board.columns.map((column: { id: string; tasks: Array<{ title: string }> }) => [
@@ -50,7 +55,7 @@ describe('GET /api/tree', () => {
     const response = await createApp(db).request('/api/tree');
 
     expect(response.status).toBe(200);
-    const { tasks } = await response.json();
+    const { tasks } = await readJson<TreeBody>(response);
     expect(tasks).toHaveLength(3);
     expect(tasks.map((task: { title: string }) => task.title).sort()).toEqual([
       '子任务',
@@ -67,7 +72,7 @@ describe('GET /api/tree', () => {
       spentMinutes: 0,
       runningSince: null,
     });
-    expect(tasks.find((task: { id: string }) => task.id === rootId).parentId).toBeNull();
+    expect(tasks.find((task: { id: string }) => task.id === rootId)!.parentId).toBeNull();
   });
 
   it('includeArchived=1 时归档节点带 archivedAt 返回', async () => {
@@ -76,7 +81,7 @@ describe('GET /api/tree', () => {
 
     const response = await createApp(db).request('/api/tree?includeArchived=1');
 
-    const { tasks } = await response.json();
+    const { tasks } = await readJson<TreeBody>(response);
     expect(tasks).toEqual([
       {
         id: archivedId,

@@ -65,7 +65,10 @@ describe('runMigrations', () => {
     ]);
   });
 
-  it('打开连接时外键约束生效', () => {
+  it('迁移之后外键约束生效（真正兜底的是迁移 runner 的恢复逻辑）', () => {
+    // 这条用例守不住 openDatabase 里那行 `foreign_keys = ON`：better-sqlite3 13 的默认值实测
+    // 就是 1，去掉那行它照样绿。守得住「重建表后开关被恢复」的是下面「标记了 no-foreign-keys
+    // 的迁移」那条用例——它断言恢复成 1（见审计报告 E7）。
     const db = createTestDb();
 
     expect(db.pragma('foreign_keys', { simple: true })).toBe(1);
@@ -242,5 +245,19 @@ describe('runMigrations', () => {
     const dir = makeMigrationsDir({ '001_a.sql': 'SELECT 1;', '001_b.sql': 'SELECT 1;' });
 
     expect(() => runMigrations(db, dir)).toThrow(/编号重复/);
+  });
+
+  it('在事务里执行会直接报错，而不是让标记静默失效', () => {
+    // `PRAGMA foreign_keys` 在事务内是空操作：带 no-foreign-keys 标记的迁移若被外层事务包住，
+    // 002 那种重建表会以误导性错误失败。守卫在 runMigrations 开头（见审计报告 E3）。
+    const db = openDatabase(':memory:');
+
+    expect(() => db.transaction(() => runMigrations(db, migrationsDir))()).toThrow(
+      /不能在事务里执行/,
+    );
+    // 报错在任何迁移执行之前，连记录表都还没建。
+    expect(
+      db.prepare("SELECT name FROM sqlite_master WHERE name = 'schema_migrations'").get(),
+    ).toBeUndefined();
   });
 });
