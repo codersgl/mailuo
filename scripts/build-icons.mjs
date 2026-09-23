@@ -21,6 +21,7 @@ import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { assertPngHasContent } from './png-stats.mjs';
 
 const repoRoot = path.resolve(import.meta.dirname, '..');
 const brandDir = path.join(repoRoot, 'brand');
@@ -86,6 +87,9 @@ svg{display:block;width:${size}px;height:${size}px}</style>${svg}`;
     fs.rmSync(tmpDir, { recursive: true, force: true });
   }
   checkPngSize(outPath, size);
+  // 尺寸对不代表画对了：白图、全透明图、纯色块的 IHDR 全都完全正常，
+  // 只有解码像素才看得出来。这里挡在写进 public/ 之前。
+  assertPngHasContent(outPath);
 }
 
 /** 校验渲染结果确实是 size×size：Chrome 被窗口最小尺寸限制时不会报错，只会给错尺寸。 */

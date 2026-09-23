@@ -447,7 +447,7 @@ Zod 的 `.int()` 拒绝的是**不安全整数**，而所有大于 2^53 的值�
 
 **影响面（审阅后补充）**：
 
-- `apps/api/src/index.ts` 在模块顶层就把 `.env` 灌进 `process.env`，所以生产入口 `pnpm --filter @kanban/api start`（`node dist/index.js`）同样会读到本机残留的根 `.env` 并改变端口。
+- `apps/api/src/index.ts` 在模块顶层就把 `.env` 灌进 `process.env`，所以生产入口 `pnpm --filter @mailuo/api start`（`node dist/index.js`）同样会读到本机残留的根 `.env` 并改变端口。
 - 根 `.env` 的键会被 Vite 看见：配置文件先执行（把根 `.env` 写进 `process.env`），Vite 之后才按 `VITE_` 前缀从 `process.env` 取值送给客户端，所以根 `.env` 里的 `VITE_*` 会被内联进前端产物。`PORT` 不受影响。不要往里放敏感值。
 - 改 `.env` 不会自动重启：`tsx watch` 不监听 `.env`，Vite 只监听自己 envDir（`apps/web`）下的 `.env*`，两个进程都要手动重启。
 - 端口占用时的提示文案同步改了：现在指向「改根目录 `.env` 的 PORT，重启两个进程」，而不是只给 `dev:api` 加前缀——后者会精确复现上面那条 404。
@@ -1140,18 +1140,36 @@ useEffect(() => {
 
 `scripts/build-icons.mjs`（`pnpm icons`）用**无头 Chrome** 光栅化，产出 `apps/web/public/` 下的 `favicon.svg`、`favicon.ico`（16/32/48 三帧内嵌 PNG）、`apple-touch-icon.png`（180×180，不透明）、`icon.svg`、`icon-512.png`。**产物提交进版本库**：普通构建、CI、新克隆都不需要装 Chrome，只有改母版时才跑这个脚本。
 
-**为什么不用 ImageMagick（实测，不是推测）**：同一份带 `<mask>` 的 SVG，Chrome 渲出来中心像素是 `(0,0,0,0)`（透明，符合预期），`convert -background none` 渲出来是 `(14,127,150,255)`——mask 被静默忽略；同一处笔画颜色也不同（convert 92,106,228 vs Chrome 105,119,242，渐变被按自己的方式重算）。本机 ImageMagick 6 没有 librsvg delegate，走的是内置 MSVG 渲染器。图标正是靠这些细节成立的东西，所以宁可靠浏览器自己渲染。ICO 没有用任何编码库：Vista 起 ICO 允许每帧内嵌 PNG，脚本自己拼 6 字节文件头 + 每帧 16 字节目录项。
+**为什么不用 ImageMagick（实测，不是推测）**：同一份带 `<mask>` 的 SVG，Chrome 渲出来中心像素是 `(0,0,0,0)`（透明，符合预期），`convert -background none` 渲出来是 `(14,127,150,255)`——mask 被静默忽略；同一处笔画颜色也不同（convert 92,106,228 vs Chrome 105,119,242，渐变被按自己的方式重算）。本机的 `convert -list delegate` 里配了 `svg => rsvg-convert`，但 `rsvg-convert` 这个二进制并没有装（`which` 退出 1），所以实际回落到 ImageMagick 内置的 MSVG 渲染器；装齐 librsvg 之后结论是否改变没有验证。图标正是靠这些细节成立的东西，所以宁可靠浏览器自己渲染。ICO 没有用任何编码库：Vista 起 ICO 允许每帧内嵌 PNG，脚本自己拼 6 字节文件头 + 每帧 16 字节目录项。
 
 **favicon 的取舍**：透明单色 M 在深色标签栏（#202124）上对比度只有 2.9:1，所以 `favicon.svg` 按系统配色切换 #4a5ad9（对白 5.6:1）与 #8fa2ff（对 #202124 6.7:1）；不支持这条媒体查询的浏览器用默认值，在浅色标签栏上依然成立。`favicon.ico` 回退用带底版的那张——它在任何底色上都成立。
+
+**这条切换只验证了一半**：浅色分支实测渲染出的唯一实色是 `(74,90,217)`（等于 #4a5ad9，且黑像素为 0，同时证明 `<style>` 在图片上下文里确实生效）；**深色分支未能验证**——无头 Chrome 翻不动 `prefers-color-scheme`（试过无 flag、`--force-dark-mode`、`--force-prefers-color-scheme=dark`、`--enable-features=WebContentsForceDark` 四种，`matchMedia('(prefers-color-scheme: dark)').matches` 始终 false）。唯一的旁证是把 `@media (prefers-color-scheme: dark)` 改成 `@media all` 之后渲出的实色变成 `(143,162,255)` = #8fa2ff，说明规则本身语法正确、优先级也对，但**媒体查询在真实深色标签栏下是否触发，本环境证明不了**。
+
+**同一条限制也适用于 `theme-color`**：它和 favicon 跟的是**系统**配色，而应用主题是用户可以在界面里手动覆盖的（`kanban.theme` + `html.dark`，见 D43）。所以在浅色系统下手动选深色的用户，页面是深色而移动端地址栏仍是浅色。要修就得在切主题时去写 document 上那两条 meta 的 `media`/`content`，而 favicon 那条换不动（SVG 里的媒体查询按系统走）——一半能修一半不能，收益不值这个复杂度，因此作为已知限制记在这里，不实现。
 
 **顶栏品牌标**用 `<img src="/icon.svg">` 引母版，而不是在组件里内联一份 SVG 路径：几何只存在一份，代价是顶栏多一次静态请求（会被缓存）。尺寸取 20px 而不是 16px，因为母版按 512 画布留了内边距（M 只占画布 71% 宽、56% 高），按 16px 渲染会比旁边 13px 的文字还显小。
 
 ### 验证
 
-- web 单测 446 项全过（基线 437 + 新增 9：`BrandMark` 3、`brandAssets` 6），api 249 项全过，两端 typecheck 干净。
-- `brandAssets.test.ts` 按二进制格式核对产物：ICO 必须是 16/32/48 三帧且每帧内嵌 PNG（不是 BMP）、apple-touch-icon 必须 180×180 且 colorType 2（不透明，iOS 会把透明像素填黑）、icon-512 必须 512×512 且带 alpha、`public/` 下的 SVG 与母版**逐字节一致**（改了母版忘了跑 `pnpm icons` 时这条会红）。这几份是没人会打开看的二进制，只能靠格式断言守。
+- web 单测 448 项全过（基线 437 + 新增 11：`BrandMark` 3、`brandAssets` 8），api 249 项全过，两端 typecheck 干净。
+- `brandAssets.test.ts` 分两层核对产物：**结构**（ICO 必须是 16/32/48 三帧且每帧内嵌 PNG 而不是 BMP、apple-touch-icon 必须 180×180 且 colorType 2、icon-512 必须 512×512 且带 alpha），以及**像素**（三帧的 ICO 里白 M 占 5% 以上、靛底占 30% 以上；apple-touch 的白与靛同上；icon-512 四角 alpha=0 且四个折面各占 3% 以上）。只看 IHDR 是不够的——白图、全透明图、三帧全糊成纯靛色的 ICO，IHDR 全都完全正常（见下面审阅一节）。另外两条防漂移：`public/` 下的 SVG 与母版**逐字节一致**，且 `icon-mono` / `icon-tile` / `favicon` 三份母版里的四条 M 路径必须相同。
+- 解码 PNG 的能力放在 `scripts/png-stats.mjs`（配 `png-stats.d.mts` 声明），测试与 `scripts/build-icons.mjs` 共用一份：脚本在写进 `public/` 之前就会拒绝一张空白图，不必等到跑测试。
+- 变异检验（我自己跑的，改完立刻还原）：改 `icon-mono.svg` 的腿宽、把 `apple-touch-icon.png` 换成纯白、把 `icon-512.png` 换成全透明——三种坏法都让 `brandAssets` 变红。
 - 真实 dev server（Vite 5317）截图核对顶栏浅色与深色各一张：20px 的 M 在两种底色上都成立。
 - 产物逐像素核对：icon-512 四角透明、左腿 #4a5ad9、折痕 #18aecb；ICO 三帧尺寸正确，16px 最近邻放大 8 倍后仍读得出 M。
+
+### 审阅（子代理，只读）与修复
+
+审阅在 worktree 副本上做，结论是**可以直接合并**，无阻断项；它自己写了一个独立的 ICO 解析器（不复用被审脚本的函数）核对二进制结构，并把管线复制到 scratch 目录重跑，五份产物与提交进库的**逐字节相同**——说明提交的产物确实由提交的母版生成。三条中/低问题已在本步修掉：
+
+1. **（中）孤儿母版与假的「引用关系」**：`brand/icon-mono.svg` 当时没有任何消费者，而 `icon-tile.svg` 的注释写着「改 M 的几何只改 icon-mono，这里是引用关系」——事实是四条路径在三个文件里各复制了一份，而当时没有任何断言守着它们一致。审阅的变异实测：改 `icon-mono.svg` 的腿宽，测试全绿、产物不变。修法：注释改成「三份逐字节相同、由测试守着」，并补上面那条几何一致性断言。**这是本轮最有价值的一条**——它正是 `build-icons.mjs` 开头声明要防的那类不一致，而当时的守卫漏掉了它。
+2. **（中）守卫不看像素**：原断言只解码 IHDR，所以「白图」「全透明图」「三帧全换成纯靛色块（M 消失）」三种坏法都能全绿，而测试注释里写的恰恰是要挡这些。修法：加 `png-stats.mjs` 与像素断言，并把同样的检查加进构建脚本。
+3. **（低）`docs/decisions.md` 里一条已失效的命令**：D41 一节写着 `pnpm --filter @kanban/api start`，改名后 `pnpm` 会报 `No projects matched the filters`。已改成 `@mailuo/api`——它不在「刻意保留」的三类里，是纯粹的漏改。
+4. **（低）`sizes="32x32"` 与三帧 ICO 不符**：按 `sizes` 挑选的浏览器（Firefox）只会用其中一帧，另外两帧白做。已改成 `16x16 32x32 48x48`，并加一条断言让它与 ICO 的真实帧集合对齐。
+5. **（低）D56 自己的措辞**：原写「本机没有 librsvg delegate」，实测 delegate 配置**在**（`svg => rsvg-convert`），只是那个二进制没装，所以回落到内置 MSVG。以及 favicon 的深色分支与 `theme-color` 跟系统配色这条限制，已按审阅要求写明「未能验证」而不是含糊过去。
+
+审阅明确报告**未能验证**的一项：`favicon.svg` 的 `prefers-color-scheme: dark` 分支——无头 Chrome 翻不动这个媒体查询（四种 flag 都试过），只证明了规则语法与优先级正确，真实深色标签栏下的表现本环境证明不了。
 
 ### 没做的
 

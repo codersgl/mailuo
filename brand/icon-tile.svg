@@ -7,8 +7,10 @@
     - apple-touch-icon（iOS 会把透明像素填黑，必须给不透明底）
     界面顶栏与应用图标本身都用透明版（icon.svg / icon-mono.svg），不用这个。
 
-    M 用 <g transform> 缩到方块的约 60% 并居中，不另画一套坐标：
-    以后改 M 的几何只改 icon-mono.svg 里那四条路径，这里是引用关系。
+    M 用 <g transform> 缩到方块的约 60% 并居中。这四条路径与 icon-mono.svg、favicon.svg
+    里那四条**逐字节相同**（它们各自底色不同、无法直接共用路径片段，所以是复制），
+    `apps/web/test/brandAssets.test.ts` 里有一条断言守着三份一致——改了小尺寸母版
+    却忘了这里，会造出「标签页图标是新的、ICO 与 apple-touch-icon 还是旧的」。
     方块圆角 116（512 的 22.7%），与 macOS/Windows 的圆角习惯接近。
   -->
   <rect width="512" height="512" rx="116" fill="#4a5ad9"/>
