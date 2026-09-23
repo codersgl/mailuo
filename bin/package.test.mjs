@@ -55,6 +55,27 @@ test('package.json 可以被发布：去掉 private，并显式声明 ESM', () =
     Array.isArray(packageJson.keywords) && packageJson.keywords.length > 0,
     'keywords 不能为空数组，否则在源上搜不到',
   );
+  // `repository` 不只是个链接：据 D66 的取舍 4 与社区报告（没有官方文档可引），npm 页面靠它把
+  // README 里的相对链接与图片指回仓库，没有它，顶部的 `brand/icon.svg` 与 `docs/images/*.webp`
+  // 截图会裂。
+  //
+  // 只断言「指向本仓库」，不锁前缀：npm 接受 `git+https://….git`、裸 `https://…`、
+  // `owner/repo` 简写、`github:owner/repo` 等多种等价写法（实测 `npm pack` 打出的 tarball 里
+  // 原样保留、发布路径上由 @npmcli/package-json 归一化，见 D68）。锁前缀会在 npm 认可的写法上误报。
+  const repositoryUrl =
+    typeof packageJson.repository === 'string' ? packageJson.repository : packageJson.repository?.url;
+  assert.match(
+    repositoryUrl ?? '',
+    /(^|[/:])codersgl\/mailuo(\.git)?$/,
+    'repository 要指向本仓库（codersgl/mailuo），否则 npm 页面上的链接与图片会指错地方',
+  );
+  // 发布目标写进包里，是为了挡住「本机 npm 默认源是只读镜像」这个坑：`npm publish` 不带
+  // `--registry` 时会打到镜像上，报错与「没登录」长得一样（见 D68）。
+  assert.equal(
+    packageJson.publishConfig?.registry,
+    'https://registry.npmjs.org',
+    'publishConfig.registry 要钉在官方源，否则本机的镜像默认值会让 npm publish 打错地方',
+  );
 });
 
 test('bin 指向一个存在的文件', () => {

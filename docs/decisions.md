@@ -2030,3 +2030,90 @@ HOME=$PWD/.tmp-verify/home MAILUO_NO_UPDATE_CHECK=1 \
 真正发布仍未做：本机 `npm whoami` 未登录，`~/.npmrc` 指向只读镜像 `registry.npmmirror.com`，
 发布要 `npm login --registry https://registry.npmjs.org` 后
 `npm publish --registry https://registry.npmjs.org`。
+
+## D68 第 30 步：发布元数据 repository / homepage / bugs / publishConfig（2026-09-24，分支 chore/repo-metadata）
+
+需求（`docs/intend.md`）：「发布npm包」与「发布到Github」都已就绪（远端 `origin` 指向
+`github.com/codersgl/mailuo`），本步把发布前缺的元数据补齐，下一步就发 0.1.0。
+
+### 问题
+
+两件事都只在「别人打开 npm 页面」或「真的敲 npm publish」时才暴露：
+
+1. README（D66 整篇改写）里有 `brand/icon.svg`、`docs/images/*.webp` 截图与 `docs/*.md` 链接，
+   它们都是相对路径。据 D66 的取舍 4 与社区报告（`npm/feedback#210` 一类的讨论），npm 页面会用
+   `repository` 字段把这些相对链接解析回仓库；没有这个字段，用户看到的很可能是一张裂图加一堆
+   点不开的链接。**这一条没有官方文档可引**——`docs.npmjs.com/about-readmes` 现在 404，npm CLI
+   里也没有对应的改写逻辑（改写发生在网站渲染侧），所以只能按「D66 既有的口径 + 社区报告」采用，
+   不当作已证事实。动作本身（补 `repository`）无论如何都是对的：它是 npm 页面的仓库入口。
+2. 本机 `~/.npmrc` 的默认 registry 是 `registry.npmmirror.com`（只读镜像）。`npm publish` 不带
+   `--registry` 会打到镜像上，得到的报错与「没登录」几乎一样。这不是推测：现在在这台机器上
+   `npm whoami` 就是 `ENEEDAUTH`，加 `--registry=https://registry.npmjs.org` 才认出 `codersgl`。
+   每次在本机发布都会先撞一次。
+
+### 做法
+
+- 加 `repository`（`git+https://github.com/codersgl/mailuo.git`）、`homepage`、`bugs`。采用
+  `git+https://….git` 只是 npm 文档推荐的标准形态，**不是「只有这种写法才被认」**：npm 接受
+  `https://github.com/owner/repo`、`owner/repo` 简写、`github:owner/repo` 等写法，发布路径上由
+  `@npmcli/package-json` 归一到统一形态。所以用例只断言「指向本仓库」，不锁前缀（见下面「验证」）。
+- 加 `publishConfig.registry = https://registry.npmjs.org`。这是**兑现 D67 预留的那一小步**
+  （D67 原文：「用户如果希望『敲 npm publish 就发对地方』，这是一处可以再来一小步的地方」），
+  不是推翻 D67 的论证：D67 说「将来想发到私有源还要再改回来」这条代价依然存在，只是本机默认源
+  是只读镜像这个已记录的事实让它显得更划算——写死之后，忘了旗标也不会打错地方。
+  代价与它的边界要记清楚（实测，见「验证」）：**pnpm 的 `--registry` 压不过 `publishConfig`**，
+  所以这条分支上只能改 `package.json` 来改道；`npm publish --registry=…` 仍然可以临时改道。
+  本项目的发布路径固定为 `npm publish`。
+- `bin/package.test.mjs` 的「可以被发布」那条补两个断言：`repository` 指向本仓库、
+  `publishConfig.registry` 的取值。
+
+### 验证
+
+- 变异检验（备份文件还原，没用 `git checkout`）：删掉 `repository`、把 `repository` 指向别的仓库
+  （`github.com/other/repo`）、把 `publishConfig.registry` 改成镜像地址，三条都让第 1 条用例变红
+  （`not ok`），还原后 5 条全绿。
+- `repository` 的写法**不锁前缀**这件事是实测出来的，两条观察方向相反但结论一致：
+  `npm pack --ignore-scripts` 打出的 tarball 里 `package.json` 逐字节原样——裸
+  `https://github.com/codersgl/mailuo` 与 `codersgl/mailuo` 简写都不会被改写；而发布路径（
+  `@npmcli/package-json` 的 `prepare`）会把五种写法都归一到 `git+https://github.com/codersgl/mailuo.git`。
+  也就是说写法不影响 npm 认不认这个仓库，用例因此只查「指向本仓库」。
+- `npm pack`（190.9 kB / 67 files）后解开 tarball 的 `package.json`：`repository`、
+  `publishConfig` 都在，`private` 仍为 `undefined`。这一步是防「元数据只写进了仓库、没进包」。
+- pnpm 与 npm 的改道行为差异（本步的取舍边界，实测）：
+  `pnpm publish --dry-run --registry=https://example.invalid/` 仍打印
+  `mailuo@0.1.0 → https://registry.npmjs.org/`（`publishConfig` 优先，旗标被忽略）；
+  `npm publish --dry-run --registry=https://example.invalid/` 打印
+  `Publishing to https://example.invalid/`（旗标优先）。所以「一条命令行旗标就够」这句话只在 npm 下成立。
+- `node --test bin/*.test.mjs` 37 全绿（本步没动 `apps/`，合并后在主仓再跑一次全量）。
+
+### 审阅（子代理，只读）与更正
+
+审阅结论：可以合并，无阻断。它抓到的问题全在记录与断言的理由层，逐条已改：
+
+1. **（中，已改）`repository.url` 的「形状」论断是错的**。原稿写「`git+https` 与结尾 `.git` 是
+   npm 识别 GitHub 仓库的形状，写成裸地址不报错但也不重写」，并让用例按这个形状断言。两条实测
+   都推翻了这个说法（见「验证」）。已把用例判据改成「指向本仓库」，理由改成「采用文档推荐形态」，
+   并删掉「否则不重写」这句没有依据的因果。
+2. **（中，已记）pnpm 的 `--registry` 压不过 `publishConfig`**：这是本步取舍的真实边界，原先
+   只记了 npm 侧的行为。已写进「做法」与「验证」，并明确本项目的发布路径是 `npm publish`。
+3. **（低，已改）「推翻 D67」的措辞**：D67 的论证（改道要改回 `package.json`）没有被推翻，
+   本步是兑现它预留的一小步。已改写。
+4. **（低，已改）一处无出处的归属**：原文说 D67 的验收里出现过 `ENEEDAUTH`，记录里查不到，
+   已改成「现在在这台机器上就可复现」的事实陈述。
+5. **（低，已改）把「npm 页面会重写相对链接」当成确定因果**：没有官方文档可引，已在「问题」
+   里降级为「据 D66 口径与社区报告」。
+6. **（低，已清理）**审阅指出 `.tmp-mut/` 留在 worktree 里，已删除。
+
+### 没做的（可选复杂性）
+
+- **不推送、不发布**：`git push` 与 `npm publish` 是本步之后的动作，用一次性的命令完成，
+  不写进任何脚本。
+- 不加文档站、不加 `funding`、不改 `author` 的联系方式：都属发布之后按需再说的东西。
+
+### 事故记录（自省）
+
+这一小步的第一轮变异检验里，我用 `git checkout -- package.json` 还原变异，而当时的
+`repository` / `publishConfig` 改动**还没提交**——checkout 直接把它们抹回 HEAD，后两条变异因此
+在「字段不存在」的状态下跑空。已重新加回改动，并把还原方式换成仓内备份文件（`.tmp-mut/`，
+用完已删）。教训：变异检验的还原基准必须是「我改完之后的状态」，在有未提交改动的工作区里，
+`git checkout` 不是那个基准。
