@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 
 /**
- * 脉络的本地服务入口（`npx mailuo` / `npm i -g mailuo`）。
+ * 脉络的本地服务入口（`npx @codersgl/mailuo` / `npm i -g @codersgl/mailuo`）。
  *
  * 为什么是一个独立的 JS 启动器，而不是直接跑 `node apps/api/dist/index.js`：
  *
@@ -64,8 +64,8 @@ const READY_POLL_LIMIT = 100;
 const HELP = `脉络（Mailuo）本地服务
 
 用法
-  npx mailuo [选项]
-  npm i -g mailuo && mailuo [选项]
+  npx @codersgl/mailuo [选项]
+  npm i -g @codersgl/mailuo && mailuo [选项]
 
 选项
   -p, --port <端口>   监听端口，默认 ${DEFAULT_PORT}；被占用时自动往后试 ${PORT_SCAN_LIMIT} 个

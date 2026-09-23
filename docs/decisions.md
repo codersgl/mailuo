@@ -2117,3 +2117,99 @@ HOME=$PWD/.tmp-verify/home MAILUO_NO_UPDATE_CHECK=1 \
 在「字段不存在」的状态下跑空。已重新加回改动，并把还原方式换成仓内备份文件（`.tmp-mut/`，
 用完已删）。教训：变异检验的还原基准必须是「我改完之后的状态」，在有未提交改动的工作区里，
 `git checkout` 不是那个基准。
+
+## D69 第 31 步：包名改为 scoped `@codersgl/mailuo`（2026-09-24，分支 chore/scoped-name）
+
+需求（`docs/intend.md`）：「发布npm包」。D68 之后第一次真正发布，2FA 过了、名字与权限也过了，
+registry 在最后一步按**名字策略**拒绝：
+
+```
+403 Package name too similar to existing package milio;
+try renaming your package to '@codersgl/mailuo' and publishing with 'npm publish --access=public' instead
+```
+
+### 问题
+
+`milio` 确实存在（0.1.0，一个 Next.js 脚手架），而 `mailuo` 与它在「打错字」的意义上太像。
+这是 npm 防抢注/防混淆的策略，不是权限或配置问题，重试与换 token 都不会变。申诉周期不可控，
+而策略本身理由正当（保护已有包名不被近似名蹭），所以按 registry 的建议走 scoped 名。
+
+### 做法
+
+- `package.json`：`name` 改成 `@codersgl/mailuo`；`publishConfig` 补 `"access": "public"`。
+  后者不是可选装饰——scoped 包默认访问级别是 `restricted`，不写这条发出去的包只有自己和被授权
+  的人装得到。而且这件事不能指望「发的时候有人提醒」：`npm publish --dry-run` 对不写 `access`
+  的 scoped 包一个字都不提示（只写 `default access`），真发时要么被 registry 拒，要么在账号有
+  权限建私有包时**静默**发成私有包——别人装不到，发布者却看不到任何异常。
+- 安装命令跟着改的地方：`bin/mailuo.mjs`（头注释与 `--help`）、`README.md` 的快速开始、
+  `docs/development.md`、`docs/spec.md` 与 `docs/intend.md`（后两个按项目规则属用户文件，
+  本次经用户授权修改）。
+- **命令行名字不变**：`bin` 字段仍是 `mailuo`，所以装完照样敲 `mailuo`。`docs/` 里其余出现的
+  `mailuo` 是命令名（`mailuo --db …`、`mailuo --port 3002`）或仓库内路径（`bin/mailuo.mjs`、
+  `~/.mailuo/kanban.db`、`github.com/codersgl/mailuo`），都不跟着改。
+- 版本仍是 `0.1.0`：这个名字从未成功发布过，没有任何已存在的版本要兼容。
+- 用例跟着改：`bin/mailuo.test.mjs` 里那条断言私有 registry 路径拼接的用例，期望值原本写死成
+  `/mailuo/latest`，现在从 `PACKAGE_JSON.name` 算。进程级那条模拟全局安装布局的用例也改成
+  scoped 形态（`lib/node_modules/@codersgl/mailuo/`）。`bin/package.test.mjs` 补一条：包名带
+  scope 时 `publishConfig.access` 必须是 `public`。
+  编码这件事的鉴别力只来自 `@scope/pkg` 那条断言（改名前就有）：合法的不带 scope 包名里没有需要
+  编码的字符，`encodeURIComponent` 对它们是恒等变换，所以拿裸包名去断言「按需编码」与「一律编码」
+  不可区分——审阅指出我一度补的那条就是这种没有鉴别力的用例，已删掉，不是靠它撑覆盖。
+
+### 为什么不用别的无 scope 名字
+
+`mailuo-kanban` 一类也能绕开相似度策略，但：(1) 是否同样撞相似度只能靠真实发布试探，试错要发
+好几个包；(2) 用户要装的包名就不再是产品名。scope 是 npm 为这类情况给的既定出口，而且
+`@codersgl/mailuo` 与仓库 `github.com/codersgl/mailuo` 同名，读起来是一回事。
+
+### 不受影响的地方（逐个确认过，不是推断）
+
+- **版本提示**：包名从自己的 `package.json` 读（D65 的设计），升级命令会打印
+  `npm i -g @codersgl/mailuo@latest`；scoped 名在 registry URL 里的编码
+  （`%40codersgl%2Fmailuo`）本来就有用例。
+- **包根定位**：`bin/mailuo.mjs` 取 `import.meta.dirname` 的上一级，scoped 布局
+  `node_modules/@codersgl/mailuo/bin/` 下同样落在包根，不受多一层目录影响。
+- **服务端产物、迁移、静态页面**：全部相对包根定位，与包名无关。
+
+### 验证
+
+- 装真 tarball 复验 scoped 布局（`.tmp-mut/`，验收后删）：`npm pack` 得到
+  `codersgl-mailuo-0.1.0.tgz`（191.0 kB / 67 files），`npm install -g --prefix …` 后布局是
+  `lib/node_modules/@codersgl/mailuo/`，软链是 `bin/mailuo -> ../lib/node_modules/@codersgl/mailuo/bin/mailuo.mjs`；
+  `--version` 输出 `0.1.0`；`--help` 的用法两行已变成 scoped 写法。
+- 从这份安装起服务：`已应用迁移: 001_init.sql, 002_duration_minutes.sql, 003_task_clock.sql`、
+  `/api/health` 200、`/` 返回页面 HTML、页面目录指向
+  `…/node_modules/@codersgl/mailuo/apps/web/dist`、默认库仍落 `$HOME/.mailuo/kanban.db`。
+- 变异检验（备份文件还原）：删掉 `publishConfig.access`、把它改成 `restricted`，两条都让
+  `bin/package.test.mjs` 第 1 条变红；还原后全绿。
+- `node --test bin/*.test.mjs` 37 全绿（其中进程级用例需要先 `pnpm build`：`bin/mailuo.mjs`
+  起服务要读 `apps/api/dist`）。改名前有 4 条红：1 条是真的被包名影响（第 17 条写死的期望路径），
+  3 条只是因为新 worktree 没构建。
+- 合并后在主仓跑全量（bin 37 / api 273 / web 474）与 `pnpm typecheck`。
+
+### 审阅（子代理，只读）与更正
+
+审阅结论：无阻断，可以合并；D69 的事实性声明逐条独立复现（tarball 名与字节数、安装布局与软链、
+`--version`/`--help`、迁移日志、`/api/health`、静态目录、默认库、37/273/474、typecheck）。抓到
+两条措辞问题与一处清理，已改：
+
+1. **（低，已删）那条「不带 scope 的包名不被编码」的新增断言没有鉴别力**。合法的不带 scope 包名
+   里没有需要编码的字符，`encodeURIComponent` 对它是恒等变换，所以「按需编码」与「一律编码」在
+   这条输入上完全同结果——两种变异都只在 scoped 那条断言上失败。已删掉该断言，并把「覆盖」的
+   出处改写成事实：编码的鉴别力全部来自改名前就存在的 `@scope/pkg` 断言。
+2. **（低，已改）「npm 只在发布时提示一句需要 --access public」偏乐观**：实测 `npm publish
+   --dry-run` 对不写 `access` 的 scoped 包一个字都不提示，只写 `default access`；真发时要么被
+   registry 拒，要么在账号有权限建私有包时静默发成私有包。已按实测改写。
+3. **（低，已清理）**审阅指出 worktree 里还留着 D69 自己的 `.tmp-mut/`（含临时全局安装、npm 缓存
+   与临时库），已删。
+
+另有一条流程提醒（非代码问题）：主仓 `docs/intend.md` 有一份**未提交**的手改，且与本法改动同一
+行（第 12 行），会以 `local changes would be overwritten by merge` 挡住合并。处理方式见下面
+「合并后收尾」。
+
+### 没做的（可选复杂性）
+
+- **不为 `mailuo` 这个无 scope 名申诉**：申诉周期不可控，且就算成功也要面对「与已有包近似」这个
+  长期事实；scoped 名一次到位。
+- **不加 `npm i -g mailuo` 的兼容别名**：那个名字根本发不出去，没有可兼容的对象。
+- **不改仓库名与品牌**：项目与 CLI 仍然叫「脉络 / mailuo」，只有 npm 上的包名带 scope。

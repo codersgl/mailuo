@@ -1,5 +1,5 @@
 {
-  "name": "mailuo",
+  "name": "@codersgl/mailuo",
   "version": "0.1.0",
   "description": "本地运行的个人任务看板：任务即看板，层级不限，数据存在本机的一个 SQLite 文件里",
   "keywords": [
@@ -27,7 +27,8 @@
     "node": ">=22"
   },
   "publishConfig": {
-    "registry": "https://registry.npmjs.org"
+    "registry": "https://registry.npmjs.org",
+    "access": "public"
   },
   "type": "module",
   "bin": {

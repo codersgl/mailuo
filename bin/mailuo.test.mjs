@@ -405,15 +405,19 @@ test('fetchLatestVersion：带路径的私有 registry 保留路径前缀，包�
     fetchLatestVersion({ registry: base, name, currentVersion: PACKAGE_JSON.version });
 
   // Artifactory 一类把 registry 挂在子路径下，相对拼接必须保住这一段（用 `/xxx` 会被截成根路径）。
+  // 期望值从包名算出来，不写死：这条用例验的是拼接与编码，改包名（例如 D69 加了 scope）不该让它红。
+  const encodedName = encodeURIComponent(PACKAGE_JSON.name);
   assert.equal(await ask(`${registry.url}/api/npm/npm/`, PACKAGE_JSON.name), newer);
-  assert.deepEqual(seen, ['/api/npm/npm/mailuo/latest']);
+  assert.deepEqual(seen, [`/api/npm/npm/${encodedName}/latest`]);
 
   // registry 末尾不写 `/` 也要拼对。
   seen.length = 0;
   assert.equal(await ask(`${registry.url}/api/npm/npm`, PACKAGE_JSON.name), newer);
-  assert.deepEqual(seen, ['/api/npm/npm/mailuo/latest']);
+  assert.deepEqual(seen, [`/api/npm/npm/${encodedName}/latest`]);
 
   // scoped 包名的 `/` 必须编码，否则会被当成又一层路径。
+  // 编码这件事的鉴别力全在这一条上：合法的不带 scope 包名里没有需要编码的字符，
+  // `encodeURIComponent` 对它们是恒等变换，所以「按需编码」与「一律编码」在那种输入上不可区分。
   seen.length = 0;
   assert.equal(await ask(registry.url, '@scope/pkg'), newer);
   assert.deepEqual(seen, ['/%40scope%2Fpkg/latest']);
@@ -582,7 +586,8 @@ test('main：启动失败时不查新版本', async () => {
 test('进程级：符号链接调用 bin 时 --version 正常输出（全局安装的形状）', async (t) => {
   const root = mkdtempSync(path.join(tmpdir(), 'mailuo-symlink-'));
   t.after(() => rmSync(root, { recursive: true, force: true }));
-  const realDir = path.join(root, 'lib', 'mailuo');
+  // D69 之后真实的全局安装布局是 lib/node_modules/@codersgl/mailuo/，bin 软链在上一级。
+  const realDir = path.join(root, 'lib', 'node_modules', '@codersgl', 'mailuo');
   const binDir = path.join(root, 'bin');
   mkdirSync(realDir, { recursive: true });
   mkdirSync(binDir, { recursive: true });

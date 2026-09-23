@@ -9,7 +9,7 @@
 - [x] 工期截止提醒
 - [x] 代码质量和项目安全性审查
 - [x] 品牌设计项目图标等
-- [x] 改为命令行工具：`npm i -g mailuo` 或 `npx mailuo`，起本地服务并自动打开浏览器，优先支持 Windows
+- [x] 改为命令行工具：`npm i -g @codersgl/mailuo` 或 `npx @codersgl/mailuo`，起本地服务并自动打开浏览器，优先支持 Windows
 - [x] 支持启动时提示新版本：查 npm registry 的 latest，给一行升级命令
 - [ ] 发布npm包
 - [x] 使用AGPL-3.0开源协议

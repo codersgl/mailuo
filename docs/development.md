@@ -14,7 +14,7 @@
 - `apps/api` 后端：Hono + better-sqlite3，迁移在 `apps/api/migrations/`。
 - `apps/web` 前端：React + Vite + Tailwind，设计令牌在 `apps/web/src/index.css` 的 `@theme`；
   静态资源（图标）在 `apps/web/public/`。
-- `bin/` 命令行入口 `mailuo.mjs`（`npx mailuo` / 全局安装后的 `mailuo`）。
+- `bin/` 命令行入口 `mailuo.mjs`（`npx @codersgl/mailuo` / 全局安装后的 `mailuo`）。
 - `brand` 品牌资产的**母版**：`icon.svg`（彩色应用图标）、`icon-mono.svg`（单色）、
   `icon-tile.svg`（带底版）、`favicon.svg`（自适应深浅的标签页图标）。
 - `scripts` 构建脚本：`build-icons.mjs` 从 `brand/` 生成图标产物。
