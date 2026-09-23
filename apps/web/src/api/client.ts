@@ -87,7 +87,7 @@ function readErrorMessage(body: unknown): string | undefined {
 /**
  * 「显示已归档」开关。后端认 `1` 和 `true`（见 docs/spec.md），这里统一发 `1`。
  * 开关状态只存在前端（D24），所以每次都要显式传，不能靠后端记住。
- * 看板、任务树、搜索以及任务树的重新取数都走这一个函数，避免几处各写一遍。
+ * 看板、任务树、搜索以及它们的重新取数都走这一个函数，避免几处各写一遍。
  */
 function withArchived(url: string, includeArchived: boolean): string {
   if (!includeArchived) return url;

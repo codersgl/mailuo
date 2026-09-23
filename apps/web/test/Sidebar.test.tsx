@@ -268,6 +268,20 @@ describe('Sidebar', () => {
     expect(await screen.findByText('暂无任务')).toBeTruthy();
   });
 
+  /**
+   * 面板的可见标题。这条断言必须直接问 heading 角色：下面 `panel()` 取的是 aside 的
+   * `aria-label`，而 aria-label 会盖住内容，标题被改错时「按名字取面板」照样绿
+   * （审阅的变异 M2：把标题改回「文件树」，全量用例无一变红）。
+   * 改名的核心字符串就是这一处，所以单独钉一条。
+   */
+  it('面板标题是「任务树」', async () => {
+    stubTreeFetch();
+    renderSidebar();
+
+    expect(await screen.findByText('重构登录')).toBeTruthy();
+    expect(screen.getByRole('heading', { name: '任务树' })).toBeTruthy();
+  });
+
   describe('面板收起', () => {
     /**
      * 面板本体。`aside` 在 ARIA 里是 complementary 角色，`getByLabelText` 只认表单控件，
@@ -303,6 +317,8 @@ describe('Sidebar', () => {
       // 树留在 DOM 里（展开是瞬时的），但用 hidden 藏起来：display:none 之后它不再参与
       // 读屏与 Tab 顺序，所以这里断言的是「不可见」，不是「节点不存在」。
       expect(isTreeVisible()).toBe(false);
+      // 标题只是 sr-only，仍留在无障碍树里：收起时读屏用户靠标题导航还能找到这块面板。
+      expect(screen.getByRole('heading', { name: '任务树' })).toBeTruthy();
       expect(screen.getByText('重构登录')).toBeTruthy();
       expect(screen.queryByRole('checkbox', { name: '显示已归档' })).toBeNull();
       // fireEvent.click 由 act 包着，落盘的 effect 在它返回前就跑完了（见 docs/decisions.md D44）。
