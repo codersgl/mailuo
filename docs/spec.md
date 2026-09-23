@@ -74,8 +74,10 @@ mailuo/
     public/                    图标产物（由 pnpm icons 生成，提交进版本库）
   apps/api/                    Hono 后端
     migrations/                SQL 迁移文件
+  bin/                         命令行入口 mailuo.mjs
   brand/                       品牌图标母版（SVG，唯一手改的地方）
   scripts/                     构建脚本
+  package.json                 包元数据：bin / files / 运行时依赖
   data/kanban.db               SQLite 文件，不入版本库
 ```
 
@@ -83,6 +85,18 @@ mailuo/
 - 生产：Hono 提供 `/api/*`，并用 `serveStatic` 托管 `apps/web/dist`，只跑一个进程。
 - 迁移：手写编号 SQL 文件，启动时按序执行，已执行的记录在 `schema_migrations` 表。
 - 监听与访问控制：默认只绑 `127.0.0.1`（只服务本机）。`HOST` 改监听地址（例如 `0.0.0.0` 供同网段访问），`HOST_ALLOW` 追加 Host 白名单里额外的机器名/域名；用 IP 访问时本机网卡地址自动放行。请求的 Host 不在白名单、或写请求的 Origin 不在白名单时一律拒绝——在没有鉴权的前提下，这是挡 DNS rebinding 的那一层。
+
+## 命令行运行
+
+命令行入口是 `bin/mailuo.mjs`（`npx mailuo` / 全局安装后的 `mailuo`）。它不属于任何一个工作区包，职责只有一条：把命令行参数与环境变量合成配置，然后在**同一个进程**里加载 `apps/api/dist` 起服务——服务端源码因此不感知命令行参数。
+
+- 参数：`-p/--port`、`--host`、`--db`、`--open` / `--no-open`、`-h/--help`、`-v/--version`；写法支持 `--port 3010`、`--port=3010`、`-p 3010`、`-p3010`。未知参数报错，不静默忽略。
+- 参数与环境变量合成配置的优先级是**命令行 > 环境变量 > 默认值**；合成结果通过 `PORT`/`HOST`/`KANBAN_DB_PATH`/`HOST_ALLOW` 传给服务端入口。
+- 数据库默认 `~/.mailuo/kanban.db`（`HOME` 缺失时退 `USERPROFILE`，目录不存在则创建），与包的安装位置、版本无关——全局安装时包目录是只读的，升级还会整包替换。`--db` 给相对路径时按当前工作目录解析。
+- 端口默认 3001；**只有**端口既没来自 `--port` 也没来自 `PORT` 时才自动往后试 20 个，显式指定的端口被占用就直接失败。
+- 服务真正进入监听之后才打印启动地址并打开浏览器；`--host 0.0.0.0` 或 `::` 时浏览器打开的是回环地址。
+- `--help` / `--version` 先于任何校验处理：`mailuo --help --port abc` 仍然打印用法。
+- 库里没有自动搬迁：命令行启动用 `~/.mailuo/kanban.db`，开发与 `pnpm start` 仍用仓库根的 `data/kanban.db`。
 
 ## 数据模型
 
