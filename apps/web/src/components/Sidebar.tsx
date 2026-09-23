@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useId, useRef, useState } from 'react';
 import { ApiError, changeTaskParent } from '../api/client';
 import { usePersistentState } from '../hooks/usePersistentState';
+import { useNow } from '../hooks/useNow';
 import { useTree } from '../hooks/useTree';
 import { useTreeDrag } from '../hooks/useTreeDrag';
 import { COLLAPSED_TASKS_KEY, TREE_COLLAPSED_KEY } from '../lib/preferences';
@@ -55,6 +56,9 @@ export function Sidebar({
   const panelId = useId();
   const { state, reload, refresh } = useTree(showArchived);
   const [dragError, setDragError] = useState<string | null>(null);
+  // 树节点上的工期进度条会随时间变档。与看板各挂一个 tick：两个视图各自渲染自己的那份数据，
+  // 共用一个会让其中一边在另一边的重渲染里白跑（见 hooks/useNow）。
+  const nowMs = useNow();
 
   const tasks = state.status === 'ready' ? state.data : [];
 
@@ -231,6 +235,7 @@ export function Sidebar({
                 }}
                 onDragStart={treeDrag.begin}
                 drag={treeDrag.state}
+                nowMs={nowMs}
                 depth={0}
               />
             ))}

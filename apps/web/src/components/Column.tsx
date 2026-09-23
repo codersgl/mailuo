@@ -21,6 +21,7 @@ export interface NewTaskControls {
 export function Column({
   column,
   draggingTaskId,
+  nowMs,
   onOpenTask,
   onEditTask,
   onSetArchived,
@@ -31,6 +32,8 @@ export function Column({
   column: BoardColumn;
   /** 正被拖动的任务 id；它所在的卡片留在原位当占位。 */
   draggingTaskId: string | null;
+  /** 当前时刻，卡片上的工期提醒标记要它（见 hooks/useNow）。 */
+  nowMs: number;
   onOpenTask: (taskId: string) => void;
   onEditTask: (task: BoardTask) => void;
   onSetArchived: (task: BoardTask, archived: boolean) => void;
@@ -92,6 +95,7 @@ export function Column({
             key={task.id}
             task={task}
             dragging={task.id === draggingTaskId}
+            nowMs={nowMs}
             onOpen={onOpenTask}
             onEdit={onEditTask}
             onSetArchived={onSetArchived}

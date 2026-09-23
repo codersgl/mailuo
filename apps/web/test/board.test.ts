@@ -22,6 +22,8 @@ function task(
     title: `任务 ${id}`,
     description: '',
     durationMinutes: null,
+    spentMinutes: 0,
+    runningSince: null,
     orders: options.orders ?? 1000,
     // 用毫秒偏移保证严格递增：同值时排序会退化成不稳定比较。
     createdAt:

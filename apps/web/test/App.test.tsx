@@ -19,6 +19,10 @@ interface FakeTask {
   title: string;
   description: string;
   durationMinutes: number | null;
+  /** 已结算的累计用时（分钟）。 */
+  spentMinutes: number;
+  /** 正在计时的这一段的开始时刻；假后端不跑计时，默认 null。 */
+  runningSince: string | null;
   orders: number;
   archivedAt: string | null;
   /** 更新时间。搜索的排序要用它，所以假数据得能造出不同的值。 */
@@ -37,6 +41,8 @@ function task(overrides: Partial<FakeTask> & Pick<FakeTask, 'id' | 'title'>): Fa
     columnId: 'todo',
     description: '',
     durationMinutes: null,
+    spentMinutes: 0,
+    runningSince: null,
     orders: 1000,
     archivedAt: null,
     updatedAt: '2026-09-22T00:00:00.000Z',
@@ -167,6 +173,9 @@ function createFakeApi(
       title: item.title,
       columnId: item.columnId,
       archivedAt: item.archivedAt,
+      durationMinutes: item.durationMinutes,
+      spentMinutes: item.spentMinutes,
+      runningSince: item.runningSince,
     }));
   }
 
@@ -282,6 +291,8 @@ function createFakeApi(
         title: (body.title as string).trim(),
         description: '',
         durationMinutes: null,
+        spentMinutes: 0,
+        runningSince: null,
         orders: 1000 + sequence,
         archivedAt: null,
         updatedAt: '2026-09-22T00:00:00.000Z',

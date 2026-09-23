@@ -21,6 +21,9 @@ function task(
     title: `任务 ${id}`,
     columnId: options.columnId ?? 'todo',
     archivedAt: options.archivedAt ?? null,
+    durationMinutes: null,
+    spentMinutes: 0,
+    runningSince: null,
   };
 }
 

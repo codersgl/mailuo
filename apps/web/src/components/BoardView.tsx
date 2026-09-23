@@ -5,6 +5,7 @@ import type { DropSlot } from '../domain/board';
 import { CARD_ATTR } from '../hooks/useCardDrag';
 import { useCardFlip } from '../hooks/useCardFlip';
 import type { CardDragPreview } from '../hooks/useCardDrag';
+import { useNow } from '../hooks/useNow';
 import { Column } from './Column';
 import type { NewTaskControls } from './Column';
 import { DragGhost } from './DragGhost';
@@ -48,6 +49,8 @@ export function BoardView({
 }) {
   const gridRef = useRef<HTMLDivElement>(null);
   useCardFlip(gridRef, draggingTaskId !== null, board);
+  // 卡片上的工期提醒会随时间的流逝变档，所以整块看板共用一个 30 秒的 tick（见 hooks/useNow）。
+  const nowMs = useNow();
 
   return (
     <>
@@ -68,6 +71,7 @@ export function BoardView({
             key={column.id}
             column={column}
             draggingTaskId={draggingTaskId}
+            nowMs={nowMs}
             onOpenTask={onOpenTask}
             onEditTask={onEditTask}
             onSetArchived={onSetArchived}
@@ -78,7 +82,7 @@ export function BoardView({
         ))}
         {dragPreview !== null && <DropLine board={board} slot={dragSlot} gridRef={gridRef} />}
       </div>
-      {dragPreview !== null && <DragGhost preview={dragPreview} />}
+      {dragPreview !== null && <DragGhost preview={dragPreview} nowMs={nowMs} />}
     </>
   );
 }
