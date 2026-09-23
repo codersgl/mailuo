@@ -66,6 +66,8 @@ pnpm start            # 只起一个进程：/api/* 是接口，其余路径由 
 - `KANBAN_DB_PATH` SQLite 文件路径，默认 `data/kanban.db`。
   - 变量名与文件名里的 `kanban` 是产品还叫「看板」时留下的（改名经过见 `docs/decisions.md` D57）。
     里面是真实任务数据，跟着改名只会让旧库失联，所以这两处与前端 localStorage 的 `kanban.*` 键一起保持不变。
+- `MAILUO_REGISTRY` / `MAILUO_NO_UPDATE_CHECK` 只被命令行入口的版本提示读（见 `bin/mailuo.mjs` 与
+  `docs/decisions.md` D65），服务端不感知；用法见 `README.md` 的命令行参数表。
 
 数据库在启动时自动建表并执行 `apps/api/migrations/` 下未应用过的迁移。
 
@@ -75,8 +77,8 @@ pnpm start            # 只起一个进程：/api/* 是接口，其余路径由 
 
 ## README 截图
 
-`README.md` 的截图放在 `docs/images/`（webp，单张 40–55KB），一共五张：根看板浅色与深色、
-子看板浅色与深色、依赖图。它们是**真实界面**，不是手绘的 mock，所以界面改版后要重拍。
+`README.md` 的截图放在 `docs/images/`（webp，单张 39–52KB，四张合计约 190KB）：根看板浅色、
+子看板的浅色与深色、子看板的依赖图。它们是**真实界面**，不是手绘的 mock，所以界面改版后要重拍。
 
 重拍的做法（一次性操作，没有留下脚本）：
 
@@ -88,7 +90,8 @@ pnpm start            # 只起一个进程：/api/* 是接口，其余路径由 
    （`format: webp`、`captureBeyondViewport: true`、`deviceScaleFactor: 1.5`）整页截图；
    深色模式用 `Emulation.setEmulatedMedia` 把 `prefers-color-scheme` 设成 `dark`，
    依赖图用 `Runtime.evaluate` 点一下界面上的「依赖图」按钮。
-4. 覆盖 `docs/images/` 下的同名文件，并在 README 里顺手核对图注里的数字（进度计数、工期）还对不对。
+4. 覆盖 `docs/images/` 下的同名文件，并在 README 里顺手核对图注里的说明（层级、进度计数、工期）
+   还对不对。第 3 步做出的深色根看板没有进 README——与深色子看板重复，拍完就删，别留在仓库里。
 
 截图里的演示数据全部是虚构的，不要用真实任务数据截图——README 会进版本库与 npm 页面。
 

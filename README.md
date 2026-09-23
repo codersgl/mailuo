@@ -70,12 +70,12 @@ node bin/mailuo.mjs
 
 <p align="center">
   <img src="docs/images/kanban-light.webp" width="49%" alt="根看板：左侧任务树，中间三列看板，卡片上显示子任务完成计数与工期">
-  <img src="docs/images/graph-light.webp" width="49%" alt="依赖图：按依赖深度分层，节点标注工期与松弛时间，关键路径用强调色">
+  <img src="docs/images/graph-light.webp" width="49%" alt="「重构登录流程」看板的依赖图：按依赖深度分层，节点标注工期与松弛时间，关键路径用强调色">
 </p>
 
 <p align="center">
   <sub>左：根看板，左侧任务树加三列看板，卡片上能看到子任务完成计数与工期。<br>
-  右：依赖图，按依赖深度分层，标注工期与松弛时间，关键路径用强调色。</sub>
+  右：「重构登录流程」看板的依赖图，按依赖深度分层，标注工期与松弛时间，关键路径用强调色。</sub>
 </p>
 
 <p align="center">
@@ -97,11 +97,18 @@ node bin/mailuo.mjs
 | `--db` | `KANBAN_DB_PATH` | `~/.mailuo/kanban.db` | 相对路径按当前工作目录解析 |
 | — | `HOST_ALLOW` | 空 | 额外放行的 Host 主机名，逗号分隔 |
 | `--no-open` | `MAILUO_NO_OPEN=1` | 打开浏览器 | 不自动打开；`--open` 可压过环境变量 |
+| — | `MAILUO_NO_UPDATE_CHECK=1` | 空（启动时查一次） | 不查 npm 上的新版本 |
+| — | `MAILUO_REGISTRY` | `https://registry.npmjs.org` | 查新版本用的 registry；未设时跟随 `npm_config_registry`（镜像 / 私有源） |
 | `-h, --help` / `-v, --version` | — | — | 用法与版本号 |
 
 参数写法四种都认：`--port 3010`、`--port=3010`、`-p 3010`、`-p3010`。未知参数会报错，不会静默忽略。
 
 优先级：命令行 > 环境变量 > 默认值。命令行启动不读仓库根的 `.env`（那份文件是给 `pnpm dev:*` 用的）。
+
+启动最后会查一次 registry 上有没有新版本，有就打印一行升级命令；包还没发布（404）、
+网络不通或超时（1.5 秒）都静默跳过。这一步排在启动横幅与打开浏览器之后，不会拖慢启动。
+它走 Node 内置的 `fetch`，不读 npm 的代理配置（`HTTP_PROXY` 与 `.npmrc` 里的 proxy 都不生效），
+强制代理的网络里就是没有提示，不影响使用。不想要这一步就设 `MAILUO_NO_UPDATE_CHECK=1`。
 
 ## 数据存在哪
 
