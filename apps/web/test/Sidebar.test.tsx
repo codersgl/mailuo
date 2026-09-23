@@ -81,12 +81,14 @@ function renderSidebar(
 ) {
   const onNavigate = vi.fn();
   const onShowArchivedChange = vi.fn();
+  const onParentChanged = vi.fn();
   const props = {
     boardId,
     onNavigate,
     showArchived: options.showArchived ?? false,
     onShowArchivedChange,
     refreshToken: options.refreshToken ?? 0,
+    onParentChanged,
   };
   /**
    * `strict` 用于「挂载时不该做副作用」这一类用例：真实入口 main.tsx 开着 StrictMode，
@@ -101,7 +103,7 @@ function renderSidebar(
       <Sidebar {...props} />
     ),
   );
-  return { onNavigate, onShowArchivedChange, props, ...view };
+  return { onNavigate, onShowArchivedChange, onParentChanged, props, ...view };
 }
 
 beforeEach(() => {
@@ -236,6 +238,26 @@ describe('Sidebar', () => {
     fireEvent.pointerMove(document, { clientX: 40, clientY: 5 });
 
     expect(screen.queryByText('挂到根看板')).toBeNull();
+  });
+
+  it('树拖动改父级成功后交给上层统一刷新，而不是只重取自己那棵树', async () => {
+    stubTreeFetch();
+    const { onParentChanged } = renderSidebar();
+    await screen.findByText('补单元测试');
+
+    // 指针压在 b 这一行的上半区：落点是「成为 b 的子节点」。
+    (document as unknown as { elementFromPoint: () => Element | null }).elementFromPoint = () => {
+      const row = { getAttribute: () => 'b', getBoundingClientRect: () => ({ top: 0, height: 20 }) };
+      return { closest: () => row } as unknown as Element;
+    };
+
+    fireEvent.pointerDown(screen.getByText('补单元测试'), { button: 0, clientX: 0, clientY: 0 });
+    fireEvent.pointerMove(document, { clientX: 40, clientY: 5 });
+    fireEvent.pointerUp(document, { clientX: 40, clientY: 5 });
+
+    await waitFor(() => expect(onParentChanged).toHaveBeenCalledTimes(1));
+    // 请求真的发出去了；被拖的正是 a1x，它的当前列是 done。
+    expect(requested.some((url) => url.endsWith('/parent'))).toBe(true);
   });
 
   it('子任务全部已归档时，折叠态不显示「0」徽标（与展开态一样没有徽标）', async () => {

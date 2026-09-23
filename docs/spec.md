@@ -124,11 +124,13 @@ CREATE INDEX idx_tasks_parent   ON tasks(parent_id);
 CREATE INDEX idx_deps_successor ON task_deps(successor_id);
 ```
 
+上面是表的逻辑形状；**物理列序以迁移文件为准**：`spent_minutes` 与 `running_since` 由迁移 003 追加到表尾（001 建的列叫 `duration`，002 把它重建为 `duration_minutes`）。重建后的列集合、类型、`NOT NULL`、`DEFAULT`、`CHECK`、外键与三个索引名与上面逐项一致。
+
 约束与约定：
 
 - `id` 用 UUID v4 字符串。
 - 时间戳用 ISO 8601 UTC 字符串。
-- `orders` 为间隔 1000 的整数。同一 `(parent_id, column_id)` 内整体重写。
+- `orders` 为间隔 1000 的整数。同一 `(parent_id, column_id)` 内整体重写；重写只针对未归档行，归档行保留原 `orders`（取消归档时位置才有依据）。
 - 三列在迁移里写死，`orders` 分别为 1000、2000、3000。
 - `archived_at` 非空表示归档。
 - `duration_minutes` 单位分钟（整数）：`NULL` 表示未估工期，`0` 表示瞬时任务，其余是工期分钟数。上限 9999 天（4799520 分钟），由接口校验拒绝超出者；数据库的 CHECK 只保证「非负整数」这一层，不加时间上限（改 CHECK 要重建表，而接口是唯一写入口）。
@@ -192,6 +194,9 @@ CREATE INDEX idx_deps_successor ON task_deps(successor_id);
 | GET    | `/api/search`              | 全库搜索（第二批）         |
 | GET    | `/api/board/:parentId/cpm` | 依赖图与关键路径（第三批） |
 | PUT    | `/api/tasks/:id/deps`      | 设置前置依赖（第三批）     |
+| GET    | `/api/health`              | 存活探针（真查一次库）     |
+
+`GET /api/health` 执行一次 `SELECT 1` 确认数据库连接可用，返回 `{ status: "ok" }`。它不返回业务数据，也不在任何界面流程里，只用于启动检查与排查。
 
 `GET /api/board*` 返回该层的列、任务，以及每个任务的直接子任务计数，用一次查询算出。`parentId` 为空时走根看板查询：
 
@@ -206,21 +211,21 @@ GROUP BY t.id
 ORDER BY t.column_id, t.orders;
 ```
 
-`GET /api/board`、`GET /api/board/:parentId`、`GET /api/tree` 都接受 `?includeArchived=1`（也接受 `true`），缺省关闭。这就是上面 SQL 里「显示已归档时去掉此条件」的开关：开关状态只存在前端，不落库，所以用查询参数传递。写接口响应里的 `columnTasks` 也认这个参数，前端在显示归档模式下整列替换才不会丢卡片。
+`GET /api/board`、`GET /api/board/:parentId`、`GET /api/tree` 都接受 `?includeArchived=1`（也接受 `true`），缺省关闭。这就是上面 SQL 里「显示已归档时去掉此条件」的开关：开关状态只存在前端，不落库，所以用查询参数传递。写接口响应里的 `columnTasks` 也认这个参数。
 
 `GET /api/tree` 一次返回任务的 `{ id, parentId, title, columnId, archivedAt, durationMinutes, spentMinutes, runningSince }`，默认不含归档任务，前端据此建树，展开时按需再取看板数据。`archivedAt` 非空表示该节点已归档，前端用它把归档节点画成另一种样式，而不是靠「节点是否出现在列表里」推断。树层级不深，个人规模下一次性返回比逐层懒加载简单。
 
-工期与计时三件套（`durationMinutes`、`spentMinutes`、`runningSince`）在看板、任务树与写接口返回的 `task` 里都要带上：任务树要画每一层的提醒标记，而看板接口只返回当前这一层。搜索结果不带这三个字段——提醒只出现在卡片与任务树上。
+工期与计时三件套（`durationMinutes`、`spentMinutes`、`runningSince`）在看板、任务树与写接口返回的 `task` 里都要带上：任务树要画每一层的提醒标记，而看板接口只返回当前这一层。搜索结果只带 `durationMinutes`（结果行要显示工期，未估则不显示），不带 `spentMinutes` 与 `runningSince`——提醒只出现在卡片与任务树上。
 
-`POST /api/tasks` 入参 `{ parentId, columnId, title }`。后端在同一父任务下取 `MAX(orders) + 1000` 作为新 `orders`，事务内完成。
+`POST /api/tasks` 入参 `{ parentId, columnId, title }`。后端在同一 `(parent_id, column_id)` 内取 `MAX(orders) + 1000` 作为新 `orders`，事务内完成。`MAX` 不排除已归档任务：归档行保留着自己的 `orders`，新任务不该插到它前面，否则取消归档时顺序就乱了。响应是新建的任务本身（裸对象），不含 `columnTasks`——新任务还没有子任务。
 
 `PATCH /api/tasks/:id` 的字段更新入参是 `title`、`description`、`durationMinutes`（分钟）。`durationMinutes` 传 `null` 表示改回未估工期，省略表示不动这一项，`0` 表示瞬时任务。
 
-`PATCH /api/tasks/:id` 移动入参 `{ columnId, position }`。后端重写目标列内所有任务的 `orders` 并返回该列任务列表。排序逻辑只存在于后端，前端不做本地重排。
+`PATCH /api/tasks/:id` 移动入参 `{ columnId, position }`。`position` 是**目标列内未归档兄弟**里的插入下标：后端按「先把任务移出、再插进去」算出新顺序，把目标列内的未归档任务重编号为 1000、2000、……，归档行保留原 `orders`（取消归档时位置才有依据），最后返回该列任务列表。位置与列都没变的任务不重写，`updated_at` 不动。
 
-`PATCH /api/tasks/:id/parent` 入参 `{ parentId, columnId }`。改动父级后，任务在新父级下追加到目标列末尾，`orders` 取新同级的 `MAX(orders) + 1000`。必须拒绝把任务挂到自己的后代下，否则会形成环，返回 `400`。
+`PATCH /api/tasks/:id/parent` 入参 `{ parentId, columnId }`。改动父级后，任务在新父级下追加到目标列末尾，`orders` 取 `(新 parent_id, 目标 column_id)` 内的 `MAX(orders) + 1000`（统计不排除已归档任务，但排除任务自己）。必须拒绝把任务挂到自己的后代下，否则会形成环，返回 `400`。
 
-`PATCH /api/tasks/:id/archive` 入参 `{ archived: boolean }`。服务端按上述归档规则处理整棵子树，返回 `{ task, columnTasks }`：`task` 是改动后的任务，`columnTasks` 是它所在列的列表（归档后该任务默认不在其中，取消归档后回到原列原位置）。
+`PATCH /api/tasks/:id/archive` 入参 `{ archived: boolean }`。服务端按上述归档规则处理整棵子树，返回 `{ task, columnTasks }`：`task` 是改动后的任务，`columnTasks` 是它所在列的列表（归档后该任务默认不在其中；取消归档后回到原列，位置尽量保持——归档行不参与重排编号，与未归档行可能撞值，同值时的先后由数据库扫描顺序决定）。
 
 `PUT /api/tasks/:id/deps` 入参 `{ predecessorIds: string[] }`，整体替换该任务的前置依赖，空数组表示清空。写入前做环检测和同层校验：自己依赖自己或与已有依赖形成环返回 `409`，前置任务不存在返回 `404`，前置任务与目标任务不同 `parentId`（跨层）或已归档返回 `400`，同一个依赖在列表里重复出现返回 `400`。依赖集合没变化时不写库，也不刷新 `updated_at`。响应 `{ task, predecessorIds }`，其中 `predecessorIds` 按 id 升序——依赖在库里是一个集合（主键是两端），没有顺序，升序只是让响应稳定。
 
@@ -275,7 +280,7 @@ ORDER BY t.column_id, t.orders;
 
 列字典跟着结果一起返回，而不是让前端去读看板：搜索是全库的，不该因为当前这一层看板取不到就画不出来。父链成环这类脏数据只让那一条结果的 `path` 为空，不让整个搜索报错。多余的查询参数一律忽略（与其它读接口一致）。
 
-`DELETE /api/tasks/:id` 级联删除其所有后代任务，并删除这些任务作为任意一端的依赖记录。返回 `{ columnTasks }`，即该任务原所在列的列表，前端整列替换即可。
+`DELETE /api/tasks/:id` 级联删除其所有后代任务，并删除这些任务作为任意一端的依赖记录。返回 `{ columnTasks }`，即该任务原所在列的列表。
 
 错误统一返回 `{ error: string }`：`400` 入参非法，`403` Host 或 Origin 不在允许列表，`404` 目标不存在，`409` 形成环，`413` 请求体超过 256KB。
 
@@ -288,7 +293,7 @@ ORDER BY t.column_id, t.orders;
 - 任务树节点可拖动改变父级，走 `PATCH /api/tasks/:id/parent`。树的拖动是唯一允许跨层改父级的入口。
 - 面包屑形如 `根看板 / 重构登录 / 前端部分`，每一段可点击返回上层。
 - 面包屑导航写入浏览器历史，后退键行为与面包屑一致。
-- 点击卡片主体进入该任务的看板。卡片角落的「⋯」菜单给出编辑、归档 / 取消归档与删除；编辑打开侧边面板，只改标题、描述、工期；删除在菜单里就地二次确认。卡片主体与「⋯」必须是不同的热区，避免操作时误入下层。
+- 点击卡片主体进入该任务的看板。卡片角落的「⋯」菜单给出编辑、归档 / 取消归档与删除；编辑打开侧边面板，只改标题、描述、工期；删除在菜单里就地二次确认。已归档的卡片不给「编辑」——后端对已归档任务的字段修改一律拒绝（`400`），菜单里只留取消归档与删除。卡片主体与「⋯」必须是不同的热区，避免操作时误入下层。
 - 空任务也允许进入，进入后是一个空看板。
 
 拖拽：
@@ -296,10 +301,16 @@ ORDER BY t.column_id, t.orders;
 - 列视图内允许跨列移动和同列排序，不允许跨层改父级。
 - 任务树内允许拖动改变父级，不支持在树中排序。
 - 拖动父任务时子任务跟随，无需额外处理，因为子任务不参与列渲染。
+- 拖动期间按与后端同一套规则做**乐观重排**：落点一变先改本地看板，松手后把 `position` 发给后端，卡片不会先弹回原位再跳过去。乐观重排的编号规则必须与后端一致：未归档卡片重新编号、归档卡片保留原 `orders`。
 
 列表：
 
 - 看板只渲染当前层的任务，子任务折叠在任务内部，不在卡片列表中独立出现。
+
+写后刷新：
+
+- 写操作（新建、改字段、移动、改父级、归档、删除、设置依赖）成功后**静默重取**受影响的数据（看板、面包屑、任务树、依赖图）：保留当前画面，拿到新结果再替换，不闪「加载中」。
+- 不用写响应里的 `columnTasks` 做整列替换：跨列移动会同时影响源列与目标列，而任务树与面包屑根本不在写响应里，静默重取不需要推算「这次写影响了哪几处」，代价是每次写多几个 GET（本地库，肉眼不可见）。
 
 搜索：
 
