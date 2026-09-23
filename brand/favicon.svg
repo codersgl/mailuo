@@ -1,0 +1,22 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512" role="img" aria-label="脉络">
+  <!--
+    浏览器 favicon 母版：透明底的单色 M。
+
+    为什么不是彩色版：favicon 只有 16–32px，四个折面在这里只剩两个色块，
+    彩色带来的信息全丢了，反而让每个面都变小、边缘更容易糊。
+
+    为什么带 prefers-color-scheme：单色 M 要么配浅色标签栏（深靛），要么配深色
+    标签栏（亮靛），一个颜色无法同时满足。内联样式按系统配色切换填充色，
+    不支持这条媒体查询的浏览器会用上面的默认值（深靛），在浅色标签栏上依然成立。
+
+    这个文件由构建脚本原样复制到 apps/web/public/favicon.svg。
+  -->
+  <style>
+    path { fill: #4a5ad9; }
+    @media (prefers-color-scheme: dark) { path { fill: #8fa2ff; } }
+  </style>
+  <path d="M74 112 L74 400 L178 400 L178 219 Z"/>
+  <path d="M74 112 L178 112 L256 224 L256 300 Z"/>
+  <path d="M438 112 L334 112 L256 224 L256 300 Z"/>
+  <path d="M438 112 L438 400 L334 400 L334 219 Z"/>
+</svg>

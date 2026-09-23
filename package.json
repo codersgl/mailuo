@@ -10,6 +10,7 @@
     "dev:api": "pnpm --filter @mailuo/api dev",
     "dev:web": "pnpm --filter @mailuo/web dev",
     "build": "pnpm -r build",
+    "icons": "node scripts/build-icons.mjs",
     "test": "pnpm -r test",
     "typecheck": "pnpm -r typecheck"
   }

@@ -26,6 +26,7 @@ pnpm dev:web          # 启动前端，默认 http://localhost:5173（需要后�
 pnpm test             # 跑测试
 pnpm typecheck        # 类型检查
 pnpm build            # 编译后端到 apps/api/dist，打包前端到 apps/web/dist
+pnpm icons            # 只改了 brand/ 下的图标母版时跑，重新生成 apps/web/public/ 里的产物
 ```
 
 开发时前端由 Vite 提供服务，`/api` 请求由 Vite 代理到后端，所以浏览器里只访问 5173 即可。
@@ -52,4 +53,24 @@ pnpm build            # 编译后端到 apps/api/dist，打包前端到 apps/web
 ## 目录
 
 - `apps/api` 后端：Hono + better-sqlite3，迁移在 `apps/api/migrations/`。
-- `apps/web` 前端：React + Vite + Tailwind，设计令牌在 `apps/web/src/index.css` 的 `@theme`。
+- `apps/web` 前端：React + Vite + Tailwind，设计令牌在 `apps/web/src/index.css` 的 `@theme`；
+  静态资源（图标）在 `apps/web/public/`。
+- `brand` 品牌资产的**母版**：`icon.svg`（彩色应用图标）、`icon-mono.svg`（单色）、
+  `icon-tile.svg`（带底版）、`favicon.svg`（自适应深浅的标签页图标）。
+- `scripts` 构建脚本：`build-icons.mjs` 从 `brand/` 生成图标产物。
+
+## 品牌与图标
+
+产品名是 **脉络 / Mailuo**。图标是「四个折面拼出的 M」，左右两组折面用靛青两色区分
+父任务与子任务；这条含义只在 48px 以上成立，所以小尺寸用专门简化过的单色版。
+
+改图标的流程是**只改 `brand/` 下的 SVG，然后跑 `pnpm icons`**：
+
+- 产物（`favicon.svg`、`favicon.ico`、`apple-touch-icon.png`、`icon.svg`、`icon-512.png`）
+  **提交进版本库**，所以普通构建、CI、新克隆都不需要装 Chrome。
+- `pnpm icons` 需要本机有 Chrome：它用无头 Chrome 光栅化，而不是 ImageMagick——
+  后者内置的 SVG 渲染器会静默忽略 `<mask>` 并把渐变重算，实测同一份图标渲出来
+  中心不透明、颜色也不对（见 `docs/decisions.md` D56）。
+- `apps/web/test/brandAssets.test.ts` 会按二进制格式核对 ICO 的帧、PNG 的尺寸与
+  透明通道，并检查 `apps/web/public/` 下的 SVG 与母版逐字节一致——改了母版忘了
+  跑 `pnpm icons` 时它会红。

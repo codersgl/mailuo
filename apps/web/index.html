@@ -4,6 +4,18 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>脉络</title>
+    <!--
+      图标三件套（见 brand/ 与 scripts/build-icons.mjs）：
+      - favicon.svg 给支持 SVG 图标的浏览器，带 prefers-color-scheme，深色标签栏下自动换亮色；
+      - favicon.ico 是老浏览器与 Windows 的回退，同时兜住「不支持 SVG 图标」这一档；
+      - apple-touch-icon 必须不透明（iOS 会把透明像素填黑），且要 180×180。
+    -->
+    <link rel="icon" href="/favicon.ico" sizes="32x32" />
+    <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
+    <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
+    <!-- 移动端地址栏配色跟随主题，与界面令牌同值（apps/web/src/index.css）。 -->
+    <meta name="theme-color" content="#f6f7f9" media="(prefers-color-scheme: light)" />
+    <meta name="theme-color" content="#17191d" media="(prefers-color-scheme: dark)" />
     <script>
       /*
        * 深色模式防闪烁：必须在样式生效之前就把 class 挂上（见 docs/decisions.md D43）。

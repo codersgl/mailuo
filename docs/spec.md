@@ -71,8 +71,11 @@
 ```
 mailuo/
   apps/web/                    React 前端
+    public/                    图标产物（由 pnpm icons 生成，提交进版本库）
   apps/api/                    Hono 后端
     migrations/                SQL 迁移文件
+  brand/                       品牌图标母版（SVG，唯一手改的地方）
+  scripts/                     构建脚本
   data/kanban.db               SQLite 文件，不入版本库
 ```
 
