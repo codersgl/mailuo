@@ -9,7 +9,10 @@ export type Db = DatabaseHandle;
 /**
  * 打开 SQLite 连接。
  * - `journal_mode = WAL`：读写并发更友好，个人使用下也便于备份。
- * - `foreign_keys = ON`：better-sqlite3 默认关闭外键，必须在每个连接上显式打开（见 docs/spec.md）。
+ * - `foreign_keys = ON`：不依赖驱动的默认值。实测 better-sqlite3 13 的默认值就是 1，
+ *   这行仍然保留，是为了把「外键必须开」这条约定钉在代码里（见 docs/spec.md），
+ *   而不是押在某个版本的驱动行为上；迁移重建表时会临时关闭，由 migrate.ts 负责恢复。
+ *   注：审计报告 E7 记过，原先的注释写成「better-sqlite3 默认关闭」，与本机实测相反。
  */
 export function openDatabase(dbPath: string): Db {
   if (dbPath !== ':memory:') {

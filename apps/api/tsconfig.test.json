@@ -1,0 +1,12 @@
+{
+  // 测试代码的类型检查清单：`test/**` 与 `src/**` 一起进 tsc，否则改接口（字段改名、helper
+  // 选项改名）只能靠运行期才发现，`typecheck` 会给假绿信号（见审计报告 D3）。
+  // 单独一份的原因：主 tsconfig 带 `rootDir: "src"` 与 `outDir`，直接把它扩到 `test/**`
+  // 会和产物布局打架；这份只做检查，`noEmit`。
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "rootDir": ".",
+    "noEmit": true
+  },
+  "include": ["src/**/*.ts", "test/**/*.ts"]
+}

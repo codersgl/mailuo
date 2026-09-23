@@ -1,7 +1,12 @@
 import { HTTPException } from 'hono/http-exception';
 import { describe, expect, it, vi } from 'vitest';
 import { createApp } from '../src/app.js';
-import { createTestDb, insertTask } from './helpers.js';
+import {
+  createTestDb,
+  insertTask,
+  readJson,
+  type BoardBody,
+} from './helpers.js';
 
 describe('GET /api/health', () => {
   it('返回 ok', async () => {
@@ -25,21 +30,21 @@ describe('GET /api/board', () => {
     const response = await app.request('/api/board');
 
     expect(response.status).toBe(200);
-    const board = await response.json();
+    const board = await readJson<BoardBody>(response);
     expect(board.parentId).toBeNull();
     expect(board.columns.map((column: { name: string }) => column.name)).toEqual([
       '待办',
       '进行中',
       '完成',
     ]);
-    expect(board.columns[0].tasks.map((task: { title: string }) => task.title)).toEqual([
+    expect(board.columns[0]!.tasks.map((task: { title: string }) => task.title)).toEqual([
       '先建的待办',
       '后建的待办',
     ]);
-    expect(board.columns[1].tasks.map((task: { title: string }) => task.title)).toEqual([
+    expect(board.columns[1]!.tasks.map((task: { title: string }) => task.title)).toEqual([
       '进行中的任务',
     ]);
-    expect(board.columns[2].tasks).toEqual([]);
+    expect(board.columns[2]!.tasks).toEqual([]);
   });
 
   it('子任务计数只算未归档的直接子任务', async () => {
@@ -55,8 +60,8 @@ describe('GET /api/board', () => {
     const app = createApp(db);
 
     const response = await app.request('/api/board');
-    const board = await response.json();
-    const parent = board.columns[0].tasks.find((task: { id: string }) => task.id === parentId);
+    const board = await readJson<BoardBody>(response);
+    const parent = board.columns[0]!.tasks.find((task: { id: string }) => task.id === parentId)!;
 
     expect(parent.childTotal).toBe(4);
     expect(parent.childDone).toBe(2);
@@ -71,16 +76,16 @@ describe('GET /api/board', () => {
     const app = createApp(db);
 
     const response = await app.request('/api/board');
-    const board = await response.json();
+    const board = await readJson<BoardBody>(response);
 
-    expect(board.columns[0].tasks.map((task: { title: string }) => task.title)).toEqual(['正常任务']);
+    expect(board.columns[0]!.tasks.map((task: { title: string }) => task.title)).toEqual(['正常任务']);
   });
 
   it('空库返回三列空数组', async () => {
     const app = createApp(createTestDb());
 
     const response = await app.request('/api/board');
-    const board = await response.json();
+    const board = await readJson<BoardBody>(response);
 
     expect(board.columns).toHaveLength(3);
     expect(board.columns.every((column: { tasks: unknown[] }) => column.tasks.length === 0)).toBe(true);

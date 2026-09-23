@@ -1,6 +1,13 @@
 import { describe, expect, it } from 'vitest';
 import { createApp } from '../src/app.js';
-import { createTestDb, insertTask } from './helpers.js';
+import {
+  createTestDb,
+  insertTask,
+  readJson,
+  type BoardBody,
+  type TaskMutationBody,
+  type TreeBody,
+} from './helpers.js';
 
 type App = ReturnType<typeof createApp>;
 
@@ -15,8 +22,8 @@ function patchJson(app: App, path: string, body: unknown) {
 /** 读出某列下可见任务的标题顺序，用来断言重排结果。 */
 async function columnTitles(app: App, parentId: string | null, columnId: string): Promise<string[]> {
   const path = parentId === null ? '/api/board' : `/api/board/${parentId}`;
-  const board = await (await app.request(path)).json();
-  const column = board.columns.find((item: { id: string }) => item.id === columnId);
+  const board = await readJson<BoardBody>(await app.request(path));
+  const column = board.columns.find((item: { id: string }) => item.id === columnId)!;
   return column.tasks.map((task: { title: string }) => task.title);
 }
 
@@ -32,7 +39,7 @@ describe('PATCH /api/tasks/:id 移动', () => {
     const response = await patchJson(api, `/api/tasks/${dId}`, { columnId: 'todo', position: 1 });
 
     expect(response.status).toBe(200);
-    const { task, columnTasks } = await response.json();
+    const { task, columnTasks } = await readJson<TaskMutationBody>(response);
     expect(task.orders).toBe(2000);
     expect(columnTasks.map((item: { title: string }) => item.title)).toEqual(['A', 'D', 'B', 'C']);
     expect(columnTasks.map((item: { orders: number }) => item.orders)).toEqual([1000, 2000, 3000, 4000]);
@@ -65,7 +72,7 @@ describe('PATCH /api/tasks/:id 移动', () => {
       position: 1,
     });
 
-    const { task, columnTasks } = await response.json();
+    const { task, columnTasks } = await readJson<TaskMutationBody>(response);
     expect(task.columnId).toBe('doing');
     expect(columnTasks.map((item: { title: string }) => item.title)).toEqual([
       '进行中一',
@@ -87,8 +94,8 @@ describe('PATCH /api/tasks/:id 移动', () => {
     await patchJson(api, `/api/tasks/${childTwoId}`, { columnId: 'todo', position: 0 });
 
     // 根层的两个任务 orders 不变
-    const board = await (await api.request('/api/board')).json();
-    const rootTasks = board.columns[0].tasks;
+    const board = await readJson<BoardBody>(await api.request('/api/board'));
+    const rootTasks = board.columns[0]!.tasks;
     expect(rootTasks.map((task: { id: string; orders: number }) => [task.id, task.orders])).toEqual([
       [rootA, 1000],
       [rootB, 2000],
@@ -124,7 +131,7 @@ describe('PATCH /api/tasks/:id 移动', () => {
       position: 0,
     });
 
-    const { task } = await response.json();
+    const { task } = await readJson<TaskMutationBody>(response);
     expect(task).toMatchObject({
       title: '新标题',
       durationMinutes: 2,
@@ -183,7 +190,7 @@ describe('PATCH /api/tasks/:id/parent', () => {
     });
 
     expect(response.status).toBe(200);
-    const { task, columnTasks } = await response.json();
+    const { task, columnTasks } = await readJson<TaskMutationBody>(response);
     expect(task).toMatchObject({ parentId: newParentId, columnId: 'doing', orders: 5000 });
     expect(columnTasks.map((item: { title: string }) => item.title)).toEqual(['已有子任务', '任务']);
   });
@@ -200,7 +207,7 @@ describe('PATCH /api/tasks/:id/parent', () => {
       columnId: 'doing',
     });
 
-    const { task } = await response.json();
+    const { task } = await readJson<TaskMutationBody>(response);
     expect(task).toMatchObject({ parentId: null, columnId: 'doing', orders: 2000 });
     expect(await columnTitles(api, null, 'doing')).toEqual(['根任务', '子任务']);
     expect(await columnTitles(api, parentId, 'todo')).toEqual([]);
@@ -232,8 +239,8 @@ describe('PATCH /api/tasks/:id/parent', () => {
 
     await patchJson(api, `/api/tasks/${aId}/parent`, { parentId: newParentId, columnId: 'todo' });
 
-    const { tasks } = await (await api.request('/api/tree')).json();
-    expect(tasks.find((task: { id: string }) => task.id === bId).parentId).toBe(aId);
+    const { tasks } = await readJson<TreeBody>(await api.request('/api/tree'));
+    expect(tasks.find((task: { id: string }) => task.id === bId)!.parentId).toBe(aId);
   });
 
   it('挂到同一个父任务的同一列等价于追加到列末尾', async () => {
@@ -248,7 +255,7 @@ describe('PATCH /api/tasks/:id/parent', () => {
       columnId: 'todo',
     });
 
-    const { task } = await response.json();
+    const { task } = await readJson<TaskMutationBody>(response);
     expect(task.orders).toBe(3000);
     expect(await columnTitles(api, parentId, 'todo')).toEqual(['C', 'B']);
   });
@@ -307,8 +314,8 @@ describe('移动的边界与回归', () => {
 
     await patchJson(api, `/api/tasks/${movingId}`, { columnId: 'doing', position: 0 });
 
-    const board = await (await api.request('/api/board')).json();
-    const todo = board.columns.find((column: { id: string }) => column.id === 'todo');
+    const board = await readJson<BoardBody>(await api.request('/api/board'));
+    const todo = board.columns.find((column: { id: string }) => column.id === 'todo')!;
     expect(todo.tasks.map((task: { title: string; orders: number }) => [task.title, task.orders])).toEqual([
       ['留在原列一', 1000],
       ['留在原列二', 3000],
@@ -342,10 +349,10 @@ describe('移动的边界与回归', () => {
 
     const response = await patchJson(api, `/api/tasks/${childId}`, { columnId: 'done', position: 0 });
 
-    const { columnTasks } = await response.json();
-    expect(columnTasks[0]).toMatchObject({ id: childId, childTotal: 0, childDone: 0 });
-    const board = await (await api.request('/api/board')).json();
-    expect(board.columns[0].tasks[0]).toMatchObject({ id: parentId, childTotal: 2, childDone: 1 });
+    const { columnTasks } = await readJson<TaskMutationBody>(response);
+    expect(columnTasks[0]!).toMatchObject({ id: childId, childTotal: 0, childDone: 0 });
+    const board = await readJson<BoardBody>(await api.request('/api/board'));
+    expect(board.columns[0]!.tasks[0]!).toMatchObject({ id: parentId, childTotal: 2, childDone: 1 });
   });
 
   it('已归档任务不能被移动或改字段', async () => {

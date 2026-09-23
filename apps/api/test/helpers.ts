@@ -2,6 +2,10 @@ import path from 'node:path';
 import type { Db } from '../src/db/client.js';
 import { openDatabase } from '../src/db/client.js';
 import { runMigrations } from '../src/db/migrate.js';
+import type { Board, BoardTask } from '../src/repositories/board.js';
+import type { LayerSchedule } from '../src/repositories/deps.js';
+import type { SearchOutcome } from '../src/repositories/search.js';
+import type { TaskRecord, TreeTask } from '../src/repositories/tasks.js';
 
 export const migrationsDir = path.join(import.meta.dirname, '..', 'migrations');
 
@@ -63,4 +67,56 @@ export function insertTask(
     archivedAt: options.archived ? FIXED_TIME : null,
   });
   return id;
+}
+
+/**
+ * 读响应体并按调用方声明的形状返回。
+ *
+ * `Response.json()` 的类型是 `unknown`（JSON 本身没有形状信息），而用例要直接访问字段，
+ * 所以在这唯一一处集中断言，而不是在每个调用点写 `as`。形状取自 `src` 的响应类型，
+ * 于是「直接访问的字段被改名」会在 `tsc` 阶段红（见审计报告 D3）——这正是把 `test/**`
+ * 纳入类型检查的意义。覆盖范围只到直接属性访问：`toMatchObject({ ... })` 那种整体比对
+ * 在 vitest 里不做额外属性检查，字段改名仍然是运行期才红。
+ */
+export async function readJson<T>(response: Response): Promise<T> {
+  return (await response.json()) as T;
+}
+
+/** `GET /api/board[/:parentId]` 的响应。 */
+export type BoardBody = Board;
+
+/** `GET /api/tree` 的响应。 */
+export interface TreeBody {
+  tasks: TreeTask[];
+}
+
+/** `GET /api/search` 的响应。 */
+export type SearchBody = SearchOutcome;
+
+/** `GET /api/board[/:parentId]/cpm` 的响应。 */
+export type CpmBody = LayerSchedule;
+
+/** `POST /api/tasks` 的响应：裸任务，没有 columnTasks（见审计报告 B4）。 */
+export type TaskBody = TaskRecord;
+
+/** 三条 PATCH（`:id`、`:id/parent`、`:id/archive`）的统一响应：改动后的任务 + 它所在列的完整列表。 */
+export interface TaskMutationBody {
+  task: TaskRecord;
+  columnTasks: BoardTask[];
+}
+
+/** `DELETE /api/tasks/:id` 的响应：原列剩下的任务。 */
+export interface ColumnTasksBody {
+  columnTasks: BoardTask[];
+}
+
+/** `PUT /api/tasks/:id/deps` 的响应。 */
+export interface DepsBody {
+  task: TaskRecord;
+  predecessorIds: string[];
+}
+
+/** 统一错误响应（见 docs/spec.md「错误统一返回 { error: string }」）。 */
+export interface ErrorBody {
+  error: string;
 }
