@@ -30,6 +30,16 @@ function updatedAt(db: Db, id: string): string {
   return row.updated_at;
 }
 
+/**
+ * 断言「没刷新」用的哨兵时间戳：先写死这个值，再发请求。
+ * 直接比较前后两次 `new Date()` 会依赖两次调用跨毫秒，同一毫秒内静默通过。
+ */
+const SENTINEL_UPDATED_AT = '2000-01-01T00:00:00.000Z';
+
+function setUpdatedAt(db: Db, id: string): void {
+  db.prepare('UPDATE tasks SET updated_at = ? WHERE id = ?').run(SENTINEL_UPDATED_AT, id);
+}
+
 describe('PUT /api/tasks/:id/deps', () => {
   it('设置前置依赖：写入库并返回改动后的任务与升序 id 列表', async () => {
     const db = createTestDb();
@@ -82,17 +92,21 @@ describe('PUT /api/tasks/:id/deps', () => {
     const db = createTestDb();
     const aId = insertTask(db, { title: 'A', columnId: 'todo', orders: 1000 });
     const bId = insertTask(db, { title: 'B', columnId: 'todo', orders: 2000 });
+    const taskId = insertTask(db, { title: 'T', columnId: 'todo', orders: 3000 });
     const api = createApp(db);
 
-    await setDeps(api, bId, [aId]);
-    const before = updatedAt(db, bId);
+    await setDeps(api, taskId, [aId, bId]);
+    // 写入哨兵时间戳再发第二次请求：「有没有被刷新」于是不依赖两次 new Date() 是否跨毫秒。
+    // 依赖真实时钟的话，同一毫秒内的重复写入会让这条守卫静默通过（见审阅补记）。
+    setUpdatedAt(db, taskId);
 
-    // 顺序不同但集合相同，同样算没变。
-    const again = await setDeps(api, bId, [aId]);
+    // 两个前置任务反序提交：集合相同、顺序不同，同样算没变。
+    // 这条同时盯着 setTaskDeps 的「去重 + 排序」——少了它，反序提交会被当成一次真改动。
+    const again = await setDeps(api, taskId, [bId, aId]);
 
     expect(again.status).toBe(200);
-    expect(updatedAt(db, bId)).toBe(before);
-    expect(depRows(db)).toEqual([`${aId}->${bId}`]);
+    expect(updatedAt(db, taskId)).toBe(SENTINEL_UPDATED_AT);
+    expect(depRows(db)).toEqual([`${aId}->${taskId}`, `${bId}->${taskId}`].sort());
   });
 
   it('依赖真的变了才刷新 updated_at', async () => {
@@ -100,11 +114,11 @@ describe('PUT /api/tasks/:id/deps', () => {
     const aId = insertTask(db, { title: 'A', columnId: 'todo', orders: 1000 });
     const bId = insertTask(db, { title: 'B', columnId: 'todo', orders: 2000 });
     const api = createApp(db);
-    const before = updatedAt(db, bId);
+    setUpdatedAt(db, bId);
 
     await setDeps(api, bId, [aId]);
 
-    expect(updatedAt(db, bId)).not.toBe(before);
+    expect(updatedAt(db, bId)).not.toBe(SENTINEL_UPDATED_AT);
   });
 
   it('任务不存在返回 404', async () => {
@@ -292,5 +306,29 @@ describe('PUT /api/tasks/:id/deps', () => {
 
     expect(response.status).toBe(400);
     expect(await response.json()).toEqual({ error: 'Content-Type 必须是 application/json' });
+  });
+
+  it('Content-Type 中间件只认 /api/tasks 与 /api/tasks/ 两个前缀', async () => {
+    const db = createTestDb();
+    const aId = insertTask(db, { title: 'A', columnId: 'todo', orders: 1000 });
+    const api = createApp(db);
+
+    // 形近前缀不是任务接口：不该被这条中间件拦成 400。
+    const similar = await api.request('/api/tasks-nope/x', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: 'a=1',
+    });
+    expect(similar.status).toBe(404);
+    expect(await similar.json()).toEqual({ error: 'not found' });
+
+    // 真正在任务接口下、但方法不对的写请求仍会被拦（宁可多拦，见 routes/tasks.ts 的注释）。
+    const wrongMethod = await api.request(`/api/tasks/${aId}`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: 'a=1',
+    });
+    expect(wrongMethod.status).toBe(400);
+    expect(await wrongMethod.json()).toEqual({ error: 'Content-Type 必须是 application/json' });
   });
 });

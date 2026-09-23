@@ -85,7 +85,7 @@ export function computeSchedule(nodes: ScheduleNodeInput[], edges: ScheduleEdgeI
   const graph = buildGraph(nodes, edges);
   const order = topologicalOrder(graph);
   const earliest = earliestTimes(graph, order);
-  const projectDuration = Math.max(0, ...[...earliest.values()].map((time) => time.finish));
+  const projectDuration = longestFinish(earliest);
   const latest = latestTimes(graph, order, projectDuration);
 
   const tasks = graph.ids.map((id) => {
@@ -163,8 +163,9 @@ function topologicalOrder(graph: Graph): string[] {
 
   const queue = graph.ids.filter((id) => indegree.get(id) === 0);
   const order: string[] = [];
-  while (queue.length > 0) {
-    const id = queue.shift()!;
+  // 用游标而不是 shift()：shift() 每步都要搬动整个数组，节点多时是 O(n²)。
+  for (let cursor = 0; cursor < queue.length; cursor += 1) {
+    const id = queue[cursor]!;
     order.push(id);
     for (const next of graph.successors.get(id) ?? []) {
       const remaining = (indegree.get(next) ?? 0) - 1;
@@ -179,7 +180,9 @@ function topologicalOrder(graph: Graph): string[] {
   return order;
 }
 
-/** 正向（按拓扑序）算最早开始 / 最早完成：没有前置任务时从 0 开始。 */
+/**
+ * 正向（按拓扑序）算最早开始 / 最早完成：没有前置任务时从 0 开始。
+ */
 function earliestTimes(graph: Graph, order: string[]): Map<string, { start: number; finish: number }> {
   const times = new Map<string, { start: number; finish: number }>();
   for (const id of order) {
@@ -193,6 +196,18 @@ function earliestTimes(graph: Graph, order: string[]): Map<string, { start: numb
 }
 
 /**
+ * 项目总工期：所有任务最早完成时间的最大值（多终点模型，不引入单源单汇的 AOE 事件顶点）。
+ * 用循环而不是 `Math.max(...finishes)`：展开传参在节点数到十万量级会抛 RangeError。
+ */
+function longestFinish(earliest: Map<string, { start: number; finish: number }>): number {
+  let longest = 0;
+  for (const time of earliest.values()) {
+    longest = Math.max(longest, time.finish);
+  }
+  return longest;
+}
+
+/**
  * 反向（按拓扑序倒着）算最晚开始 / 最晚完成。
  * 没有后继的任务用项目总工期当最晚完成时间——多终点模型下这正是「不拖长项目」的边界。
  */
@@ -203,11 +218,13 @@ function latestTimes(
 ): Map<string, { start: number; finish: number }> {
   const times = new Map<string, { start: number; finish: number }>();
   for (const id of [...order].reverse()) {
-    const successors = graph.successors.get(id) ?? [];
-    let finish = projectDuration;
-    if (successors.length > 0) {
-      finish = Math.min(...successors.map((successorId) => times.get(successorId)?.start ?? 0));
+    // 没有后继的任务（终点）用项目总工期当最晚完成时间；有后继时取后继最晚开始里最小的那个。
+    // 先用 Infinity 起手、最后兜底，避免用展开传参给 Math.min（后继多时会 RangeError）。
+    let finish = Number.POSITIVE_INFINITY;
+    for (const successorId of graph.successors.get(id) ?? []) {
+      finish = Math.min(finish, times.get(successorId)?.start ?? 0);
     }
+    if (!Number.isFinite(finish)) finish = projectDuration;
     times.set(id, { start: finish - (graph.duration.get(id) ?? 0), finish });
   }
   return times;

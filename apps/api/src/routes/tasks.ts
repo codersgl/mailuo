@@ -30,10 +30,16 @@ export function createTaskRoutes(db: Db): Hono {
 
   // zValidator 在 Content-Type 不是 JSON 时会直接跳过解析，请求体变成 undefined，
   // 报错就成了「列 id 必须是字符串」这种误导文案（curl -d 默认发 form-urlencoded）。
-  // 先明确提示，省掉一轮排查。只拦 /api/tasks 下带 JSON 请求体的写请求，别影响其他路径的 404。
+  // 先明确提示，省掉一轮排查。
+  //
+  // 路径判据要带边界：`startsWith('/api/tasks')` 会把 /api/tasks-nope 也算进来，
+  // 把本该 404 的路径变成 400。这里刻意**宁可多拦**：
+  // /api/tasks/<id> 这类不存在的写路由也会拿到这条 400 而不是 404，代价可接受；
+  // 反过来漏拦会让新加的写路由静默退回那条误导文案（见 docs/decisions.md D15）。
   routes.use('*', async (c, next) => {
     const isWrite = ['POST', 'PATCH', 'PUT'].includes(c.req.method);
-    if (isWrite && c.req.path.startsWith('/api/tasks')) {
+    const isTaskApiPath = c.req.path === '/api/tasks' || c.req.path.startsWith('/api/tasks/');
+    if (isWrite && isTaskApiPath) {
       const contentType = c.req.header('content-type') ?? '';
       if (!contentType.includes('application/json')) {
         return c.json({ error: 'Content-Type 必须是 application/json' }, 400);
