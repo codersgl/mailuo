@@ -149,6 +149,22 @@ export function DependencyGraph({
     };
   }, [panning]);
 
+  /**
+   * Escape 取消选中（与点空白处同一个动作，详情卡跟着收起）。
+   *
+   * 挂在 document 上而不是节点按钮或舞台上：焦点未必在图里——点过详情卡里的按钮之后，
+   * 或 Safari 点节点按钮不给焦点时，按 Esc 只有 document 收得到（审计报告 B3）。
+   * 只在真的有选中项时挂，别的 Esc 处理（抽屉、搜索框）不受影响。
+   */
+  useEffect(() => {
+    if (selectedId === null) return;
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') setSelectedId(null);
+    };
+    document.addEventListener('keydown', onKeyDown);
+    return () => document.removeEventListener('keydown', onKeyDown);
+  }, [selectedId]);
+
   function handlePointerDown(event: ReactPointerEvent<HTMLDivElement>) {
     if (event.button !== 0) return;
     // 节点与详情卡自己处理点击，从它们身上按下不平移。

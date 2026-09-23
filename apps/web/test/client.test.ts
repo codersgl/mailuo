@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   ApiError,
+  REQUEST_TIMEOUT_MS,
   changeTaskParent,
   createTask,
   deleteTask,
@@ -132,6 +133,71 @@ describe('fetchBoard', () => {
     const failure = await fetchBoard(null, false).catch((cause: unknown) => cause);
 
     expect((failure as ApiError).message).toBe('后端返回的不是 JSON');
+  });
+});
+
+/**
+ * 超时（审计报告 C1）。
+ *
+ * 这里不真的等 10 秒：真正要钉住的是「fetch 拿到超时信号」与「超时被翻译成哪句文案」。
+ * 三条分别覆盖请求阶段超时、读 body 阶段超时，以及「非超时的失败仍是原来那句文案」。
+ */
+describe('请求超时', () => {
+  it('每次请求都带上一个超时信号，超时值是 10 秒', async () => {
+    const calls = stubFetch(() => jsonResponse(200, { parentId: null, columns: [] }));
+
+    await fetchBoard(null, false);
+
+    expect(REQUEST_TIMEOUT_MS).toBe(10_000);
+    expect(calls[0]?.init?.signal).toBeInstanceOf(AbortSignal);
+    expect((calls[0]?.init?.signal as AbortSignal).aborted).toBe(false);
+  });
+
+  it('请求阶段超时给出可重试的文案，而不是「连不上后端」', async () => {
+    stubFetch(() => {
+      throw new DOMException('signal timed out', 'TimeoutError');
+    });
+
+    const failure = await fetchBoard(null, false).catch((cause: unknown) => cause);
+
+    expect(failure).toBeInstanceOf(ApiError);
+    expect((failure as ApiError).status).toBe(0);
+    expect((failure as ApiError).message).toBe('后端响应超时，请重试');
+  });
+
+  it('只给 AbortError 的实现按超时处理（同一件事的两种抛法）', async () => {
+    stubFetch(() => {
+      throw new DOMException('aborted', 'AbortError');
+    });
+
+    const failure = await fetchBoard(null, false).catch((cause: unknown) => cause);
+
+    expect((failure as ApiError).message).toBe('后端响应超时，请重试');
+  });
+
+  it('读 body 时超时同样给超时文案', async () => {
+    stubFetch(
+      () =>
+        ({
+          ok: true,
+          status: 200,
+          text: () => Promise.reject(new DOMException('signal timed out', 'TimeoutError')),
+        }) as unknown as Response,
+    );
+
+    const failure = await fetchBoard(null, false).catch((cause: unknown) => cause);
+
+    expect((failure as ApiError).message).toBe('后端响应超时，请重试');
+  });
+
+  it('不是超时的失败仍是原来那句「连不上后端」', async () => {
+    stubFetch(() => {
+      throw new TypeError('Failed to fetch');
+    });
+
+    const failure = await fetchBoard(null, false).catch((cause: unknown) => cause);
+
+    expect((failure as ApiError).message).toContain('连不上后端');
   });
 });
 

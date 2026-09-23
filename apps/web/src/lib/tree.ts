@@ -110,24 +110,26 @@ export function descendantIds(tasks: TreeTask[], taskId: string): Set<string> {
  * 任务树拖动的落点，与看板列内的落点（domain/board.ts 的 DropSlot）不是一回事：
  * 树只改层级、不排序，所以落点只有「挂到某个节点下」和「挂到根下」两种。
  *
- * 悬停行的上/下半决定子级还是兄弟——与 B 版原型一致，也和多数树形视图工具的习惯一致。
- * `afterTaskId` 非空表示「放到这个节点之后、与它同级」，用于在界面上画一条插入线；
- * 落库时前端只发父级 id（后端一律追加到末尾），树本来就不支持排序。
+ * 悬停行的上/下半决定子级还是同级——与 B 版原型一致，也和多数树形视图工具的习惯一致。
+ * 下半区的结果是「与目标同级」，也就是挂到目标的父级下；落库时后端一律把任务追加到新层级的
+ * 末尾，所以两半合起来只需要给出新的 `parentId`。
+ *
+ * 早期版本还返回一个 `afterTaskId` 锚点，界面据此画一条「插到这一行后面」的线。那条线暗示了
+ * 并不存在的排序：用户按线的位置理解落点，实际却落在列尾（审计报告 B8）。删掉锚点之后，
+ * 「下半区落到根看板」这种没有对应行的情形改由任务树顶部的落点提示表达（见 Sidebar）。
  */
 export interface TreeDrop {
   /** 新的父任务 id；null 表示挂到根看板下。 */
   parentId: string | null;
-  /** 同级的插入锚点，仅用于界面提示。 */
-  afterTaskId: string | null;
 }
 
 /**
  * 把「拖动的节点 + 指针悬停的行 + 指针在行的上半还是下半」换算成落点。
  * 返回 null 表示这里不能放：拖到自己或自己的后代下会成环，后端也会用 400 拒绝。
  *
- * 下半区一律是「与目标同级、排在它后面」——包括目标是顶层节点时（新父级为 null）。
+ * 下半区一律是「与目标同级」——包括目标是顶层节点时（新父级为 null）。
  * 早期版本让顶层节点的下半区退化成「成为它的子节点」，于是「把 B 拖到 A 下面」会变成
- * 「把 B 拖进 A 里面」，与界面上画的插入线不是一回事（用例 `useTreeDrag` 抓到的）。
+ * 「把 B 拖进 A 里面」，与界面的提示不是一回事（用例 `useTreeDrag` 抓到的）。
  */
 export function resolveTreeDrop(
   tasks: TreeTask[],
@@ -142,7 +144,7 @@ export function resolveTreeDrop(
   if (target === undefined) return null;
 
   if (over.lowerHalf) {
-    return { parentId: target.parentId, afterTaskId: target.id };
+    return { parentId: target.parentId };
   }
-  return { parentId: target.id, afterTaskId: null };
+  return { parentId: target.id };
 }

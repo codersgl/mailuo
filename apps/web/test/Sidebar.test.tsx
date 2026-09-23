@@ -31,6 +31,26 @@ const treeTasks: TreeTask[] = [
   },
 ];
 
+/** 造一个树节点。默认待办列、未归档、未估工期，只在用例需要时覆盖。 */
+function treeTask(
+  id: string,
+  parentId: string | null,
+  title: string,
+  overrides: Partial<TreeTask> = {},
+): TreeTask {
+  return {
+    id,
+    parentId,
+    title,
+    columnId: 'todo',
+    archivedAt: null,
+    durationMinutes: null,
+    spentMinutes: 0,
+    runningSince: null,
+    ...overrides,
+  };
+}
+
 /** 后端的实际行为：includeArchived 关着时不返回归档节点。 */
 function visibleOf(tasks: TreeTask[]): TreeTask[] {
   return tasks.filter((task) => task.archivedAt === null);
@@ -90,6 +110,9 @@ beforeEach(() => {
 
 afterEach(() => {
   vi.unstubAllGlobals();
+  // 落点用例会给 document 装一个 elementFromPoint 替身（jsdom 本来没有这个 API），
+  // 这里统一拆掉，免得漏给后面的用例。
+  delete (document as unknown as { elementFromPoint?: unknown }).elementFromPoint;
   // vitest 没开 globals，@testing-library 的自动清理不会注册，这里手动清 DOM。
   cleanup();
 });
@@ -140,6 +163,95 @@ describe('Sidebar', () => {
     expect(await screen.findByText('旧版导出')).toBeTruthy();
     expect(requested).toEqual(['/api/tree?includeArchived=1']);
     expect(screen.getByText('归档')).toBeTruthy();
+  });
+
+  it('折叠徽标与展开态同一口径：只数未归档子任务', async () => {
+    // 一个未归档子任务 + 一个已归档子任务，且打开「显示已归档」（否则归档节点根本不在树里）。
+    const mixed: TreeTask[] = [
+      treeTask('a', null, '重构登录'),
+      treeTask('a1', 'a', '未归档子任务'),
+      treeTask('a2', 'a', '已归档子任务', { columnId: 'done', archivedAt: '2026-09-22T00:00:00.000Z' }),
+    ];
+    stubTreeFetch(mixed);
+    renderSidebar(null, { showArchived: true });
+    await screen.findByText('重构登录');
+
+    fireEvent.click(screen.getByRole('button', { name: '折叠「重构登录」' }));
+
+    // 老实现显示 children.length（2），与展开后的「0/1」对不上。归档的那部分只在 title 里说明。
+    expect(screen.getByTitle('有 1 个子任务（另有 1 个已归档），当前已折叠')).toBeTruthy();
+    expect(screen.queryByText('2')).toBeNull();
+  });
+
+  it('下半区落到根层时，树顶给出「挂到根看板」的落点提示', async () => {
+    stubTreeFetch();
+    renderSidebar();
+    // b（支付对账）是顶层节点：它的下半区意味着「与它同级」= 挂到根看板，树里没有行可高亮。
+    await screen.findByText('支付对账');
+
+    /**
+     * jsdom 没有布局，也没有 elementFromPoint，所以用一个替身告诉 useTreeDrag
+     * 「指针压在 b 这一行的下半区」（行的假矩形高 20，从 y=0 起，y=15 算下半区）。
+     * 被拖的是 b 的子任务 b1（对账脚本）：drag 自己压到自己身上会被判成无效落点。
+     */
+    (document as unknown as { elementFromPoint: () => Element | null }).elementFromPoint = () => {
+      const row = {
+        getAttribute: () => 'b',
+        getBoundingClientRect: () => ({ top: 0, height: 20 }),
+      };
+      return { closest: () => row } as unknown as Element;
+    };
+
+    const row = screen.getByText('对账脚本');
+    fireEvent.pointerDown(row, { button: 0, clientX: 0, clientY: 0 });
+    fireEvent.pointerMove(document, { clientX: 40, clientY: 15 });
+
+    expect(screen.getByText('挂到根看板')).toBeTruthy();
+
+    const hint = screen.getByText('挂到根看板').closest('[data-root-drop-hint]');
+    expect(hint).not.toBeNull();
+    /**
+     * 提示必须在滚动容器**之外**（绝对定位覆盖在树顶），不能按文档流插在列表里：
+     * 那种写法在提示出现时把所有行下推一行高（26px），而落点判定每次 pointermove 都重读
+     * 实时矩形，于是同一指针位置会算出不同的行——提示闪、松手还可能落空（审阅实测的反馈环）。
+     */
+    expect(hint?.className).toContain('absolute');
+    const scroller = hint?.parentElement?.querySelector('.overflow-y-auto');
+    expect(scroller).not.toBeNull();
+    expect(scroller?.contains(hint ?? null)).toBe(false);
+
+    // 松手后提示要消失：它只在拖动过程中有意义。
+    fireEvent.pointerUp(document, { clientX: 40, clientY: 15 });
+    await waitFor(() => expect(screen.queryByText('挂到根看板')).toBeNull());
+
+    // 对照：落到某个节点下时不出现这一行——那种落点高亮的是那一行本身（a1 的上半区）。
+    (document as unknown as { elementFromPoint: () => Element | null }).elementFromPoint = () => {
+      const row = {
+        getAttribute: () => 'a1',
+        getBoundingClientRect: () => ({ top: 0, height: 20 }),
+      };
+      return { closest: () => row } as unknown as Element;
+    };
+    fireEvent.pointerDown(screen.getByText('补单元测试'), { button: 0, clientX: 0, clientY: 0 });
+    fireEvent.pointerMove(document, { clientX: 40, clientY: 5 });
+
+    expect(screen.queryByText('挂到根看板')).toBeNull();
+  });
+
+  it('子任务全部已归档时，折叠态不显示「0」徽标（与展开态一样没有徽标）', async () => {
+    const allArchived: TreeTask[] = [
+      treeTask('a', null, '重构登录'),
+      treeTask('a1', 'a', '已归档子任务', { archivedAt: '2026-09-22T00:00:00.000Z' }),
+    ];
+    stubTreeFetch(allArchived);
+    renderSidebar(null, { showArchived: true });
+    await screen.findByText('重构登录');
+
+    fireEvent.click(screen.getByRole('button', { name: '折叠「重构登录」' }));
+
+    // 「已折叠」还在（三角说明它确实有子任务），但没有数字徽标：展开态也没有。
+    expect(screen.getByText('已折叠')).toBeTruthy();
+    expect(screen.queryByText('0')).toBeNull();
   });
 
   it('点开关把新值交给上层，自己不落 localStorage', async () => {
