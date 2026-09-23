@@ -87,7 +87,7 @@ function readErrorMessage(body: unknown): string | undefined {
 /**
  * 「显示已归档」开关。后端认 `1` 和 `true`（见 docs/spec.md），这里统一发 `1`。
  * 开关状态只存在前端（D24），所以每次都要显式传，不能靠后端记住。
- * 看板、文件树、搜索以及文件树的重新取数都走这一个函数，避免几处各写一遍。
+ * 看板、任务树、搜索以及它们的重新取数都走这一个函数，避免几处各写一遍。
  */
 function withArchived(url: string, includeArchived: boolean): string {
   if (!includeArchived) return url;
@@ -100,7 +100,7 @@ export function fetchBoard(parentId: string | null, includeArchived: boolean): P
   return request<Board>(withArchived(path, includeArchived));
 }
 
-/** 读完整任务树，用来建左侧文件树。默认不含归档节点。 */
+/** 读完整任务树，用来建左侧的任务树面板。默认不含归档节点。 */
 export function fetchTree(includeArchived: boolean): Promise<TreeTask[]> {
   return request<{ tasks: TreeTask[] }>(withArchived('/api/tree', includeArchived)).then(
     (body) => body.tasks,
@@ -148,7 +148,7 @@ export interface TaskFieldsPatch {
 
 /**
  * PATCH 系写接口（改字段、归档）的响应是 `{ task, columnTasks }`。这里只取 `task`：
- * 前端在写成功后统一静默重取看板、文件树与面包屑，不用响应里的 `columnTasks` 做整列替换
+ * 前端在写成功后统一静默重取看板、任务树与面包屑，不用响应里的 `columnTasks` 做整列替换
  * （理由见 docs/decisions.md D35）。接口契约不变，多余的那一半只是不消费。
  * `POST /api/tasks` 返回的是裸任务记录，不走这个函数（见 createTask）。
  */
@@ -187,7 +187,7 @@ export function moveTask(
   }).then(readWrittenTask);
 }
 
-/** 文件树拖动改父级：任务挂到新父级下，并追加到目标列末尾（见 docs/spec.md 的 API 契约）。 */
+/** 任务树拖动改父级：任务挂到新父级下，并追加到目标列末尾（见 docs/spec.md 的 API 契约）。 */
 export function changeTaskParent(
   id: string,
   input: { parentId: string | null; columnId: string },

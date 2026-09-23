@@ -512,7 +512,7 @@ function DetailCard({
     <aside
       data-graph-detail
       aria-label={`${node.title} 的排期`}
-      // max-w 与 w 一起用：宽屏下是固定 268px 的卡片，窄屏（375px 视口 + 文件树展开时主区只有
+      // max-w 与 w 一起用：宽屏下是固定 268px 的卡片，窄屏（375px 视口 + 任务树展开时主区只有
       // 123px）下跟着缩到「主区宽 − 左右各 14px」。只在 w 上做响应式会把内容挤扁，只给 max-w
       // 不改 w 又不会缩——两者都要（审阅实测过：不缩时卡片左溢 159px，「进入看板」四个字整个看不见）。
       className="absolute bottom-3.5 right-3.5 w-[268px] max-w-[calc(100%-28px)] rounded-[6px] border border-line bg-surface p-2.5 shadow-menu"

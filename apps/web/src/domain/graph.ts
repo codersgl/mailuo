@@ -207,7 +207,7 @@ export function edgeGeometry(
  *
  * 依赖图是固定带归档取的（见 hooks/useLayerSchedule.ts 的 D49 理由：抽屉要靠它认出已归档的前置），
  * 所以「图视图要不要显示归档任务」只能在前端过滤：关着开关时把归档节点与连着它的边一起去掉，
- * 口径与看板列、文件树一致。
+ * 口径与看板列、任务树一致。
  */
 export function visibleScheduleGraph(
   schedule: LayerSchedule,

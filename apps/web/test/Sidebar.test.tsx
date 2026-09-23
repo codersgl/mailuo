@@ -5,7 +5,7 @@ import { Sidebar } from '../src/components/Sidebar';
 import type { TreeTask } from '../src/api/types';
 
 /**
- * 文件树的行为：层级与徽标、点名字导航、三角只折叠、归档样式与开关、
+ * 任务树的行为：层级与徽标、点名字导航、三角只折叠、归档样式与开关、
  * 「当前看板被折叠在祖先里时自动展开」、写操作后的静默重取、以及本地偏好坏掉时的兜底。
  *
  * 开关本身由 BoardPage 持有（看板列也认它），所以这里只测「受控显示 + 回调」，
@@ -169,7 +169,7 @@ describe('Sidebar', () => {
     rerender(<Sidebar {...props} refreshToken={1} />);
     await waitFor(() => expect(resolvers).toHaveLength(2));
 
-    // 第二次请求还在飞：树不能被清成加载态，否则写一次标题文件树就会闪一下。
+    // 第二次请求还在飞：树不能被清成加载态，否则改一次标题、任务树就会闪一下。
     expect(screen.queryByText('加载中…')).toBeNull();
     expect(screen.getByText('重构登录')).toBeTruthy();
 
@@ -268,14 +268,28 @@ describe('Sidebar', () => {
     expect(await screen.findByText('暂无任务')).toBeTruthy();
   });
 
+  /**
+   * 面板的可见标题。这条断言必须直接问 heading 角色：下面 `panel()` 取的是 aside 的
+   * `aria-label`，而 aria-label 会盖住内容，标题被改错时「按名字取面板」照样绿
+   * （审阅的变异 M2：把标题改回「文件树」，全量用例无一变红）。
+   * 改名的核心字符串就是这一处，所以单独钉一条。
+   */
+  it('面板标题是「任务树」', async () => {
+    stubTreeFetch();
+    renderSidebar();
+
+    expect(await screen.findByText('重构登录')).toBeTruthy();
+    expect(screen.getByRole('heading', { name: '任务树' })).toBeTruthy();
+  });
+
   describe('面板收起', () => {
     /**
      * 面板本体。`aside` 在 ARIA 里是 complementary 角色，`getByLabelText` 只认表单控件，
-     * 所以用角色 + 名字取。名字固定是「文件树」，不随收起状态变。
+     * 所以用角色 + 名字取。名字固定是「任务树」，不随收起状态变。
      */
-    const panel = () => screen.getByRole('complementary', { name: '文件树' });
+    const panel = () => screen.getByRole('complementary', { name: '任务树' });
     /** 收起按钮（展开与收起共用同一个，名字随状态变）。 */
-    const toggle = () => screen.getByRole('button', { name: /(收起|展开)文件树/ });
+    const toggle = () => screen.getByRole('button', { name: /(收起|展开)任务树/ });
     /**
      * 树在不在无障碍树里。不用 `closest('[hidden]')` 这种结构判断，而是问测试库
      * 「还能不能按角色拿到树里的按钮」——这正是读屏与 Tab 顺序关心的问题。
@@ -303,6 +317,8 @@ describe('Sidebar', () => {
       // 树留在 DOM 里（展开是瞬时的），但用 hidden 藏起来：display:none 之后它不再参与
       // 读屏与 Tab 顺序，所以这里断言的是「不可见」，不是「节点不存在」。
       expect(isTreeVisible()).toBe(false);
+      // 标题只是 sr-only，仍留在无障碍树里：收起时读屏用户靠标题导航还能找到这块面板。
+      expect(screen.getByRole('heading', { name: '任务树' })).toBeTruthy();
       expect(screen.getByText('重构登录')).toBeTruthy();
       expect(screen.queryByRole('checkbox', { name: '显示已归档' })).toBeNull();
       // fireEvent.click 由 act 包着，落盘的 effect 在它返回前就跑完了（见 docs/decisions.md D44）。

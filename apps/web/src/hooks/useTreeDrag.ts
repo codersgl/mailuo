@@ -5,7 +5,7 @@ import { resolveTreeDrop } from '../lib/tree';
 import type { TreeDrop } from '../lib/tree';
 
 /**
- * 文件树的拖动：只能改父级，不能在树里排序（规范「界面行为」）。
+ * 任务树的拖动：只能改父级，不能在树里排序（规范「界面行为」）。
  *
  * 与列视图的卡片拖拽共用同一套指针语义（见 hooks/useCardDrag 的说明），差别有三处：
  * - 落点是「挂到某个节点下」或「排到某个节点后面」，不是列里的下标；

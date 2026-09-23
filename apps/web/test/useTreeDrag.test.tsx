@@ -4,7 +4,7 @@ import { useTreeDrag } from '../src/hooks/useTreeDrag';
 import type { TreeTask } from '../src/api/types';
 
 /**
- * 文件树拖动的指针语义。与 useCardDrag 是同一套阈值与取消规则，但落点语义不同
+ * 任务树拖动的指针语义。与 useCardDrag 是同一套阈值与取消规则，但落点语义不同
  * （改层级而不是排序），所以单独钉住：拖到自己/后代不生效、点击与拖拽的分界、
  * pointercancel 走取消。
  */

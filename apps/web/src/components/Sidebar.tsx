@@ -22,7 +22,7 @@ const isStringArray = (value: unknown): boolean =>
 const isBoolean = (value: unknown): boolean => typeof value === 'boolean';
 
 /**
- * 左侧文件树。点任务名进入该任务的看板；三角只负责展开折叠。
+ * 左侧任务树。点任务名进入该任务的看板；三角只负责展开折叠。
  * 归档是否出现在树里由后端的 `?includeArchived` 决定，开关本身由 BoardPage 持有
  * （看板列也要认同一个开关，见 docs/decisions.md D35），这里只做受控显示与回调。
  *
@@ -127,7 +127,7 @@ export function Sidebar({
   return (
     <aside
       // 名字固定不随状态变：状态已经由按钮的 aria-expanded 表达，可访问名字保持稳定是惯例。
-      aria-label="文件树"
+      aria-label="任务树"
       // width 走过渡：收起/展开时看板是挤过去而不是跳过去，用户能看清是哪一块变窄了。
       // 收起态只留窄条，所以 transition 结束时布局与「一开始就是收起的」完全一致。
       //
@@ -147,7 +147,7 @@ export function Sidebar({
       >
         <div className="flex items-center justify-between gap-2">
           {/*
-            收起时标题藏到 sr-only（窄条放不下可见的标题），收益是标题导航里仍然留着「文件树」。
+            收起时标题藏到 sr-only（窄条放不下可见的标题），收益是标题导航里仍然留着「任务树」。
             按钮的名字不依赖它：按钮自己带 aria-label。
           */}
           <h2
@@ -157,7 +157,7 @@ export function Sidebar({
                 : 'text-[11.5px] font-semibold tracking-[0.3px] text-ink-2'
             }
           >
-            文件树
+            任务树
           </h2>
           <CollapseToggle
             toggleRef={toggleRef}
@@ -262,7 +262,7 @@ function CollapseToggle({
   collapsed: boolean;
   onToggle: () => void;
 }) {
-  const label = collapsed ? '展开文件树' : '收起文件树';
+  const label = collapsed ? '展开任务树' : '收起任务树';
   return (
     <button
       ref={toggleRef}

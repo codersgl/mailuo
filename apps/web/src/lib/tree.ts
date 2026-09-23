@@ -1,7 +1,7 @@
 import type { TreeTask } from '../api/types';
 import { DONE_COLUMN_ID } from '../domain/columns';
 
-/** 文件树的一个节点：一个任务加它的子节点。 */
+/** 任务树的一个节点：一个任务加它的子节点。 */
 export interface TreeNode {
   task: TreeTask;
   children: TreeNode[];
@@ -107,10 +107,10 @@ export function descendantIds(tasks: TreeTask[], taskId: string): Set<string> {
 }
 
 /**
- * 文件树拖动的落点，与看板列内的落点（domain/board.ts 的 DropSlot）不是一回事：
+ * 任务树拖动的落点，与看板列内的落点（domain/board.ts 的 DropSlot）不是一回事：
  * 树只改层级、不排序，所以落点只有「挂到某个节点下」和「挂到根下」两种。
  *
- * 悬停行的上/下半决定子级还是兄弟——与 B 版原型一致，也和多数文件树工具的习惯一致。
+ * 悬停行的上/下半决定子级还是兄弟——与 B 版原型一致，也和多数树形视图工具的习惯一致。
  * `afterTaskId` 非空表示「放到这个节点之后、与它同级」，用于在界面上画一条插入线；
  * 落库时前端只发父级 id（后端一律追加到末尾），树本来就不支持排序。
  */
