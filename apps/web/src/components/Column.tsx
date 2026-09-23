@@ -41,9 +41,14 @@ export function Column({
   const creating = create.creatingColumnId === column.id;
 
   return (
-    // self-stretch 让列体撑满网格行高（外层网格是 items-start）。这不只是好看：
-    // 列尾的空白是「拖到本列末尾」唯一的落点，列只有内容高的话，最后一张卡片下面就没有地方可放。
-    <section data-column-id={column.id} className="flex min-w-0 flex-col self-stretch">
+    // self-stretch 让列体撑满网格行高（外层网格有确定高度，见 BoardView 的 h-full 注释）。
+    // 这不只是好看：列尾的空白是「拖到本列末尾」唯一的落点，列只有内容高的话，
+    // 最后一张卡片下面就没有地方可放（改动前实测列高 114px，而看板区 575px）。
+    //
+    // pb-7 是列底那 28px 留白，放在列上而不是网格上：padding 属于元素自己的盒子、
+    // 能被 elementFromPoint 命中，所以列尾一直到看板区底部都是有效落点；
+    // 内容超过一屏时它也仍然在最后一张卡片下面。
+    <section data-column-id={column.id} className="flex min-w-0 flex-col self-stretch pb-7">
       <div className="sticky top-0 z-[5] flex items-center gap-[7px] border-b border-line bg-canvas px-0.5 pt-3 pb-[9px]">
         <h2 className="text-[12px] font-semibold tracking-[0.3px] text-ink-2">{column.name}</h2>
         <span
