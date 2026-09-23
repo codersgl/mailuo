@@ -70,7 +70,8 @@ async function request<T>(path: string, init?: WriteInit): Promise<T> {
   }
 
   // 读 body 也可能失败（连接被重置、读到一半超时等），和 fetch 本身一样归到「拿不到响应」这一类。
-  let text = '';
+  // 初值刻意不写：try 里必然赋值，catch 里直接抛，声明成未初始化可以让「漏赋值」在编译期暴露。
+  let text: string;
   try {
     text = await response.text();
   } catch (cause) {

@@ -27,6 +27,7 @@
 pnpm install          # 安装全部工作区依赖
 pnpm dev:api          # 启动后端，默认 http://localhost:3001
 pnpm dev:web          # 启动前端，默认 http://localhost:5173（需要后端同时在跑）
+pnpm lint             # ESLint（配置见根目录 eslint.config.mjs）
 pnpm test             # 跑测试
 pnpm typecheck        # 类型检查
 pnpm build            # 编译后端到 apps/api/dist，打包前端到 apps/web/dist
@@ -34,6 +35,15 @@ pnpm icons            # 只改了 brand/ 下的图标母版时跑，重新生成
 ```
 
 开发时前端由 Vite 提供服务，`/api` 请求由 Vite 代理到后端，所以浏览器里只访问 5173 即可。
+
+CI（`.github/workflows/ci.yml`）在推送到 main 与每个 PR 上依次跑 `pnpm lint`、`pnpm typecheck`、
+`pnpm build`、`pnpm test`，与本地命令完全一致。顺序不能反：`bin/mailuo.test.mjs` 里有几条进程级
+用例会真的启动服务，要读构建产物，所以 CI 里 build 在 test 之前。
+
+`pnpm lint` 用的 typescript-eslint 目前只支持 TypeScript 6 的编译器 API，而本仓库构建用
+TypeScript 7，所以根 `devDependencies` 里的 `typescript@6` 只服务 lint，`apps/*` 各自的
+`typescript@7` 才是 `pnpm typecheck` / `pnpm build` 用的那个。原因与后续处置见
+`docs/decisions.md` D70。
 
 ## 生产运行
 
