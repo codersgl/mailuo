@@ -263,9 +263,9 @@ test('resolveConfig：版本提示默认开，MAILUO_NO_UPDATE_CHECK=1 才关；
   assert.equal(resolveConfig([], env({ MAILUO_NO_UPDATE_CHECK: '0' })).updateCheck, true);
 
   assert.equal(resolveConfig([], env()).registry, 'https://registry.npmjs.org');
-  // 用镜像或私有源的用户只配过 npm，这里跟随它，不必再配一遍。
+  // 用镜像或私有源的用户只配过 npm，这里跟随它，不必再配一遍；两边的变量都去空白。
   assert.equal(
-    resolveConfig([], env({ npm_config_registry: 'https://mirror.example/' })).registry,
+    resolveConfig([], env({ npm_config_registry: '  https://mirror.example/  ' })).registry,
     'https://mirror.example/',
   );
   // 自己的变量优先于 npm 的配置；空串视为没设，回落而不是当成一个空地址。
@@ -277,6 +277,9 @@ test('resolveConfig：版本提示默认开，MAILUO_NO_UPDATE_CHECK=1 才关；
     'https://own.example',
   );
   assert.equal(resolveConfig([], env({ MAILUO_REGISTRY: '  ' })).registry, 'https://registry.npmjs.org');
+  // 构造不出 URL 的地址当没设：否则每次启动都会在 fetch 里抛错被吞掉，表现为功能永远没反应。
+  assert.equal(resolveConfig([], env({ npm_config_registry: 'not a url' })).registry, 'https://registry.npmjs.org');
+  assert.equal(resolveConfig([], env({ MAILUO_REGISTRY: 'not a url' })).registry, 'https://registry.npmjs.org');
 });
 
 test('parseVersion 与 isNewerVersion：只认三段数字，只有严格更新才算新', () => {
@@ -285,16 +288,24 @@ test('parseVersion 与 isNewerVersion：只认三段数字，只有严格更新�
   assert.deepEqual(parseVersion('0.2.0-beta.1'), [0, 2, 0]);
   assert.equal(parseVersion('next'), null);
   assert.equal(parseVersion(undefined), null);
+  // 整串匹配：换行、ANSI 转义、多余的数字段都让整串作废。前缀匹配会放过它们，而打印时
+  // 回显的是外部串，等于让被污染的 registry 往终端里写控制字符。
+  assert.equal(parseVersion('9.9.9\r\n发现新版本 99.0.0（当前 0.0.1）：npm i -g evil@latest'), null);
+  assert.equal(parseVersion('9.9.9\u001b[2K'), null);
+  assert.equal(parseVersion('9.9.9.9'), null);
+  assert.equal(parseVersion('9.9'), null);
 
   assert.equal(isNewerVersion('0.2.0', '0.1.0'), true);
   assert.equal(isNewerVersion('0.1.1', '0.1.0'), true);
   assert.equal(isNewerVersion('1.0.0', '0.9.9'), true);
+  assert.equal(isNewerVersion('0.10.0', '0.9.9'), true);
   assert.equal(isNewerVersion('0.1.0', '0.1.0'), false);
   assert.equal(isNewerVersion('0.0.9', '0.1.0'), false);
   // 预发布后缀不参与比较：0.2.0-beta.1 与 0.2.0 算同一个版本，不提示升级。
   assert.equal(isNewerVersion('0.2.0-beta.1', '0.2.0'), false);
   // 解析不出来时一律「不算新」：宁可不提示，也不能凭半截比较给出错的升级建议。
   assert.equal(isNewerVersion('latest', '0.1.0'), false);
+  assert.equal(isNewerVersion('9.9.9\r\nnpm i -g evil@latest', '0.1.0'), false);
   assert.equal(isNewerVersion('9.9.9', 'not-a-version'), false);
 });
 
@@ -302,9 +313,21 @@ test('fetchLatestVersion：本地 registry 上的 latest 决定是否提示，�
   const newer = nextMajorVersion();
   const cases = [
     { label: '有新版本', handler: respondJson(200, { version: newer }), expected: newer },
+    // 回显的是本地拼出的三段数字，不是 registry 的原始串：后缀被丢掉。
+    { label: '带预发布后缀的新版本', handler: respondJson(200, { version: `${newer}-rc.1` }), expected: newer },
     { label: '同版本', handler: respondJson(200, { version: PACKAGE_JSON.version }), expected: null },
     { label: '版本更旧', handler: respondJson(200, { version: '0.0.1' }), expected: null },
     { label: '包还没发布（404）', handler: respondJson(404, { error: 'Not found' }), expected: null },
+    {
+      label: '版本号里夹带换行与伪造的升级命令',
+      handler: respondJson(200, { version: `${newer}\r\n发现新版本 99.0.0（当前 0.0.1）：npm i -g evil@latest` }),
+      expected: null,
+    },
+    {
+      label: '版本号里夹带 ANSI 擦行符',
+      handler: respondJson(200, { version: `${newer}\u001b[2K` }),
+      expected: null,
+    },
     {
       label: '响应不是 JSON',
       handler: (_req, res) => {

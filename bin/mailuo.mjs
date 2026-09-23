@@ -84,7 +84,7 @@ const HELP = `脉络（Mailuo）本地服务
   HOST_ALLOW       额外放行的 Host 主机名，逗号分隔
   KANBAN_DB_PATH   同 --db
   MAILUO_NO_OPEN   设为 1 时不自动打开浏览器
-  MAILUO_REGISTRY  查新版本用的 registry 地址，默认 ${DEFAULT_REGISTRY}
+  MAILUO_REGISTRY  查新版本用的 registry 地址；未设时跟随 npm_config_registry，否则用官方源
   MAILUO_NO_UPDATE_CHECK  设为 1 时不查新版本
 
 优先级：命令行 > 环境变量 > 默认值。`;
@@ -189,6 +189,29 @@ export function browserHost(host) {
 }
 
 /**
+ * 归一化一个 registry 地址：去空白；`new URL` 解析不了的（以及空串）返回 null。
+ *
+ * 写坏的值当成「没设」并回落到下一级，而不是报错：版本提示是附加信息，一个配错的地址不该让
+ * `mailuo` 起不来。不 trim 的话，带空白的 `npm_config_registry` 会在 fetch 里抛错被吞掉，
+ * 表现为「这项功能永远没反应」，比回落更难排查。
+ */
+function normalizeRegistry(raw) {
+  if (typeof raw !== 'string') {
+    return null;
+  }
+  const value = raw.trim();
+  if (value === '') {
+    return null;
+  }
+  try {
+    new URL(value);
+    return value;
+  } catch {
+    return null;
+  }
+}
+
+/**
  * 合成启动配置。优先级：命令行 > 环境变量 > 默认值。
  *
  * @param {string[]} argv
@@ -231,8 +254,9 @@ export function resolveConfig(argv, env = process.env) {
     // MAILUO_NO_OPEN 同一口径）。
     updateCheck: env.MAILUO_NO_UPDATE_CHECK !== '1',
     // registry 三级回落：本工具自己的变量 > npm 的配置（镜像 / 私有源）> 官方源。
-    // 空串视为「没设」——版本提示不是关键功能，不值得像 HOST 那样为一个空值报错。
-    registry: (env.MAILUO_REGISTRY ?? '').trim() || env.npm_config_registry || DEFAULT_REGISTRY,
+    // 空串、纯空白、构造不出 URL 的值都视为「没设」，继续往下回落。
+    registry:
+      normalizeRegistry(env.MAILUO_REGISTRY) ?? normalizeRegistry(env.npm_config_registry) ?? DEFAULT_REGISTRY,
   };
 }
 
@@ -257,15 +281,35 @@ function findVersion() {
 }
 
 /**
- * 把版本号解析成三段数字。`v` 前缀与 `-beta.1` 之类的预发布后缀都忽略——本包不发预发布版，
- * registry 的 `latest` 也不会指向预发布。解析不出来（例如 dist-tag 指到了别的东西）返回 null。
+ * 版本号：可选 `v` 前缀 + 三段数字，可带 `-beta.1` / `+build` 这类后缀。整串匹配，三段各最多
+ * 9 位，后缀限在 `[0-9A-Za-z.-]`——**不接受空白与其它控制字符**。
+ *
+ * 为什么是整串严格匹配，而不是取前缀：`version` 来自 registry，是外部输入。取前缀会让
+ * `9.9.9\r\n发现新版本 99.0.0（当前 0.0.1）：npm i -g evil@latest` 这种串通过校验，然后被
+ * 原样打进终端——擦行符加上一行伪造的「升级命令」就是一次终端注入。
+ */
+const VERSION_PATTERN = /^\s*v?(\d{1,9})\.(\d{1,9})\.(\d{1,9})(?:[-+][0-9A-Za-z.-]{1,64})?\s*$/;
+
+/**
+ * 把版本号解析成三段数字，`v` 前缀与预发布后缀都丢弃。解析不出来（例如 dist-tag 被指到了别的
+ * 字符串）返回 null。
  */
 export function parseVersion(raw) {
   if (typeof raw !== 'string') {
     return null;
   }
-  const match = /^\s*v?(\d+)\.(\d+)\.(\d+)/.exec(raw);
+  const match = VERSION_PATTERN.exec(raw);
   return match === null ? null : [Number(match[1]), Number(match[2]), Number(match[3])];
+}
+
+/** 比较两组已解析的版本数字。 */
+function isNewerParts(left, right) {
+  for (let index = 0; index < left.length; index += 1) {
+    if (left[index] !== right[index]) {
+      return left[index] > right[index];
+    }
+  }
+  return false;
 }
 
 /**
@@ -276,15 +320,7 @@ export function parseVersion(raw) {
 export function isNewerVersion(latest, current) {
   const left = parseVersion(latest);
   const right = parseVersion(current);
-  if (left === null || right === null) {
-    return false;
-  }
-  for (let index = 0; index < left.length; index += 1) {
-    if (left[index] !== right[index]) {
-      return left[index] > right[index];
-    }
-  }
-  return false;
+  return left !== null && right !== null && isNewerParts(left, right);
 }
 
 /**
@@ -292,6 +328,9 @@ export function isNewerVersion(latest, current) {
  *
  * 这个函数**不抛异常**：网络不通、超时、包还没发布（404）、响应不是 JSON、版本号格式不认识，
  * 一律当成「没有新版本」。版本提示是附加信息，任何失败都不该冒到用户面前，更不该影响服务。
+ *
+ * 返回的是**本地按三段数字拼出来的**版本号，不是 registry 给的原始字符串：后者是外部输入，
+ * 原样回显等于让一个被污染的 registry 往用户终端里写任意控制字符。
  *
  * @param {{ registry: string, name: string, currentVersion: string, timeoutMs?: number }} options
  *   `registry` 末尾有没有 `/` 都行；带路径的私有 registry（如 Artifactory 的 `/api/npm/npm/`）
@@ -309,8 +348,12 @@ export async function fetchLatestVersion({ registry, name, currentVersion, timeo
       return null;
     }
     const body = await response.json();
-    const latest = body?.version;
-    return isNewerVersion(latest, currentVersion) ? latest : null;
+    const latest = parseVersion(body?.version);
+    const current = parseVersion(currentVersion);
+    if (latest === null || current === null || !isNewerParts(latest, current)) {
+      return null;
+    }
+    return latest.join('.');
   } catch {
     // 超时、DNS 失败、TLS 失败、JSON 解析失败都到这里。
     return null;
