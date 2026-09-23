@@ -1783,7 +1783,107 @@ stdout 的 `error` 处理，值得单独一小步，这里只记录。
 它的新结构、把版本提示的三处（`MAILUO_REGISTRY` / `MAILUO_NO_UPDATE_CHECK` 两行与那段说明）补
 进去，决策编号改成 D66」处理。
 
-## D66 第 29 步：发布 npm 包前的打包就绪（2026-09-23）
+（2026-09-23 已按此合入主线分支：`docs/readme` 的条目现为 D66，README 的两行环境变量与那段
+版本提示说明都进了新结构的参数表与正文。）
+
+## D66 第 29 步：README 改为面向使用者（2026-09-23）
+
+`docs/intend.md` 的两条待办「README 只包含使用方法和功能介绍」与「排版借鉴高星开源项目」
+合为一步：这是同一份文件的一次改写，分两次动只会让中间态既不适合 npm 用户也不适合开发者。
+（这两条当时只存在于用户未提交的工作副本里，`3bab260` 上还没有；分支上追不到，记在这里。）
+
+### 问题
+
+原 README 是一份混合文档——开头的定位与功能特性是给使用者的，后面「技术栈 / 目录 / 本地运行 /
+生产运行 / 环境变量（30 余行）」是给源码开发者的。它同时是 npm 包页面的正文（`package.json`
+的 `files` 列了 `README.md`），使用者打开先看到 `pnpm install`、`tsx watch`、Vite 代理和缓存头，
+而「怎么装、怎么用、数据在哪」散在中间。第一版只做了拆分，用户看过之后给了一句「太单调了」：
+没有视觉锚点、功能是一列 11 条同级 bullet、参数表与 FAQ 全裸露。
+
+### 做法
+
+按读者拆成两份：
+
+- `README.md`：居中 logo 与标题 → 一句定位 → 徽章行 → 目录行 → 功能特性（3 列 × 4 行网格）→
+  快速开始（npx / 全局安装，从源码运行折叠）→ 四张真实界面截图 → 命令行参数表 → 数据存在哪 →
+  折叠 FAQ → 开发指引 → 许可。
+- `docs/development.md`：开发者视角。技术栈、目录、常用命令、本地与生产运行、环境变量细则、
+  README 截图的重拍流程、品牌与图标流程。开发者各节逐字搬自原 README；只有「命令行运行」一节按
+  读者拆成两半（使用者那半进 README，开发相关的 `.env` 口径与版本提示变量留在 development.md）。
+
+**排版怎么定的**：按前端规则先做原型再落地——三个只读子代理各写一份自包含 HTML
+（A 居中高星风 / B 产品页截图优先 / C 紧凑终端风），内容用同一份底本、只变版式，渲染成整页图交给
+用户对比。用户选了 A，落地时保留它的骨架。Markdown 只带得过来骨架，带不过来原型的观感，这是
+预期内的落差，记下来免得后来者以为没做完：
+
+- 原型的卡片阴影、分区块白底、两位序号（01–08）会被 GitHub 清洗掉，所以功能区改用 Markdown
+  表格做网格，标题也不带序号。
+- 徽章在原型的纯 CSS 版本里离线可见，Markdown 里只能是 shields.io 图片；离线打开 README 时
+  徽章显示为破图，正文不受影响。
+- 截图并排靠 `<p align="center">` 加 `width="49%"`，这是 GitHub 允许保留的属性；不居中时两张图
+  各占一行，视觉节奏就没了。
+
+### 截图资产
+
+`docs/images/` 下四张 webp（`kanban-light`、`graph-light`、`board-light`、`board-dark`），单张
+39–52KB，合计约 190KB，提交进版本库。全部是真实界面，用临时数据库与虚构演示数据在无头 Chrome 里
+拍：CDP 整页截图、`Emulation.setEmulatedMedia` 切深色、`Runtime.evaluate` 点「依赖图」。
+重拍流程写在 `docs/development.md`。深色根看板那张拍完删掉了——与深色子看板重复。
+
+### 几个口径上的取舍
+
+1. 「快速开始」把 `npx mailuo` 放前面，但写明「包发布到 npm 后」——`npm view mailuo` 现在返回
+   404，写成已可用就是假说明。源码路径同时给出，因为 `bin/mailuo.mjs` 与发布后的入口是同一个。
+2. 不写「不联网」。`feat/update-notice` 那条分支（已由 D65 合入）会在启动最后查一次 npm
+   registry，所以正文只写「数据不经过任何第三方服务」，同时把这次网络行为单独交代一段：
+   排在启动横幅之后、404 或超时静默跳过、走内置 `fetch` 不读 npm 代理、可用
+   `MAILUO_NO_UPDATE_CHECK=1` 关掉。
+3. 加四个 shields.io **静态**徽章（license / Node / 平台 / 本地存储）。静态徽章不依赖仓库地址或
+   npm 包名，发布前也不会 404；依赖包名的动态徽章（版本、CI、star）仍然等发布之后再加。
+4. `docs/` 与 `brand/` 都不在 `package.json` 的 `files` 里，也没有 `repository` 字段，所以 README
+   里的 `docs/*.md` 链接、`docs/images/*.webp` 截图与顶部 `brand/icon.svg` logo 在 npm 页面上会
+   裂（在仓库里正常）。这是发布步骤该收的口：补 `repository` 字段后 npm 会把相对链接重写到仓库。
+   图片与母版都不进 npm 包，仓库里存一份即可。
+5. 与 D65（启动时提示新版本）的合并按主干备案执行：README 用本步的新结构，把
+   `MAILUO_NO_UPDATE_CHECK` / `MAILUO_REGISTRY` 两行与那段版本提示说明补进新表格与正文；本决策
+   编号原为 D65，合入时改成 D66。
+
+### 评审
+
+两轮只读子代理审阅，都没有阻断项落在内容本身上，但各抓到一个合并前提与若干事实问题：
+
+第一轮（纯文字版）：
+
+1. 「备份就是复制这个文件」在 WAL 下会误导——运行中只复制 `.db` 会漏掉最近的写入。已改为
+   「先退出进程再复制」，并点明同目录下还有 `kanban.db-wal` 与 `-shm`。
+2. 搬迁时漏了旧 README 的一句「命令行启动不看仓库根的 `.env`」。已补进 `docs/development.md`，
+   并按实情注明 `HOST_ALLOW` 是例外（命令行不给时服务端会从 `.env` 读）。
+
+第二轮（截图与徽章版）：
+
+3. 主干已经前移（main 含 D65「启动时提示新版本」），本分支基于旧提交。这正是取舍 5 要处理的冲突：
+   合完 README 必须带上新版本检查的两行与那段说明，否则面向使用者的参数表与 `mailuo --help` 不一致。
+4. `kanban-dark.webp` 是孤儿（README 没引用）。已删除，`docs/development.md` 的「五张 / 40–55KB」
+   改成「四张 / 39–52KB」。
+5. 依赖图与根看板并排，但图里画的是子看板的图，容易被读成同一层。图注与 alt 已补「重构登录流程」。
+6. 顶部 logo 引用 `brand/icon.svg`，而 `brand/` 不在 `files` 里，npm 页面会裂图。已并入取舍 4。
+
+顺带按第一轮意见收紧的三处措辞：端口扫描写成「从默认端口起最多试 20 个（3001–3020）」，显式端口
+硬失败补上 `PORT`（原稿只写了 `--port`），README 补回「命令行只起一个进程，接口和页面都由它提供」。
+`node bin/mailuo.mjs --db data/kanban.db` 这个具体示例没有补回——同一事实已由「用 `--db` 指过去」
+表达，示例只是重复。
+
+### 合并与编号冲突备案（2026-09-23）
+
+本步在 `docs/readme` 分支上完成，经用户验收后合入主干（`2f498fd`），worktree 与分支已删除。
+
+合并期间发现并行的 `chore/npm-package` worktree（分支 `chore/npm-package`，基于 `4843fff`）也写了
+`## D66 第 29 步：发布 npm 包前的打包就绪`。本步先合入主干，所以 D66 归「README 改为面向使用者」；
+`chore/npm-package` 那一条合入时要改成 **D67**。它同时改过旧的 `README.md`（本步整篇改写）与
+`docs/decisions.md` 末尾，合并时这两处会有冲突，处理口径与 D65 那次相同：README 用本步的新结构，
+把打包相关的说明补进对应的新章节；决策编号改成 D67。
+
+## D67 第 29 步：发布 npm 包前的打包就绪（2026-09-23，分支 chore/npm-package）
 
 需求（`docs/intend.md`）：「发布npm包」。这一步只做到「`npm pack` 出来的 tarball 装到别处能跑」，
 真正的 `npm publish` 需要账号登录，留给用户（见下面「没做的」里的两条命令）。
@@ -1814,6 +1914,9 @@ stdout 的 `error` 处理，值得单独一小步，这里只记录。
 - 根 `package.json`：去掉 `private`，加 `"type": "module"`、`description`、`keywords`（含中文）。
 - 不加 `repository` / `homepage` / `bugs`：GitHub 远端还不存在（`docs/intend.md` 的「发布到Github」
   是另一步）。写一个猜的地址比留空更糟——它会出现在源的侧栏，且错误链接比没有链接更难发现。
+  与 D66 的接口：D66 的取舍 4 记着 README 里的 `docs/images/*.webp` 截图、顶部 `brand/icon.svg`
+  logo 与 `docs/*.md` 链接在 npm 页面上会裂，等 `repository` 补上后由 npm 重写相对链接。那一步
+  与「发布到Github」绑定（先有仓库地址，字段才写得出），所以本步只把这个口留在记录里。
 - 清单本身钉成用例：新增 `bin/package.test.mjs`（5 条，不构建、不联网），核对
   `private`/`type`、`bin` 指向存在文件、`files` 覆盖服务端运行时要读的六个路径、`files` 里
   **仓库内**的路径真的存在、构建产物的入口文件（`apps/api/dist/index.js`、`apps/web/dist/index.html`）
@@ -1827,7 +1930,7 @@ stdout 的 `error` 处理，值得单独一小步，这里只记录。
 装一遍真 tarball（`.tmp-verify/`，验收后已删；本机 `/root/.npm` 不可写，故给 npm 指定了一个仓内缓存目录）：
 
 ```sh
-pnpm build && npm pack                       # 191.4 kB / 67 files
+pnpm build && npm pack                       # 190.8 kB / 67 files（README 并主干 D66 后重测）
 npm install -g --prefix .tmp-verify/global ./mailuo-0.1.0.tgz
 HOME=$PWD/.tmp-verify/home .tmp-verify/global/bin/mailuo --version   # 0.1.0
 HOME=$PWD/.tmp-verify/home MAILUO_NO_UPDATE_CHECK=1 \
@@ -1845,6 +1948,11 @@ HOME=$PWD/.tmp-verify/home MAILUO_NO_UPDATE_CHECK=1 \
   又做了一轮：从 `files` 删 `apps/web/dist/`、把 `files` 里的 `LICENSE` 改成不存在的
   `LICENSE.md`、删掉磁盘上的 `apps/api/dist/index.js`，三条分别让对应用例变红，改回后 5 条全绿。
 - 全量：`pnpm test` bin 37（基线 32 + 新增 5）、api 273、web 474 全绿；`pnpm typecheck` 通过。
+  第一次跑时 web 有 1 条 `App.test.tsx` 失败，当时并行的审阅子代理正在同一台机器上反复跑变异检验，
+  重跑该套件 474 全绿——按环境争用处理，不是本步引入的失败。
+- 合并主干（D66 README 改写）后重跑：`node --test bin/*.test.mjs` 37 全绿、web 474 全绿，并重新
+  `npm pack` + 装 tarball 起了一遍服务（190.8 kB / 67 files，`/api/health` 200、`/` 出页面、
+  默认库落 `$HOME/.mailuo/kanban.db`）。
 
 ### 审阅（子代理，只读）与修复
 
@@ -1879,9 +1987,12 @@ HOME=$PWD/.tmp-verify/home MAILUO_NO_UPDATE_CHECK=1 \
   时（例如 `vite` 的 `outDir` 被改到别处），快速套件会跳过产物检查，`npm pack` 依然静默成功。
   要堵它得在 `prepack` 里跑一个「清单里每项都必须存在」的脚本（那时刚构建完，产物理应在）。
   代价是发布链路上多一个会失败的点，收益是一个很窄的失败模式，本步不做。
-- **不动 README 的安装段**：并行的 `docs/readme` worktree 正在整篇改写 README，两边都改必然冲突。
+- **不动 README**：README 已由 D66 整篇改写（`npx mailuo` / `npm i -g mailuo` 那段安装说明就是
+  本步发布后的形态），本步一行没改。
 
-**编号冲突备案（承接 D65）**：本步先占用 D66，`docs/readme` 那条「README 改为面向使用者」顺延为
-**D67**。本步只改根 `package.json`、新增 `bin/package.test.mjs` 与这里；它（bcc12c0）改的是
-`README.md`、`docs/development.md` 与 `docs/decisions.md`，两边只在本文末尾相邻，合并按「它整篇
-改写 README、本步的清单用例保留、编号顺延」处理。若用户先验收 `docs/readme`，则两者编号对调。
+
+**编号备案（承接 D66）**：两个 worktree 并行时都写了 `D66`，`docs/readme` 那条（现在的 D66）先
+合入主干（`2f498fd`），所以本步顺延为 **D67**，标题已改，正文其余内容未变。D66 的备案里写
+「它同时改过旧的 `README.md`」不准确：`chore/npm-package` 从头到尾没碰过 `README.md`，改的是根
+`package.json`、新增 `bin/package.test.mjs` 与本文。合并时也只有本文冲突，README 的安装段
+（`npx mailuo` / `npm i -g mailuo`）与打包无关，不需要跟着改。
