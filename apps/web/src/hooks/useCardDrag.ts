@@ -1,7 +1,8 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useState } from 'react';
 import type { PointerEvent as ReactPointerEvent } from 'react';
 import type { BoardTask } from '../api/types';
 import type { DropSlot } from '../domain/board';
+import { usePointerDrag } from './usePointerDrag';
 
 /**
  * 看板列内的卡片拖拽。实现路线取自定版原型 B（docs/decisions.md D42）：
@@ -11,8 +12,10 @@ import type { DropSlot } from '../domain/board';
  * 也拿不到「会落到哪一格」的精确预览。代价是下面这些细节要自己管：
  * 点击与拖拽的区分、滚动时克隆卡片的位置、指针离开列时的取消。
  *
- * 这个 hook 只管指针语义与 DOM 命中，不认识看板数据：命中的落点交给调用方换算成
- * 后端要的 position（看板里可能混着不参与重排的归档卡片，见 domain/board.ts）。
+ * 阈值、抑制窗口、监听器装卸这些指针脚手架在 hooks/usePointerDrag（与任务树共用）；
+ * 这个 hook 只留卡片特有的两件事：DOM 命中测试给出的列内落点，以及克隆卡片的预览状态。
+ * 它不认识看板数据：命中的落点交给调用方换算成后端要的 position（看板里可能混着
+ * 不参与重排的归档卡片，见 domain/board.ts）。
  */
 
 /**
@@ -59,16 +62,6 @@ export interface CardDragControls {
   canOpen: () => boolean;
 }
 
-/** 超过这个距离才算拖拽，之内的位移仍然算点击（进入子看板）。 */
-const DRAG_THRESHOLD_PX = 4;
-
-/**
- * 拖拽结束后多久内的 click 算「拖拽的尾巴」，要吞掉。
- * 浏览器紧跟着 pointerup 派发 click，几十毫秒足够；窗口取大一点不影响正常点击——
- * begin() 会把窗口清零，也就是说下一次按下之后的点击永远不受影响。
- */
-const CLICK_SUPPRESS_MS = 300;
-
 /** 卡片与列在 DOM 上的标记，命中测试靠它们。 */
 export const CARD_ATTR = 'data-task-id';
 export const COLUMN_ATTR = 'data-column-id';
@@ -103,6 +96,15 @@ export function resolveDropSlot(clientX: number, clientY: number): DropSlot | nu
   return { columnId, beforeTaskId: null };
 }
 
+/** 按下时抓到的载荷：任务本身，加上克隆卡片对齐要用的几何。 */
+interface CardDragPayload {
+  task: BoardTask;
+  grabX: number;
+  grabY: number;
+  width: number;
+  height: number;
+}
+
 /**
  * @param resolveDrop 把视口坐标换算成落点；落在所有列之外时返回 null。默认实现用
  * `resolveDropSlot` 做 DOM 命中测试，测试里可以换成假的。
@@ -122,187 +124,57 @@ export function useCardDrag(options: {
   onDrop: (slot: DropSlot | null) => void;
   onCancel: () => void;
 }): CardDragControls {
-  const callbacks = useRef(options);
-  callbacks.current = options;
-
-  const [draggingTaskId, setDraggingTaskId] = useState<string | null>(null);
+  /** 克隆卡片的位置：拖动期间每一帧都要更新，所以只有它需要 state。 */
   const [preview, setPreview] = useState<CardDragPreview | null>(null);
-  /**
-   * 是否有一次按下还没结束。走 state 而不是 ref：调用方要能依赖它——按下的这一段里被推迟的
-   * 重取，得在它变回 false 的那一刻补上。写它的时机只有按下与松手两次，不产生额外渲染。
-   */
-  const [pressed, setPressed] = useState(false);
 
-  /**
-   * 一次拖拽的全部可变状态。用 ref 而不是 state：指针移动的每一帧都写它，
-   * 走 state 会让每次移动都触发一轮渲染（真正需要重渲染的是落点，由父组件决定）。
-   */
-  const dragRef = useRef<{
-    task: BoardTask;
-    /** 按下的位置，用来判断是否超过阈值。 */
-    startX: number;
-    startY: number;
-    /** 是否已经超过阈值。未超过时松手就是一次点击。 */
-    active: boolean;
-    grabX: number;
-    grabY: number;
-    width: number;
-    height: number;
-    slot: DropSlot | null;
-  } | null>(null);
+  const drag = usePointerDrag<CardDragPayload, DropSlot>({
+    resolveSlot: (clientX, clientY) => options.resolveDrop(clientX, clientY),
+    // 同一列的同一张卡片之前算同一个落点：不去重的话每一帧都会触发一次乐观重排。
+    isSameSlot: (a, b) => a.columnId === b.columnId && a.beforeTaskId === b.beforeTaskId,
+    // 已归档的卡片不能改（后端对归档任务的 PATCH 一律拒绝，见 D16），干脆不给拖。
+    canBegin: (payload) => payload.task.archivedAt === null,
+    onStart: (payload) => options.onStart(payload.task.id),
+    onSlotChange: (slot) => options.onPreview(slot),
+    onMove: (event, _slot, payload) =>
+      setPreview({
+        task: payload.task,
+        clientX: event.clientX,
+        clientY: event.clientY,
+        grabX: payload.grabX,
+        grabY: payload.grabY,
+        width: payload.width,
+        height: payload.height,
+      }),
+    onDrop: (slot) => options.onDrop(slot),
+    onCancel: () => options.onCancel(),
+  });
 
-  // 监听器的装卸函数。用 ref 存：stop 与 begin 都要用，而它们的依赖数组必须保持稳定。
-  const listenersRef = useRef<{ attach: () => void; detach: () => void } | null>(null);
-  /**
-   * 刚拖完的那一次点击要吞掉。**不能用微任务清标记**：真实浏览器的顺序是
-   * pointerdown → pointermove → pointerup → 微任务 → click，微任务比 click 还早
-   * （实测，见 docs/decisions.md D42 的更正），标记会在 click 之前就被清掉。
-   * 改成按时间判：拖拽结束后的一个很短的窗口内的点击算拖拽的尾巴。
-   */
-  const suppressUntilRef = useRef(0);
-
-  const stop = useCallback(() => {
-    const drag = dragRef.current;
-    dragRef.current = null;
-    listenersRef.current?.detach();
-    if (drag?.active === true) {
-      suppressUntilRef.current = Date.now() + CLICK_SUPPRESS_MS;
-    }
-    setDraggingTaskId(null);
-    setPreview(null);
-    // 没有进入拖拽的那一次按下（就是一次点击）也从这里结束：不置回的话，调用方的
-    // 「指针还按着」永远为真，之后所有写操作都不再刷新看板（见 D51）。
-    setPressed(false);
-    return drag;
-  }, []);
-
-  const handlePointerMove = useCallback((event: PointerEvent) => {
-    const drag = dragRef.current;
-    if (drag === null) return;
-
-    if (!drag.active) {
-      if (Math.hypot(event.clientX - drag.startX, event.clientY - drag.startY) < DRAG_THRESHOLD_PX) {
-        return;
-      }
-      drag.active = true;
-      setDraggingTaskId(drag.task.id);
-      // 先通知调用方「拖拽真的开始了」，再往下算落点：调用方要在这个时点拍下看板快照。
-      callbacks.current.onStart(drag.task.id);
-    }
-
-    // 指针拖动时不要顺手选中文字。
-    event.preventDefault();
-    const next = callbacks.current.resolveDrop(event.clientX, event.clientY);
-    const changed =
-      next === null
-        ? drag.slot !== null
-        : drag.slot === null ||
-          next.columnId !== drag.slot.columnId ||
-          next.beforeTaskId !== drag.slot.beforeTaskId;
-    if (changed) {
-      drag.slot = next;
-      callbacks.current.onPreview(next);
-    }
-
-    setPreview({
-      task: drag.task,
-      clientX: event.clientX,
-      clientY: event.clientY,
-      grabX: drag.grabX,
-      grabY: drag.grabY,
-      width: drag.width,
-      height: drag.height,
-    });
-  }, []);
-
-  const handlePointerUp = useCallback(() => {
-    const drag = stop();
-    // drag.active 为 false 说明没超过阈值：这是一次点击，交给卡片自己的 onClick 处理。
-    if (drag === null || !drag.active) return;
-    callbacks.current.onDrop(drag.slot);
-  }, [stop]);
-
-  /**
-   * 指针被浏览器接管（触摸滚动、系统手势）时走这里：按**取消**处理，不把落点提交给后端。
-   * 原来接在 handlePointerUp 上，等于「中途被抢走也照落点写一次」，与文档说的不一致。
-   */
-  const handlePointerCancel = useCallback(() => {
-    const drag = stop();
-    if (drag === null || !drag.active) return;
-    callbacks.current.onCancel();
-  }, [stop]);
-
-  const handleKeyDown = useCallback(
-    (event: KeyboardEvent) => {
-      if (event.key !== 'Escape') return;
-      const drag = dragRef.current;
-      if (drag === null || !drag.active) return;
-      stop();
-      callbacks.current.onCancel();
+  const begin = useCallback(
+    (task: BoardTask, event: ReactPointerEvent<HTMLElement>): boolean => {
+      // React 派发结束后 currentTarget 会被清空，而 create 延迟到通用 hook 接受这一次按下
+      // （主键、没有拖拽在跑）之后才调用，所以先把元素抓在手里。已归档的判断在 create 之后，
+      // 那一种按下会白量一次矩形，可以接受。
+      const target = event.currentTarget;
+      return drag.begin(event, () => {
+        const rect = target.getBoundingClientRect();
+        return {
+          task,
+          grabX: event.clientX - rect.left,
+          grabY: event.clientY - rect.top,
+          width: rect.width,
+          height: rect.height,
+        };
+      });
     },
-    [stop],
+    [drag.begin],
   );
 
-  // 监听器装在 document 上：拖拽期间指针会跑到卡片之外，装在卡片上收不到。
-  // 每个闭包都通过 ref 读状态，所以这三个 handler 是稳定的，可以自由装卸。
-  useEffect(() => {
-    const attach = () => {
-      document.addEventListener('pointermove', handlePointerMove);
-      document.addEventListener('pointerup', handlePointerUp);
-      document.addEventListener('pointercancel', handlePointerCancel);
-      document.addEventListener('keydown', handleKeyDown);
-    };
-    const detach = () => {
-      document.removeEventListener('pointermove', handlePointerMove);
-      document.removeEventListener('pointerup', handlePointerUp);
-      document.removeEventListener('pointercancel', handlePointerCancel);
-      document.removeEventListener('keydown', handleKeyDown);
-    };
-    listenersRef.current = { attach, detach };
-    // 换一层看板会让 BoardPage 重挂，拖到一半切走时必须摘掉监听并撤销预览。
-    return () => {
-      detach();
-      if (dragRef.current !== null) {
-        dragRef.current = null;
-        callbacks.current.onCancel();
-      }
-    };
-  }, [handlePointerMove, handlePointerUp, handlePointerCancel, handleKeyDown]);
-
-  const begin = useCallback((task: BoardTask, event: ReactPointerEvent<HTMLElement>): boolean => {
-    // 只认鼠标主键：右键和中键有自己的系统菜单与行为。
-    if (event.button !== 0) return false;
-    // 已归档的卡片不能改（后端对归档任务的 PATCH 一律拒绝，见 D16），干脆不给拖。
-    if (task.archivedAt !== null) return false;
-    if (dragRef.current !== null) return false;
-
-    const rect = event.currentTarget.getBoundingClientRect();
-    dragRef.current = {
-      task,
-      startX: event.clientX,
-      startY: event.clientY,
-      active: false,
-      grabX: event.clientX - rect.left,
-      grabY: event.clientY - rect.top,
-      width: rect.width,
-      height: rect.height,
-      slot: null,
-    };
-    listenersRef.current?.attach();
-    setPressed(true);
-    return true;
-  }, []);
-
   return {
-    draggingTaskId,
-    preview,
-    pressed,
+    draggingTaskId: drag.active?.task.id ?? null,
+    // 预览只在拖拽中成立：stop() 会把 active 置空，不必再单独清一次 preview。
+    preview: drag.active === null ? null : preview,
+    pressed: drag.pressed,
     begin,
-    canOpen: () => {
-      // 窗口过期就作废，免得一个很久之后的点击被上一次拖拽误吞。
-      if (Date.now() >= suppressUntilRef.current) return true;
-      suppressUntilRef.current = 0;
-      return false;
-    },
+    canOpen: drag.canOpen,
   };
 }

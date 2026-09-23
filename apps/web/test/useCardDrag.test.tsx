@@ -55,13 +55,25 @@ function Harness({
       </button>
       <span data-testid="dragging">{drag.draggingTaskId ?? ''}</span>
       <span data-testid="pressed">{String(drag.pressed)}</span>
+      {/*
+        预览的坐标也摊平出来：克隆卡片跟手靠的就是它每帧更新，而 DragGhost 上没有任何
+        可断言的标记（审阅指出「派生状态零断言」，这里补上）。
+      */}
+      <span data-testid="preview">
+        {drag.preview === null ? '' : `${drag.preview.clientX},${drag.preview.clientY}`}
+      </span>
     </div>
   );
 }
 
 const slot: DropSlot = { columnId: 'doing', beforeTaskId: null };
 
-function setup(resolveDrop: (x: number, y: number) => DropSlot | null = () => slot) {
+/**
+ * 默认 resolver 每帧返回一个新的落点对象，与真实的 `resolveDropSlot` 一致。
+ * 如果所有调用都返回同一个对象引用，「落点没变就不通知」这条规则靠引用比较也能过，
+ * 去掉按字段比较的去重实现同样全绿——那是一条抓不住回归的假通过用例（变异检验发现）。
+ */
+function setup(resolveDrop: (x: number, y: number) => DropSlot | null = () => ({ ...slot })) {
   const events: Record<string, unknown[]> = {
     start: [],
     preview: [],
@@ -69,8 +81,8 @@ function setup(resolveDrop: (x: number, y: number) => DropSlot | null = () => sl
     cancel: [],
     open: [],
   };
-  render(<Harness resolveDrop={resolveDrop} events={events} />);
-  return { events, card: screen.getByTestId('card') };
+  const { unmount } = render(<Harness resolveDrop={resolveDrop} events={events} />);
+  return { events, card: screen.getByTestId('card'), unmount };
 }
 
 function pointerDown(card: HTMLElement) {
@@ -146,6 +158,124 @@ describe('useCardDrag', () => {
     fireEvent.click(card);
 
     expect(events.open).toEqual([true]);
+  });
+
+  it('拖完马上再按下：这一次按下的点击不被上一次的抑制窗口吞掉', () => {
+    const { events, card } = setup();
+
+    // 第一次真的拖了一次，留下 300ms 的抑制窗口。
+    pointerDown(card);
+    fireEvent.pointerMove(document, { clientX: 130, clientY: 100 });
+    fireEvent.pointerUp(document, { clientX: 130, clientY: 100 });
+
+    // 窗口还没过期就再按一次（位移在阈值内，是一次点击）。begin() 必须把窗口清零——
+    // 卡片那份原来漏了这一行，拖完想马上点开另一张卡片会被 canOpen 吞掉（审计报告 D1）。
+    pointerDown(card);
+    fireEvent.pointerUp(document, { clientX: 100, clientY: 100 });
+    fireEvent.click(card);
+
+    expect(events.open).toEqual([true]);
+  });
+
+  it('拖到一半卸载（换一层看板会让 BoardPage 重挂）走 onCancel', () => {
+    const { events, card, unmount } = setup();
+
+    pointerDown(card);
+    fireEvent.pointerMove(document, { clientX: 130, clientY: 100 });
+    unmount();
+
+    // 否则调用方以为这一次拖拽还在进行，乐观重排的撤销永远等不到（D42 记的共同行为）。
+    expect(events.cancel).toEqual([true]);
+  });
+
+  /**
+   * 下面四条盯的是从通用 hook 派生出来的状态（拖动中的任务 id、克隆卡片的预览、落点去重）。
+   * 重构把这些值从「hook 自己存」改成「从 active/slot 派生」，而当时的用例对它们零断言：
+   * 删掉 setActive(null)、删掉 onMove、把 preview 的 active 门槛去掉，全量套件都还是绿的。
+   */
+  it('拖动状态与预览：阈值内为空、跨阈值出现、松手后回空', () => {
+    const { card } = setup();
+    const dragging = () => screen.getByTestId('dragging').textContent;
+    const preview = () => screen.getByTestId('preview').textContent;
+
+    expect(dragging()).toBe('');
+    expect(preview()).toBe('');
+
+    pointerDown(card);
+    // 阈值内的位移还是一次点击，拖动状态不该亮起来。
+    fireEvent.pointerMove(document, { clientX: 102, clientY: 100 });
+    expect(dragging()).toBe('');
+    expect(preview()).toBe('');
+
+    fireEvent.pointerMove(document, { clientX: 130, clientY: 100 });
+    expect(dragging()).toBe('t1');
+    expect(preview()).toBe('130,100');
+
+    // 克隆卡片跟手：坐标变了预览就要跟着变。
+    fireEvent.pointerMove(document, { clientX: 140, clientY: 120 });
+    expect(preview()).toBe('140,120');
+
+    fireEvent.pointerUp(document, { clientX: 140, clientY: 120 });
+    expect(dragging()).toBe('');
+    expect(preview()).toBe('');
+  });
+
+  it('取消之后拖动状态与预览也回空', () => {
+    const { card } = setup();
+
+    pointerDown(card);
+    fireEvent.pointerMove(document, { clientX: 130, clientY: 100 });
+    expect(screen.getByTestId('dragging').textContent).toBe('t1');
+
+    fireEvent.keyDown(document, { key: 'Escape' });
+
+    expect(screen.getByTestId('dragging').textContent).toBe('');
+    expect(screen.getByTestId('preview').textContent).toBe('');
+  });
+
+  it('同一列里换了插入锚点要再通知一次（去重不能只看列）', () => {
+    let beforeTaskId: string | null = null;
+    const { events, card } = setup(() => ({ columnId: 'doing', beforeTaskId }));
+
+    pointerDown(card);
+    fireEvent.pointerMove(document, { clientX: 130, clientY: 100 });
+    beforeTaskId = 't2';
+    fireEvent.pointerMove(document, { clientX: 131, clientY: 100 });
+
+    expect(events.preview).toEqual([
+      { columnId: 'doing', beforeTaskId: null },
+      { columnId: 'doing', beforeTaskId: 't2' },
+    ]);
+  });
+
+  it('被拒绝的按下（右键）也清掉上一次拖拽的抑制窗口', () => {
+    const { events, card } = setup();
+
+    pointerDown(card);
+    fireEvent.pointerMove(document, { clientX: 130, clientY: 100 });
+    fireEvent.pointerUp(document, { clientX: 130, clientY: 100 });
+
+    // 窗口内先右键按一下（不进入拖拽候选）：它同样说明「上一次拖拽的那次尾巴 click 不会再来」，
+    // 窗口留着只会误吞这一次按下之后的正常点击。
+    fireEvent.pointerDown(card, { button: 2, clientX: 100, clientY: 100 });
+    fireEvent.click(card);
+
+    expect(events.open).toEqual([true]);
+  });
+
+  it('监听器只在按下期间挂在 document 上，松手后摘掉', () => {
+    const add = vi.spyOn(document, 'addEventListener');
+    const remove = vi.spyOn(document, 'removeEventListener');
+    const { card } = setup();
+    const count = (spy: typeof add, type: string) =>
+      spy.mock.calls.filter(([eventType]) => eventType === type).length;
+
+    pointerDown(card);
+    expect(count(add, 'pointermove')).toBe(1);
+    expect(count(remove, 'pointermove')).toBe(0);
+
+    fireEvent.pointerUp(document, { clientX: 100, clientY: 100 });
+    expect(count(remove, 'pointermove')).toBe(1);
   });
 
   it('指针被浏览器接管（pointercancel）按取消处理，不把落点提交出去', () => {
