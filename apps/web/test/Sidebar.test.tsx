@@ -254,4 +254,85 @@ describe('Sidebar', () => {
 
     expect(await screen.findByText('暂无任务')).toBeTruthy();
   });
+
+  describe('面板收起', () => {
+    /**
+     * 面板本体。`aside` 在 ARIA 里是 complementary 角色，`getByLabelText` 只认表单控件，
+     * 所以用角色 + 名字取；收起后名字会带上「已收起」，所以这里匹配前缀。
+     */
+    const panel = () => screen.getByRole('complementary', { name: /^文件树/ });
+    /**
+     * 树是不是真的看得见。`hidden` 走的是 display:none，而 jsdom 自己不算布局、
+     * `toBeVisible` 也认不出 hidden 属性，所以按最近一层带 hidden 的祖先判断。
+     */
+    const isTreeVisible = () =>
+      screen.getByText('重构登录').closest('[hidden]') === null;
+
+    it('点收起：面板变窄条、开关收起、树被隐藏但不再取数，偏好落 localStorage', async () => {
+      stubTreeFetch();
+      renderSidebar();
+      await screen.findByText('重构登录');
+
+      expect(panel().style.width).toBe('252px');
+      fireEvent.click(screen.getByRole('button', { name: '收起文件树' }));
+
+      expect(panel().style.width).toBe('44px');
+      // 收起后无障碍名字也会变，用户（读屏）能听出这块现在是收着的。
+      expect(panel().getAttribute('aria-label')).toBe('文件树（已收起）');
+      // 树留在 DOM 里（展开是瞬时的），但用 hidden 藏起来：display:none 之后它不再参与
+      // 读屏与 Tab 顺序，所以这里断言的是「不可见」，不是「节点不存在」。
+      expect(isTreeVisible()).toBe(false);
+      expect(screen.getByText('重构登录')).toBeTruthy();
+      expect(screen.queryByRole('checkbox', { name: '显示已归档' })).toBeNull();
+      // fireEvent.click 由 act 包着，落盘的 effect 在它返回前就跑完了（见 docs/decisions.md D44）。
+      expect(window.localStorage.getItem('kanban.tree.panelCollapsed')).toBe('true');
+
+      // 同一个按钮换名字与图标方向，再点一次就回到展开，且不重新发请求。
+      fireEvent.click(screen.getByRole('button', { name: '展开文件树' }));
+      expect(panel().style.width).toBe('252px');
+      expect(isTreeVisible()).toBe(true);
+      expect(window.localStorage.getItem('kanban.tree.panelCollapsed')).toBe('false');
+      expect(requested).toEqual(['/api/tree']);
+    });
+
+    it('收起时焦点从被隐藏的树接到按钮上', async () => {
+      stubTreeFetch();
+      renderSidebar();
+      const node = await screen.findByText('前端表单改造');
+      node.focus();
+
+      fireEvent.click(screen.getByRole('button', { name: '收起文件树' }));
+
+      // 焦点当时在树里，树整块被移除后不接管的话焦点会掉回 body，键盘用户下一次 Tab 从头开始。
+      expect(document.activeElement).toBe(screen.getByRole('button', { name: '展开文件树' }));
+    });
+
+    it('本地偏好说收起时首屏就是窄条，树照常取到、展开即用', async () => {
+      window.localStorage.setItem('kanban.tree.panelCollapsed', 'true');
+      stubTreeFetch();
+      renderSidebar();
+
+      expect(panel().style.width).toBe('44px');
+      // 树的数据仍然照取（useTree 在 Sidebar 里，不随收起与否开关）：
+      // 代价是收着也发一次 /api/tree，换来的是点展开时数据已经在手上、不闪一帧加载态。
+      await waitFor(() => expect(requested).toEqual(['/api/tree']));
+
+      fireEvent.click(screen.getByRole('button', { name: '展开文件树' }));
+
+      expect(panel().style.width).toBe('252px');
+      expect(isTreeVisible()).toBe(true);
+      expect(screen.getByText('重构登录')).toBeTruthy();
+      // 展开只是把已经取到的树画出来，不重新请求。
+      expect(requested).toEqual(['/api/tree']);
+    });
+
+    it('本地偏好不是 boolean 时按展开算', async () => {
+      window.localStorage.setItem('kanban.tree.panelCollapsed', '"yes"');
+      stubTreeFetch();
+      renderSidebar();
+
+      expect(panel().style.width).toBe('252px');
+      expect(await screen.findByText('重构登录')).toBeTruthy();
+    });
+  });
 });
