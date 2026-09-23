@@ -66,9 +66,10 @@ function setup() {
     };
     return { closest: () => row } as unknown as Element;
   };
-  render(<Harness log={log} over={() => over ?? 'none'} />);
+  const { unmount } = render(<Harness log={log} over={() => over ?? 'none'} />);
   return {
     log,
+    unmount,
     setOver: (id: string | null) => {
       over = id;
     },
@@ -182,5 +183,34 @@ describe('useTreeDrag', () => {
     fireEvent.click(screen.getByTestId('row-a'));
 
     expect(log).toEqual(['begin a', 'start a', 'drop a b', 'open false']);
+  });
+
+  it('拖到一半卸载（收起面板、切走）走 onCancel', () => {
+    const { log, setOver, unmount } = setup();
+
+    setOver('b');
+    drag('row-a', { x: 40, y: 5 });
+    unmount();
+
+    // 卡片那份卸载时会撤销预览，树这份原来直接丢掉 dragRef、不走 onCancel（审计报告 D1）。
+    expect(log).toEqual(['begin a', 'start a', 'cancel']);
+  });
+
+  /**
+   * state 现在是从通用 hook 的 active/slot 派生的，不再自己存。派生容易在「结束」那一步漏掉，
+   * 用它算出来的行高亮与根层落点提示就会永远留着（重构时的用例对 state 零断言）。
+   */
+  it('拖动状态：拖前为空、拖动中是目标父级、松手后回空', () => {
+    const { setOver } = setup();
+    const state = () => screen.getByTestId('state').textContent;
+
+    expect(state()).toBe('');
+
+    setOver('b');
+    drag('row-a', { x: 40, y: 5 });
+    expect(state()).toBe('b');
+
+    fireEvent.pointerUp(document, { clientX: 40, clientY: 5 });
+    expect(state()).toBe('');
   });
 });
