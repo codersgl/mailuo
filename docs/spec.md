@@ -79,6 +79,7 @@ KanBan/
 - 开发：Vite 跑 5173，`server.proxy` 把 `/api` 代理到后端 3001。
 - 生产：Hono 提供 `/api/*`，并用 `serveStatic` 托管 `apps/web/dist`，只跑一个进程。
 - 迁移：手写编号 SQL 文件，启动时按序执行，已执行的记录在 `schema_migrations` 表。
+- 监听与访问控制：默认只绑 `127.0.0.1`（只服务本机）。`HOST` 改监听地址（例如 `0.0.0.0` 供同网段访问），`HOST_ALLOW` 追加 Host 白名单里额外的机器名/域名；用 IP 访问时本机网卡地址自动放行。请求的 Host 不在白名单、或写请求的 Origin 不在白名单时一律拒绝——在没有鉴权的前提下，这是挡 DNS rebinding 的那一层。
 
 ## 数据模型
 
@@ -273,7 +274,7 @@ ORDER BY t.column_id, t.orders;
 
 `DELETE /api/tasks/:id` 级联删除其所有后代任务，并删除这些任务作为任意一端的依赖记录。返回 `{ columnTasks }`，即该任务原所在列的列表，前端整列替换即可。
 
-错误统一返回 `{ error: string }`：`400` 入参非法，`404` 目标不存在，`409` 形成环。
+错误统一返回 `{ error: string }`：`400` 入参非法，`403` Host 或 Origin 不在允许列表，`404` 目标不存在，`409` 形成环，`413` 请求体超过 256KB。
 
 ## 界面行为
 
