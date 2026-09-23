@@ -2490,6 +2490,7 @@ CI 只在 GitHub 上运行，本机没有 runner，所以 workflow 的真实执�
 所以链路验证改走 `workflow_dispatch`（文件在默认分支上才会出现 Run workflow 按钮；dispatch 时
 可以选 ref 并填 `tag` 输入 `v0.1.0`）。它不依赖上面这个不确定性，效果一样：`guard` 校验 tag 与
 版本、查到 0.1.0 已存在、发布 job 跳过。补记 release 本身无论走哪条分支都不会重复发布。
+（这个不确定性后来被实测解决了：见本步末尾「合并、补记 release 与线上结果」。）
 
 **认证用 Trusted Publishing（OIDC）**，仓库里不放任何 npm token。几处不能省的约束都写进了
 workflow 注释：
@@ -2645,3 +2646,32 @@ pyyaml 解析与人工核对）；`inputs` 上下文在非 dispatch 事件下是
 - **不迁 pnpm/setup**：D70 的选择不变。
 - **不给 workflow 加 actionlint 门禁**：本机没有，CI 里加是独立一步。
 - **不改 `docs/intend.md` 里那条 Issue**：该文件只由用户改；本步修掉后那条 Issue 已过时。
+
+**合并、补记 release 与线上结果（2026-09-24，用户验收之后）**
+
+合并方式是用户选的「只合并到本地 main，推送自己来」：`--no-ff` 得 `a976d72`（父 `1122463`，
+基线 `2dcbe67`）。主仓按 CI 同序复跑：`pnpm install --frozen-lockfile` 无变化、`pnpm lint` 0 error
+/ 5 warning、`pnpm typecheck`、`pnpm build` 通过，`pnpm test` bin 37 / api 273 / web 474 全绿。
+worktree `.worktrees/release-oidc` 与分支 `chore/release-oidc` 已删。
+
+用户推送后 CI 在 `a976d72` 上 1 分 11 秒成功。D70 那句「CI 会带着这条抖动上线」没有兑现，因为
+本步把它修掉了——这是第一次在真实 runner 上跑 `bin` 套件而不红。
+
+补记 release 用 API 建：`POST /repos/codersgl/mailuo/releases`，`tag_name=v0.1.0`、
+`target_commitish=51e37d3`、非 draft 非 prerelease。建完 `GET /git/ref/tags/v0.1.0` 确认
+`object.sha` 就是 `51e37d3…`（轻量 tag）。
+
+**上面那个不确定性有答案了：`release` 事件取的是 tag 所在提交上的那份 workflow 文件。** 建完
+release 等 45 秒，`GET /actions/runs?event=release` 的 `total_count` 是 0，Actions 里没有任何
+运行——`v0.1.0` 指向的 `51e37d3` 上没有本文件。推论要写清：**对任何早于本 workflow 的 tag，
+`release` 事件永远不会有运行**，回填这类 tag 时事件路径不可用。
+
+链路验证因此走 `workflow_dispatch`：`gh workflow run release.yml --ref main -f tag=v0.1.0`。
+运行 35897971544：`guard` 成功（五个步骤全绿，日志里 `npm view @codersgl/mailuo@0.1.0
+--registry=https://registry.npmjs.org` 命中，打出「npm 上已有 @codersgl/mailuo@0.1.0，本次不发布」），
+`npm-publish` 被跳过，整轮 14 秒。也就是说「已发布版本不重复发布」这条幂等分支在真实 runner 上
+成立，而不只是在本地按同样输入测过。
+
+**仍未验证的两件事**：真实 OIDC 交换与真正的 `npm publish`（要等 0.2.0 那次才会走到）；npm 端
+Trusted Publisher 的 Allowed actions 是否勾到 `npm publish`（用户在网页上配好了，但 npm 没有可
+从外部读取该配置的接口，按官方文档它只会在发布那一刻以 ENEEDAUTH 之类暴露）。

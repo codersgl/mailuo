@@ -63,10 +63,10 @@ workflow 分两步：`guard` 先校验 tag 与版本一致、再查 npm 上有�
 `npm-publish` 才跑。检查排在装依赖与门禁之前，所以补记一个老 tag（例如 `v0.1.0`，那个提交上还
 没有 `lint` 脚本）也只会走完 `guard` 就跳过发布，不会因为门禁红掉，也不会重复发布。
 
-回填或试跑一个「早于本 workflow」的老 tag 时，不要指望 release 事件：`release` 取哪一份 workflow
-文件没有明文规定，若取的是 tag 所在提交上的那份，那个提交上没有这个文件，就什么都不会发生。
-用 Actions -> Release -> Run workflow，分支选 main，`tag` 输入填对应 tag——这条路径与事件路径
-做的是同一件事（校验版本、查 npm、需要时发布）。
+回填或试跑一个「早于本 workflow」的老 tag 时（`v0.1.0` 就是这样），不要指望 release 事件：实测
+`release` 取的是 **tag 所在提交**上的那份 workflow 文件，那个提交上没有这个文件，就什么都不会
+发生。用 Actions -> Release -> Run workflow，分支选 main，`tag` 输入填对应 tag——这条路径与事件
+路径做的是同一件事（校验版本、查 npm、需要时发布）。
 
 几处不能省：
 
