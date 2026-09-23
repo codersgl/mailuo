@@ -278,8 +278,8 @@ SQL 列名保持 `parent_id`、`archived_at` 这类写法，与规范里的建�
 - 只有两种路径形状：`/` 与 `/board/:taskId`。为此不引入路由库：它的嵌套路由、loader、数据 API 这里都用不上，而匹配语义（大小写、结尾斜杠、相对路径）还要额外学一遍。解析与拼装是两个纯函数，`parseRoute` 与 `boardPath` 严格对称（`encodeURIComponent` ↔ `decodeURIComponent`，非法百分号编码按 notFound 处理）。
 - 认不出的路径走一张「地址认不出来」页面，不静默显示根看板：地址栏停在 `/nonsense` 却显示根看板，会让人以为这个地址有效。
 - 前进/后退只改 URL、不重新挂载组件，所以用 `popstate` 把 URL 同步回 state。点当前这一层不 `pushState`（否则连点同一个节点，后退键要按两次才动）。
-- 树节点与面包屑用 `<button>` 而不是 `<a href>`。真实链接会带来「中键新开标签页」的预期，而生产托管还没有 SPA fallback，刷新 `/board/:taskId` 会 404——那是「生产托管」那一步的事，本步不假装链接可用。
-- 已知边界：直接刷新一个任务看板地址，在开发环境（Vite 的 SPA fallback）可用，在生产环境要等托管实现补 fallback。
+- 树节点与面包屑用 `<button>` 而不是 `<a href>`。真实链接会带来「中键新开标签页」的预期，而当时生产托管还没有 SPA fallback，刷新 `/board/:taskId` 会 404——那是「生产托管」那一步的事，本步不假装链接可用。（生产托管的 fallback 已由 D56 补上；树节点要不要因此改回 `<a href>` 留给后续步骤，本步没动。）
+- 已知边界：直接刷新一个任务看板地址，在开发环境（Vite 的 SPA fallback）可用，在生产环境要等托管实现补 fallback。（D56 已实现，这条不再成立。）
 
 **`useAsync`（新）与 `useBoard` 的改写**
 
@@ -1075,8 +1075,54 @@ useEffect(() => {
 
 **没做的**：不做鉴权/令牌（用户选的是「默认收回」这条路）；不做速率限制；用机器名/域名跨设备访问要自己配 `HOST_ALLOW`（README 写明）。另外记两条操作事项：**合并后要跑一次 `pnpm build`**——`dist/` 不入版本库，直接 `pnpm start` 跑的是上次构建的产物（`pnpm dev:api` 用 tsx 不受影响）；**`docs/spec.md` 已按用户授权同步**（2026-09-23 用户答复「授权你去修改」）：项目结构一节补了「监听与访问控制」一条（默认只绑 `127.0.0.1`、`HOST`/`HOST_ALLOW`、Host 与 Origin 校验各自的用途），错误契约一节补了 `403` 与 `413`。这次授权只覆盖这两处，审计报告 B 节其余措辞问题仍未动。
 
+## D56 第 19 步：生产静态托管（2026-09-23）
 
-## D56 第 20 步：品牌设计——改名「脉络 / Mailuo」与图标落地（2026-09-23，用户分三次拍板）
+对应审计报告 F 节第 2 步（B1，高）：规范 `docs/spec.md` 的「项目结构」一节写着「生产：Hono 提供 `/api/*`，并用 `serveStatic` 托管 `apps/web/dist`，只跑一个进程」，代码里从来没实现——`pnpm build` 之后跑 `node apps/api/dist/index.js`，`GET /` 只得到 `{"error":"not found"}`，`/board/:taskId` 刷新也没有回落。这一步把代码补到与规范一致，规范不用改。
+
+**改了什么**（`apps/api` 三处 + 根 `package.json` + README）：
+
+- `app.ts`：新增可选 `AppOptions.staticRoot`。传了就在 **API 路由之后**注册三段：补 `Cache-Control` 的中间件、`serveStatic({ root })` 挂在 GET/HEAD、以及 SPA 回退（非 `/api` 前缀的 GET/HEAD 回 `index.html`）；两道静态 handler 都套一层 `isApiPath` 守卫。
+- `config.ts`：新增 `Config.webDistDir`，由 `repoRoot` 推出，与启动目录无关。
+- `index.ts`：启动时看 `<webDistDir>/index.html` 在不在，在才传 `staticRoot`；不在打一行中文提示。监听日志多一行 `页面: <dir>`。
+- 根 `package.json` 加 `start` 脚本（`pnpm --filter @kanban/api start`；这个 scope 在 D57 里改名为 `@mailuo/api`，合并后命令是 `pnpm start`）；README 加「生产运行」一节。
+
+**注册顺序是关键**：Hono 按注册顺序执行、返回即止，所以放在 API 路由之后，静态文件不可能盖住**已注册的**接口；`app.use('*')` 的缓存中间件同理只对「没被接口吃掉」的请求生效。但只靠顺序还不够——`/api/*` 里没注册的那些路径会落到静态层上，所以两道静态 handler 都套了 `isApiPath` 守卫，让「接口的 404 一定是 JSON」不依赖「dist 里恰好没有同名文件」这个巧合。具体触发场景：用户往 `apps/web/public/api/` 放任何东西，Vite 都会原样拷进 `dist/api/`，那时 `GET /api/xxx` 就会被静态层响应成那个文件。用例里故意摆了 `dist/api/echo.json`，断言它仍是 `404 {"error":"not found"}`。
+
+**回退里也排除 `/api` 前缀**，否则接口 404 会变成一张 HTML 页面，而规范要求错误统一是 `{error:string}`。判定写成 `path === '/api' || path.startsWith('/api/')`：`/apiary` 不是接口路径，照常回落页面（有用例）。
+
+**缓存分两档，并且必须在 `serveStatic` 之前设**：`/assets/` 前缀（Vite 产物名带内容哈希）给 `public, max-age=31536000, immutable`，其余非 `/api` 路径给 `no-cache`。`index.html` 绝不能缓存：升级后浏览器拿旧 HTML 去请求已经删掉的旧哈希文件，页面白屏、要手动强刷才能恢复。
+
+- **为什么不能写在 `onFound` 里**（第一版就是这么写的，被我自己的实测推翻）：`serveStatic` 是先 `c.body(stream, 200)` 再回调 `onFound`，而 Hono 的 `#newResponse()` 在构造 Response 时把头部复制了一份，之后 `c.header()` 改的是 `#preparedHeaders`，响应上不会出现这个头。用例里对 `/` 与 `/assets/*` 都断言了具体值，写着 `onFound` 就会红。
+- **为什么判定用请求路径前缀而不是文件系统路径**：Windows 的 `path.sep` 是 `\`，按路径判断会漏（`docs/intend.md` 里桌面端优先支持 Windows）。
+- **为什么中间件要覆盖全部非 `/api` 路径，而不只覆盖回退**：`serveStatic` 自己会把目录路径解析成 `index.html`（`/` 与 `/board/` 都走这条），根本不经过 SPA 回退——只给回退加头会漏掉最需要 `no-cache` 的那一个。第一版正是漏了 `/`。
+
+**绝对路径这条依赖是实测确认的**：`serveStatic` 的类型注释写着 root 相对 cwd、不支持绝对路径，实现却是 `path.join(root, filename)`，绝对 root 可用。这里就传绝对路径（与启动目录无关），并实测了 `cd /tmp && node <worktree>/apps/api/dist/index.js` 之后 `/` 与 `/assets/*` 都是 200；新增用例用的也是临时绝对目录，把这个依赖钉住。改成相对路径反而会把托管绑在启动目录上。
+
+**路径穿越没有自己写校验**，靠 `serveStatic` 内部的 `tryDecodeURI` + 正则（拒绝含 `..`、`\\`、`//` 的路径）。审阅纠正了我最初的归因，值得写清楚每一条规则各自防什么：**POSIX 上 `..` 与 `//` 本来就被 URL 规范化与保留字挡在门外，真正不可替代的是 `\\` 那条——它是 Windows 上的唯一防线**（`path.win32.join(dist, '/..\\secret.txt')` 会跳到上一层，而 `docs/intend.md` 说桌面端优先支持 Windows；这条规则本机没法端到端验证）。
+
+用例的靶子因此摆了三个位置，缺一个断言就是空的：`outerDir/secret.txt`（`..` 真的解出来才读到）、`outerDir/%2fsecret.txt`（`%2f` 不被 `decodeURI` 解码，越过 `..` 后 `path.join` 落到的就是这个字面名）、`dist/..\secret.txt`（POSIX 上的字面文件名、Windows 上的分隔符）。第一版只有一个靶子，审阅指出**删掉 `serveStatic` 的正则后那两条用例照样绿**——它们当时证明的只是「URL 规范化与 `decodeURI` 不产生 `/`」。补了靶子之后我实测：模拟无正则的落点，`path.join` 读到的正是这两个文件，所以现在删正则必红。另外还有一个坑值得记：`/%2e%2e/secret.txt` 这种写法**测不到** `serveStatic` 的防线——URL 规范化阶段就把它变成 `/secret.txt` 了，必须用 `%2f` 让两个点躲过规范化。
+
+**启动时只判一次的取舍**：只看 `apps/web/dist/index.html` 在不在。好处是 `createApp` 完全不碰文件系统，开发态（没构建过前端）也不会让 `serveStatic` 打一行英文告警；代价是服务跑着的时候 `pnpm build` 不生效，要重启——README 写明「先 build 再 start」。没构建过时 `/` 回 404 JSON 并在启动日志里提示，开发态本来就该走 `pnpm dev:web`。审阅另外做了进程级变异（把 `existsSync` 改成恒真）：行为只差一行中文提示与 404 上的一个 `no-cache` 头，`/` 仍 404 JSON、`/api/health` 正常——**所以这条检查是「日志与少一句英文告警」级的，不是正确性所需**，别以为删掉它就会坏。
+
+**两处实现细节是审阅后收敛的**：`app.on('HEAD', ...)` 原来是死代码——Hono 的 `#dispatch` 对 HEAD 直接递归一次 GET 再用 `new Response(null, …)` 丢掉 body，路由只按 GET 匹配，所以现在只注册 GET；SPA 回退里把缓存头改回 `no-cache`——回退发的一定是 `index.html`，而 `/assets/` 下不存在的文件也会走到回退，原来会带着 `immutable` 回来（不存在的文件不该 immutable）。
+
+**验证**：api 单测 264 项全过（基线 249 + 新增 15，`test/static.test.ts`）；两侧 typecheck 通过；`pnpm build` 通过。真实进程（worktree 的构建产物 + 用户库副本 + 端口 3119）14 项：`/` 200 `text/html` 且 `cache-control: no-cache`、`/board/<真实 id>` 200 HTML、`/assets/index-*.js` 200 且 `immutable`、`HEAD /` 200、`/api/health` 200 JSON、`/api/nope` 404 JSON、`POST /board/x` 404 JSON、`Host: evil.example` → 403、编码穿越 200 但响应里没有靶子文件内容、`HOST=0.0.0.0` 下经 LAN 地址 `10.32.213.214:3119` 也能拿到页面、页面引用的两个资源都在。另外几条：`cwd=/tmp` 启动照样托管；把 `dist/` 临时改名后启动，日志给中文提示、`/` 回 404 JSON 而 `/api/health` 正常；**生产态不再经 Vite 代理**，所以专门验了浏览器直连的写请求——同源 `Origin: http://127.0.0.1:3130` 的 `POST /api/tasks` 201 且落库、`Origin: http://evil.example` 403；`HOST=0.0.0.0` 下经 LAN 地址访问页面 200、同源写 201、伪造 Host 403（说明上一步的 Host/Origin 加固在静态托管下没有松动）。
+
+**审阅（子代理，只读；变异检验在 `.tmp-review/` 的副本上做）**：结论「可以合并，没有阻断缺陷」，D55 的三道加固没被削弱、`/api/*` 语义与基线逐条一致（`/api/health` 200；`/api`、`/api/`、`/api/不存在`、`/api/echo.json` 都是 404 JSON；`/%61pi/health` 因为 Hono 先解码路径，照样命中接口而不是绕过守卫）。它做了 22 处变异，其中 4 处全绿经复核是等价变异（缓存中间件去掉 `isApiPath` 守卫、整块静态注册挪到路由之前、删掉 `HEAD` 注册、对照），并实测确认了「缓存头必须写在 `serveStatic` 之前」这条论断（写在 `onFound` 里三处断言变红）与「绝对 root 可用」。四条已改：
+
+1. **（中）穿越用例假通过**：见上，补了两个靶子文件，现在删正则必红。
+2. **（低）`app.on('HEAD', …)` 是死代码**：Hono 自己把 HEAD 转成 GET，删掉两行。
+3. **（低）注释过度归因**：我原写「注册在 API 路由之后，所以静态文件不可能盖住接口」——变异把整块挪到路由之前全绿，真正的保证是 `isApiPath` 守卫；注释已改成这个口径。
+4. **（低）不存在的 `/assets/*` 带 `immutable`**：回退里改回 `no-cache`（并补了一条断言），给 `/api`、`/api/` 的精确边界补了用例（原来 `isApiPath` 的 `=== '/api'` 那一半零覆盖，变异全绿）。
+
+它另外确认不是缺陷的点里，有两条对以后有用：POSIX 上 17 种穿越载荷都读不到 dist 外的文件（`path.join` 不会因第二段以 `/` 开头而跳根，与 `resolve` 不同）；`serveStatic` 的类型注释写「不支持绝对路径」是**注释错、代码对**。**没做的**：Windows 的 `\`、大小写不敏感文件系统、设备名行为本机验证不了（`path.win32` 结论是离线算的）；没有真实浏览器渲染验收；`apps/api/test/*` 不在 tsconfig include（D3），新增用例的类型错误 `tsc` 查不出来。
+
+**留给用户验收的环境**：worktree 的生产进程留在 `http://127.0.0.1:3119`（后端 3119，读 `.tmp-verify/kanban-user.db` 这份用户库副本，页面是 worktree 里 `pnpm build` 的真实产物）。主仓自己的 dev server（3003 + 5173）没动过。验收完我会停掉进程并删掉 `.tmp-verify/`。
+
+**没做的**：不做按 `Accept` 头区分「浏览器导航」与「资源请求」（未知路径一律回页面，拼错的资源路径也会拿到 200 的 HTML，由前端路由画「未找到」）；不做压缩（`precompressed` 没开，Vite 产物没有 `.br`/`.gz` 文件）；不做 ETag/Last-Modified 的条件请求（`serveStatic` 只回 `Content-Length` 与这次的 `Cache-Control`）；不做多进程/反向代理部署的说明。真实浏览器验收只到 curl 这一层：页面能在浏览器里正常渲染与操作要靠用户这次点一遍。
+
+
+## D57 第 20 步：品牌设计——改名「脉络 / Mailuo」与图标落地（2026-09-23，用户分三次拍板）
 
 对应 `docs/intend.md` 的「品牌设计项目图标等」。这一步分三段：产品名、图标造型、资产管线。每段都是先出原型再定版，定版前不动应用代码。
 
@@ -1167,7 +1213,7 @@ useEffect(() => {
 2. **（中）守卫不看像素**：原断言只解码 IHDR，所以「白图」「全透明图」「三帧全换成纯靛色块（M 消失）」三种坏法都能全绿，而测试注释里写的恰恰是要挡这些。修法：加 `png-stats.mjs` 与像素断言，并把同样的检查加进构建脚本。
 3. **（低）`docs/decisions.md` 里一条已失效的命令**：D41 一节写着 `pnpm --filter @kanban/api start`，改名后 `pnpm` 会报 `No projects matched the filters`。已改成 `@mailuo/api`——它不在「刻意保留」的三类里，是纯粹的漏改。
 4. **（低）`sizes="32x32"` 与三帧 ICO 不符**：按 `sizes` 挑选的浏览器（Firefox）只会用其中一帧，另外两帧白做。已改成 `16x16 32x32 48x48`，并加一条断言让它与 ICO 的真实帧集合对齐。
-5. **（低）D56 自己的措辞**：原写「本机没有 librsvg delegate」，实测 delegate 配置**在**（`svg => rsvg-convert`），只是那个二进制没装，所以回落到内置 MSVG。以及 favicon 的深色分支与 `theme-color` 跟系统配色这条限制，已按审阅要求写明「未能验证」而不是含糊过去。
+5. **（低）D57 自己的措辞**：原写「本机没有 librsvg delegate」，实测 delegate 配置**在**（`svg => rsvg-convert`），只是那个二进制没装，所以回落到内置 MSVG。以及 favicon 的深色分支与 `theme-color` 跟系统配色这条限制，已按审阅要求写明「未能验证」而不是含糊过去。
 
 审阅明确报告**未能验证**的一项：`favicon.svg` 的 `prefers-color-scheme: dark` 分支——无头 Chrome 翻不动这个媒体查询（四种 flag 都试过），只证明了规则语法与优先级正确，真实深色标签栏下的表现本环境证明不了。
 
@@ -1177,5 +1223,6 @@ useEffect(() => {
 
 ### 与其它步骤的关系
 
-`apps/api/src` 里至今没有任何 `serveStatic`，也就是说 `docs/spec.md` 写的「生产用 Hono 托管 `apps/web/dist`」还没落地——`step19-static-hosting` worktree 里躺着一批未提交的改动（`app.ts`/`config.ts`/`index.ts`/`test/static.test.ts` 等）。本步的图标在 dev 下由 Vite 从 `apps/web/public/` 提供，生产链路要等静态托管那步补齐才会跟着生效。
+本步最初写在这里的一段话是「`apps/api/src` 里至今没有 `serveStatic`，图标的生产链路要等静态托管补齐」——**合并时已经不成立**：D56（第 19 步）的生产静态托管在先，本分支是在它之上合并的。所以顺序是：`feat/static-hosting` 先合进本分支，再一起进主干。
 
+对图标的影响是具体的：`apps/web/public/` 下的五份产物会被 `vite build` 原样复制进 `apps/web/dist/`，而 Hono 的 `serveStatic` 托管的正是那个目录——所以 `pnpm build && pnpm start` 之后 `/favicon.ico`、`/icon.svg` 是直接由后端返回的。合并后实测过这条链路（见下面「合并后的端到端验证」）。

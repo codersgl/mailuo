@@ -12,7 +12,7 @@
 
     改这里之后要跑 `node scripts/build-icons.mjs` 重新生成 apps/web/public/ 下的产物，
     该脚本用无头 Chrome 光栅化（ImageMagick 的内置渲染器对 mask/渐变不准，见
-    docs/decisions.md D56）。
+    docs/decisions.md D57）。
   -->
   <!-- 左腿：外侧受光面 -->
   <path d="M76 116 L76 400 L172 400 L172 214 Z" fill="#4a5ad9"/>

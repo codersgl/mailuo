@@ -18,7 +18,7 @@
       移动端地址栏配色与标签页图标跟随的是**系统**配色，不是应用内那个可以手动覆盖的
       主题（见 src/lib/theme.ts 与上面的内联脚本）。用户在浅色系统下手动选了深色时，
       页面变深而地址栏仍是浅色——这是刻意的取舍：媒体查询改不了，要在切主题时同步
-      改这两条 meta 得让组件去写 document，代价比收益大（D56 记了这条限制）。
+      改这两条 meta 得让组件去写 document，代价比收益大（D57 记了这条限制）。
     -->
     <meta name="theme-color" content="#f6f7f9" media="(prefers-color-scheme: light)" />
     <meta name="theme-color" content="#17191d" media="(prefers-color-scheme: dark)" />

@@ -11,7 +11,7 @@
  * 为什么用无头 Chrome 而不是 ImageMagick：ImageMagick 6 的内置 SVG 渲染器
  * （本机没有 librsvg delegate）会静默忽略 <mask>、并把渐变按自己的方式重算——
  * 实测同一份带 mask 的图标，Chrome 渲出来 center 是透明的，convert 渲出来
- * center 是不透明的、颜色也不对（见 docs/decisions.md D56）。图标正是靠这些
+ * center 是不透明的、颜色也不对（见 docs/decisions.md D57）。图标正是靠这些
  * 细节成立的东西，所以宁可靠浏览器自己渲染。
  *
  * 产物是**提交进版本库的**：普通构建、CI、用户 clone 之后都不需要装 Chrome，
