@@ -1228,3 +1228,91 @@ describe('App 搜索', () => {
     expect(boardArea().getByText('进行中')).toBeTruthy();
   });
 });
+
+describe('App 依赖图', () => {
+  /** 主区顶部那个「看板 / 依赖图」分段控件。 */
+  function viewButton(name: string): HTMLElement {
+    return boardArea().getByRole('button', { name });
+  }
+
+  /** 图里的节点。用 data 属性取：卡片正面的标题与详情卡里的标题会重名。 */
+  function graphNodes(): NodeListOf<HTMLElement> {
+    return document.querySelectorAll<HTMLElement>('[data-graph-node]');
+  }
+
+  function cpmReads(calls: RecordedCall[]): number {
+    return calls.filter((call) => call.method === 'GET' && call.url.includes('/cpm')).length;
+  }
+
+  it('点「依赖图」把主区换成图，点「看板」切回来', async () => {
+    createFakeApi([
+      task({ id: 'a', title: '重构登录', columnId: 'doing', orders: 2000 }),
+      task({ id: 'b', title: '支付对账' }),
+    ]);
+    render(<App />);
+    await boardArea().findByText('重构登录');
+
+    fireEvent.click(viewButton('依赖图'));
+    expect(await boardArea().findByRole('button', { name: /重构登录/ })).toBeTruthy();
+    expect(graphNodes()).toHaveLength(2);
+    expect(viewButton('依赖图').getAttribute('aria-pressed')).toBe('true');
+    // 看板列被整块换掉了。
+    expect(boardArea().queryByText('进行中')).toBeNull();
+
+    fireEvent.click(viewButton('看板'));
+    expect(await boardArea().findByText('进行中')).toBeTruthy();
+    expect(graphNodes()).toHaveLength(0);
+  });
+
+  it('点节点选中、按「进入看板」进到那一层，并回到看板视图', async () => {
+    createFakeApi(fixtures);
+    render(<App />);
+    await boardArea().findByText('支付对账');
+
+    fireEvent.click(viewButton('依赖图'));
+    const node = await boardArea().findByRole('button', { name: /支付对账/ });
+    fireEvent.click(node);
+
+    const detail = screen.getByLabelText('支付对账 的排期');
+    // 节点上已经有工期与最早/最晚开始，详情卡补的是最早/最晚结束与松弛。
+    expect(within(detail).getByText('最早结束')).toBeTruthy();
+    expect(within(detail).getByText('松弛时间')).toBeTruthy();
+
+    fireEvent.click(within(detail).getByRole('button', { name: '进入看板' }));
+
+    await waitFor(() => expect(window.location.pathname).toBe('/board/b'));
+    // 回到看板视图：刚打开的那一层不该被依赖图盖着。
+    await boardArea().findByText('对账脚本');
+    expect(graphNodes()).toHaveLength(0);
+  });
+
+  it('「显示已归档」开关控制图里的归档节点，且不额外请求一次依赖图', async () => {
+    const api = createFakeApi(fixtures);
+    render(<App />);
+    await boardArea().findByText('支付对账');
+
+    fireEvent.click(viewButton('依赖图'));
+    await boardArea().findByRole('button', { name: /支付对账/ });
+    expect(graphNodes()).toHaveLength(2);
+    expect(document.querySelector('[data-graph-node="z"]')).toBeNull();
+
+    const before = cpmReads(api.calls);
+    fireEvent.click(screen.getByRole('checkbox', { name: /显示已归档/ }));
+    await waitFor(() => expect(document.querySelector('[data-graph-node="z"]')).not.toBeNull());
+    // 依赖图是固定带归档取的（D49），开关只在前端过滤，不重新发请求。
+    expect(cpmReads(api.calls)).toBe(before);
+  });
+
+  it('依赖图读不到时显示错误与重试，但仍能切回看板', async () => {
+    createFakeApi(fixtures, { scheduleError: '任务不存在' });
+    render(<App />);
+    await boardArea().findByText('支付对账');
+
+    fireEvent.click(viewButton('依赖图'));
+
+    expect(await boardArea().findByText('任务不存在')).toBeTruthy();
+    // 这条是要害：图挂了也必须留一条回看板的路，否则用户被卡在一张错误页上。
+    fireEvent.click(viewButton('看板'));
+    expect(await boardArea().findByText('支付对账')).toBeTruthy();
+  });
+});

@@ -14,7 +14,8 @@ import { DragGhost } from './DragGhost';
  * 这里的三等分网格只是布局（规范把列固定为待办 / 进行中 / 完成三列）。
  *
  * min-w 让内容区变窄时出现横向滚动，而不是把三列压得过窄；
- * 滚动容器是外面那层 main（见 App.tsx），列头的 sticky 相对它生效。
+ * 滚动容器是主区里「工具栏之下」的那层 div（见 App.tsx；D50 把 main 改成了竖向 flex，
+ * 滚动交给它的第二个子元素），列头的 sticky 相对它生效。
  *
  * 拖拽相关的三件事都在这一层：让位动画（FLIP）、插入线、跟随光标的克隆卡片。
  * 「指针压在哪一列哪张卡片之前」由 hooks/useCardDrag 的 resolveDropSlot 产出，
@@ -52,9 +53,10 @@ export function BoardView({
     <>
       {/*
         relative 是插入线的定位基准。
-        h-full 是「列尾那片空白也能放」的前提：网格之前是内容高（实测 142px，而 main 是 575px），
+        h-full 是「列尾那片空白也能放」的前提：网格之前是内容高（实测 142px，而当时的滚动容器是 575px），
         `items-start` 只管列自身的对齐、不会把网格撑高，于是 Column 上的 self-stretch 无处可撑，
-        整列只有内容那么高。height:100% 让网格恒等于 main 的高度，内容超过一屏时由 main 滚动。
+        整列只有内容那么高。height:100% 让网格恒等于滚动容器的高度（D50 之后是主区里工具栏之下的
+        那层 div），内容超过一屏时由它滚动。
 
         底部留白（pb-7）放在 Column 上而不是这里：padding 属于元素自己的盒子，能被
         elementFromPoint 命中，父容器的 padding 不能。放在网格上的话，最后 28px 会成死区——
@@ -136,7 +138,8 @@ function DropLine({
     measure();
   }, [measure, board]);
 
-  // 滚动与改窗高会让测量结果失效。滚动事件不冒泡，捕获阶段才能听到 main 的滚动。
+  // 滚动与改窗高会让测量结果失效。滚动事件不冒泡，捕获阶段才能听到滚动容器（主区里
+  // 工具栏之下那层 div，见 D50）的滚动——事件目标变了，但这个监听挂在 window 上，照样收得到。
   useEffect(() => {
     window.addEventListener('scroll', measure, true);
     window.addEventListener('resize', measure);

@@ -6,6 +6,7 @@ import {
   formatDuration,
   formatDurationShort,
   formatProgress,
+  formatScheduleMinutes,
   isDurationEstimated,
   progressPercent,
   readDurationInput,
@@ -52,6 +53,23 @@ describe('formatDurationShort', () => {
     expect(formatDurationShort(0)).toBe('瞬时');
     expect(formatDurationShort(MINUTES_PER_DAY + MINUTES_PER_HOUR)).toBe('1 天 1 小时');
     expect(formatDurationShort(45)).toBe('45 分');
+  });
+});
+
+describe('formatScheduleMinutes', () => {
+  it('0 是「0 分」而不是「瞬时」：它是时刻或差值，不是时长', () => {
+    expect(formatScheduleMinutes(0)).toBe('0 分');
+  });
+
+  it('其余与工期共用同一套换算', () => {
+    expect(formatScheduleMinutes(45)).toBe('45 分');
+    expect(formatScheduleMinutes(MINUTES_PER_HOUR)).toBe('1 小时');
+    // 8 小时工作制：480 分钟是 1 天，900 分钟是 1 天 7 小时（不是 15 小时）。
+    expect(formatScheduleMinutes(MINUTES_PER_DAY)).toBe('1 天');
+    expect(formatScheduleMinutes(900)).toBe('1 天 7 小时');
+    expect(formatScheduleMinutes(1380)).toBe('2 天 7 小时');
+    expect(formatScheduleMinutes(1440)).toBe('3 天');
+    expect(formatScheduleMinutes(1560)).toBe('3 天 2 小时');
   });
 });
 
