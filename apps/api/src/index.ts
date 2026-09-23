@@ -1,5 +1,7 @@
 import { serve } from '@hono/node-server';
+import { existsSync } from 'node:fs';
 import os from 'node:os';
+import path from 'node:path';
 import { createApp } from './app.js';
 import { loadConfig, loadEnvFileIfPresent } from './config.js';
 import { openDatabase } from './db/client.js';
@@ -28,6 +30,19 @@ if (applied.length > 0) {
   console.log(`已应用迁移: ${applied.join(', ')}`);
 }
 
+/**
+ * 有没有前端产物可托管：只看 `index.html` 在不在。
+ *
+ * 判定放在启动时而不是每次请求：这样 `createApp` 不必碰文件系统，开发态（还没构建过前端）
+ * 也不会让 serveStatic 打一行英文告警。代价是「服务跑着的时候跑 pnpm build」不会当场生效，
+ * 要重启一次——README 的生产段落写明了顺序。
+ */
+const webIndexPath = path.join(config.webDistDir, 'index.html');
+const serveWeb = existsSync(webIndexPath);
+if (!serveWeb) {
+  console.log(`未找到前端产物 ${webIndexPath}，本次只提供 API；跑一次 pnpm build 再重启即可托管页面。`);
+}
+
 const server = serve(
   /**
    * hostname 必须显式传：不传时 Node 绑的是 `::`（全部网卡），日志却写着 localhost，
@@ -35,7 +50,11 @@ const server = serve(
    * 现在默认 `127.0.0.1`，跨设备访问要自己设 HOST（见 docs/decisions.md D55）。
    */
   {
-    fetch: createApp(db, { host: config.host, allowedHosts }).fetch,
+    fetch: createApp(db, {
+      host: config.host,
+      allowedHosts,
+      staticRoot: serveWeb ? config.webDistDir : undefined,
+    }).fetch,
     port: config.port,
     hostname: config.host,
   },
@@ -53,6 +72,9 @@ const server = serve(
       console.log(`放行的 Host：回环名、${listed}（还需要的名字请设 HOST_ALLOW）`);
     }
     console.log(`数据库: ${config.dbPath}`);
+    if (serveWeb) {
+      console.log(`页面: ${config.webDistDir}`);
+    }
   },
 );
 

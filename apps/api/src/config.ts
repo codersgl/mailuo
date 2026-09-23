@@ -29,6 +29,8 @@ export interface Config {
   dbPath: string;
   /** 迁移文件目录。 */
   migrationsDir: string;
+  /** 前端构建产物目录，生产时由本进程托管（见 docs/spec.md 的「生产」一条）。 */
+  webDistDir: string;
 }
 
 /**
@@ -78,5 +80,6 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     hostAllow: parseHostAllow(env.HOST_ALLOW),
     dbPath: env.KANBAN_DB_PATH ?? path.join(repoRoot, 'data', 'kanban.db'),
     migrationsDir: path.join(apiRoot, 'migrations'),
+    webDistDir: path.join(repoRoot, 'apps', 'web', 'dist'),
   };
 }

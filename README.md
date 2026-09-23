@@ -27,6 +27,19 @@ pnpm build            # 编译后端到 apps/api/dist，打包前端到 apps/web
 
 开发时前端由 Vite 提供服务，`/api` 请求由 Vite 代理到后端，所以浏览器里只访问 5173 即可。
 
+## 生产运行
+
+```sh
+pnpm build            # 后端编译到 apps/api/dist，前端打包到 apps/web/dist
+pnpm start            # 只起一个进程：/api/* 是接口，其余路径由 apps/web/dist 托管
+```
+
+之后只访问 `http://127.0.0.1:3001` 即可（端口由 `PORT` 决定）。`/board/:taskId` 这类前端路由刷新时没有对应文件，会回落 `index.html`，交给前端自己解析；`/api/*` 的 404 仍是 JSON，不会变成一张页面。
+
+顺序不能反：服务启动时只检查一次 `apps/web/dist/index.html` 在不在，所以**先 `pnpm build` 再 `pnpm start`**；跑着的时候重新构建不会当场生效，要重启。没构建过前端时启动日志会写明「本次只提供 API」，此时 `/` 返回 404 JSON，开发请用 `pnpm dev:web`。
+
+缓存策略：`assets/` 下带内容哈希的文件长期缓存（`max-age=31536000, immutable`），`index.html` 与所有走 SPA 回退的路径不缓存（`no-cache`）——否则升级后浏览器拿旧 HTML 去请求已删除的旧哈希文件，页面会白屏。判定只看请求路径前缀，所以不要把不带哈希的文件放进 `apps/web/public/assets/`：它也会被缓存一年。
+
 环境变量（都有默认值）：
 
 - `PORT` 后端端口，默认 `3001`。被占用时在**仓库根目录**建 `.env` 写 `PORT=3003`：`pnpm dev:api` 与 `pnpm dev:web` 都读这个文件，Vite 的 `/api` 代理目标跟着走（见 `docs/decisions.md` D41）。
