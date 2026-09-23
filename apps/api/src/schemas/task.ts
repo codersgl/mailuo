@@ -1,15 +1,12 @@
 import { z } from 'zod';
 import { MAX_DURATION_MINUTES, MINUTES_PER_DAY } from '../domain/duration.js';
+import { strictObjectError } from './common.js';
 
 /**
  * 入参校验 schema。字段说明用中文，`validationHook` 会把第一条报错转成 `{ error: string }`，
  * 所以这里的 message 就是调用方最终看到的文案。
  * 一律用 strictObject：字段名打错时直接 400，而不是被静默丢弃。
  */
-
-/** 对象级文案。只替换「未定义字段」这一种，请求体不是对象时保留 Zod 默认可读的英文描述。 */
-const strictObjectError = (issue: { code: string }): string | undefined =>
-  issue.code === 'unrecognized_keys' ? '存在未定义的字段' : undefined;
 
 /** 标题：去两端空格后不能为空。 */
 const titleSchema = z
