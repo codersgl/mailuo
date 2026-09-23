@@ -2030,3 +2030,57 @@ HOME=$PWD/.tmp-verify/home MAILUO_NO_UPDATE_CHECK=1 \
 真正发布仍未做：本机 `npm whoami` 未登录，`~/.npmrc` 指向只读镜像 `registry.npmmirror.com`，
 发布要 `npm login --registry https://registry.npmjs.org` 后
 `npm publish --registry https://registry.npmjs.org`。
+
+## D68 第 30 步：发布元数据 repository / homepage / bugs / publishConfig（2026-09-24，分支 chore/repo-metadata）
+
+需求（`docs/intend.md`）：「发布npm包」与「发布到Github」都已就绪（远端 `origin` 指向
+`github.com/codersgl/mailuo`），本步把发布前缺的元数据补齐，下一步就发 0.1.0。
+
+### 问题
+
+两件事都只在「别人打开 npm 页面」或「真的敲 npm publish」时才暴露：
+
+1. README（D66 整篇改写）里有 `brand/icon.svg`、`docs/images/*.webp` 截图与 `docs/*.md` 链接，
+   它们都是相对路径。npm 页面靠 `repository` 字段把这些相对链接重写回仓库；没有这个字段，
+   用户看到的是一张裂图加一堆点不开的链接。D66 的取舍 4 已经把这个口记下，等的就是远端地址
+   ——地址现在有了。
+2. 本机 `~/.npmrc` 的默认 registry 是 `registry.npmmirror.com`（只读镜像）。`npm publish` 不带
+   `--registry` 会打到镜像上，报错与「没登录」长得几乎一样：D67 的验收里就出现过一次
+   `npm whoami` 在默认源上 `ENEEDAUTH`、加 `--registry=https://registry.npmjs.org` 才认出
+   `codersgl`。这不是一次性问题——每次在本机发布都会先撞一次。
+
+### 做法
+
+- 加 `repository`（`git+https://github.com/codersgl/mailuo.git`）、`homepage`、`bugs`。`repository`
+  的写法有讲究：`git+https` 前缀与结尾的 `.git` 是 npm 用来识别「这是个 GitHub 仓库、可以重写
+  相对链接」的形状，写成裸的 `https://github.com/codersgl/mailuo` 不报错但也不重写，所以用例
+  按这个形状断言而不是只查「字段在不在」。
+- 加 `publishConfig.registry = https://registry.npmjs.org`。**这里推翻了 D67 的取舍**：D67 决定
+  「把官方源写死进包，将来想发到私有源还要再改回来，先靠命令行旗标」。改口的理由不是那条理由
+  变错了，而是它当时的前提不成立——那时还没有远端、离发布也还远，属于过早决定；现在包只面向
+  公开的官方源发布（AGPL-3.0-only 就是这个姿态），而本机的默认源是只读镜像，留着这个坑意味着
+  每次发布都要记得多打一个旗标、忘了就得到一条误导性的报错。
+- `bin/package.test.mjs` 的「可以被发布」那条补两个断言：`repository.url` 的形状、`publishConfig.registry` 的取值。
+
+### 验证
+
+- 变异检验（备份文件还原，没用 `git checkout`）：删掉 `repository`、把 `url` 写成不带 `git+` 与
+  `.git` 的裸地址、把 `publishConfig.registry` 改成镜像地址，三条都让第 1 条用例变红（`not ok`），
+  还原后 5 条全绿。
+- `npm pack`（190.9 kB / 67 files）后解开 tarball 的 `package.json`：`repository`、
+  `publishConfig` 都在，`private` 仍为 `undefined`。这一步是防「元数据只写进了仓库、没进包」。
+- `node --test bin/*.test.mjs` 37 全绿（本步没动 `apps/`，合并后在主仓再跑一次全量）。
+
+### 没做的（可选复杂性）
+
+- **不推送、不发布**：`git push` 与 `npm publish` 是本步之后的动作，用一次性的命令完成，
+  不写进任何脚本。
+- 不加文档站、不加 `funding`、不改 `author` 的联系方式：都属发布之后按需再说的东西。
+
+### 事故记录（自省）
+
+这一小步的第一轮变异检验里，我用 `git checkout -- package.json` 还原变异，而当时的
+`repository` / `publishConfig` 改动**还没提交**——checkout 直接把它们抹回 HEAD，后两条变异因此
+在「字段不存在」的状态下跑空。已重新加回改动，并把还原方式换成仓内备份文件（`.tmp-mut/`）。
+教训：变异检验的还原基准必须是「我改完之后的状态」，在有未提交改动的工作区里，`git checkout`
+不是那个基准。

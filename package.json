@@ -14,9 +14,20 @@
   ],
   "license": "AGPL-3.0-only",
   "author": "codersgl",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/codersgl/mailuo.git"
+  },
+  "homepage": "https://github.com/codersgl/mailuo#readme",
+  "bugs": {
+    "url": "https://github.com/codersgl/mailuo/issues"
+  },
   "packageManager": "pnpm@11.22.0",
   "engines": {
     "node": ">=22"
+  },
+  "publishConfig": {
+    "registry": "https://registry.npmjs.org"
   },
   "type": "module",
   "bin": {
