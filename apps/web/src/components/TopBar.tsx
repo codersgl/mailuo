@@ -1,8 +1,9 @@
 import { Fragment } from 'react';
 import type { BreadcrumbItem } from '../api/types';
+import { ThemeToggle } from './ThemeToggle';
 
 /**
- * 顶部栏：品牌 + 面包屑。
+ * 顶部栏：品牌 + 面包屑 + 主题控件。
  *
  * 面包屑由 `GET /api/breadcrumb/:taskId` 给出（见 docs/spec.md）；根看板那一段没有任务可查，
  * 由 src/hooks/useBreadcrumb.ts 用同一个文案常量补上。crumbs 为 null 表示还没拿到（加载中或失败），
@@ -19,7 +20,7 @@ export function TopBar({
     <header className="flex h-[46px] flex-none items-center gap-3 border-b border-line bg-surface px-3.5">
       {/* 品牌就是页面的 h1：看板里的列用 h2，标题层级不悬空。 */}
       <h1 className="flex flex-none items-center gap-1.5 font-semibold tracking-[0.2px]">
-        <span className="grid size-4 place-items-center rounded-[4px] bg-accent text-white">
+        <span className="grid size-4 place-items-center rounded-[4px] bg-accent text-on-fill">
           {/* 三条长短线，取自定版原型 A 的品牌标；纯装饰，对读屏隐藏。 */}
           <svg
             width="9"
@@ -68,6 +69,8 @@ export function TopBar({
           );
         })}
       </nav>
+      {/* flex-none：面包屑再长也不该压扁它。 */}
+      <ThemeToggle />
     </header>
   );
 }

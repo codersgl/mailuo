@@ -24,3 +24,17 @@ export function writeStored(key: string, value: unknown): void {
     // 有意忽略：偏好存不上不影响本次会话的使用。
   }
 }
+
+/**
+ * 删掉一个偏好，让它回到「没存过」。
+ *
+ * 和写 null 的区别：主题的「没存过」是有含义的状态（跟随系统），
+ * 存一个字面量 null 会让 localStorage 里留一条 `"null"`，以后排查时看不出这是「清空」还是「写坏了」。
+ */
+export function removeStored(key: string): void {
+  try {
+    window.localStorage.removeItem(key);
+  } catch {
+    // 有意忽略：同 writeStored。
+  }
+}
