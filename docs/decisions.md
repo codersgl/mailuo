@@ -2016,3 +2016,17 @@ HOME=$PWD/.tmp-verify/home MAILUO_NO_UPDATE_CHECK=1 \
 「它同时改过旧的 `README.md`」不准确：`chore/npm-package` 从头到尾没碰过 `README.md`，改的是根
 `package.json`、新增 `bin/package.test.mjs` 与本文。合并时也只有本文冲突，README 的安装段
 （`npx mailuo` / `npm i -g mailuo`）与打包无关，不需要跟着改。
+
+**合并后收尾（2026-09-24，用户验收并合并 `409ba99` 之后）**：合并用 `--no-ff`，worktree
+`.worktrees/npm-package` 与分支 `chore/npm-package` 已删除，验收与审阅用的临时目录随之清掉。
+按 D55 之后的惯例在主仓跑了一次 `pnpm build`（前端产物不入版本库），再跑全量：
+`node --test bin/*.test.mjs` 37、api 273、web 474 全绿，`pnpm typecheck` 通过。
+
+一处抖动记录：合并后第一次全量运行时 web 有 4 条失败（`useBoard` / `useSearch` / `TopBar` /
+`DependencySection` 各 1 条），紧接着重跑两次都 474 全绿。本步没动 `apps/`，同一份代码在 worktree
+里连跑三次也是全绿，所以按环境争用（同一台机器上同时在跑构建与审阅）判定，不是合入引入的。
+若以后再遇到，值得单独一小步查这几条用例对时序的依赖。
+
+真正发布仍未做：本机 `npm whoami` 未登录，`~/.npmrc` 指向只读镜像 `registry.npmmirror.com`，
+发布要 `npm login --registry https://registry.npmjs.org` 后
+`npm publish --registry https://registry.npmjs.org`。
