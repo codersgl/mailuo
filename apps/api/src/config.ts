@@ -1,4 +1,5 @@
 import path from 'node:path';
+import { DEFAULT_HOST } from './domain/net.js';
 
 /**
  * apps/api 目录。src/ 运行时其上一级是 apps/api，dist/ 运行时上一级同样是 apps/api，
@@ -14,6 +15,11 @@ export const envFilePath = path.join(repoRoot, '.env');
 
 export interface Config {
   port: number;
+  /**
+   * 监听地址。默认 `127.0.0.1`，即只服务本机；想跨设备访问必须显式设 `HOST`。
+   * `app.ts` 的 Host 白名单与启动日志都用它（见 docs/decisions.md D55）。
+   */
+  host: string;
   /** SQLite 文件路径。 */
   dbPath: string;
   /** 迁移文件目录。 */
@@ -55,8 +61,15 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
   if (!Number.isInteger(port) || port <= 0 || port > 65535) {
     throw new Error(`PORT 不是合法端口: ${env.PORT}`);
   }
+  // 空串是「设了但没填」，不能当成默认值悄悄继续：那种情况下用户以为自己放开了或收紧了监听，
+  // 实际拿到的是另一个地址。Node 自己对非法地址会抛，不在这里重复校验。
+  const host = (env.HOST ?? DEFAULT_HOST).trim();
+  if (host === '') {
+    throw new Error('HOST 不能为空；只服务本机请删掉这一项（默认 127.0.0.1）');
+  }
   return {
     port,
+    host,
     dbPath: env.KANBAN_DB_PATH ?? path.join(repoRoot, 'data', 'kanban.db'),
     migrationsDir: path.join(apiRoot, 'migrations'),
   };

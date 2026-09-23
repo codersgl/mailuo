@@ -9,6 +9,7 @@ import {
   loadEnvFileIfPresent,
   repoRoot,
 } from '../src/config.js';
+import { DEFAULT_HOST } from '../src/domain/net.js';
 
 describe('loadConfig', () => {
   // 这些用例的入参是显式传的对象，不读进程环境，所以 shell 里已有 PORT 也不影响。
@@ -26,6 +27,20 @@ describe('loadConfig', () => {
 
     expect(config.port).toBe(4567);
     expect(config.dbPath).toBe('/tmp/kanban-test.db');
+  });
+
+  it('默认只监听本机，HOST 可显式放开', () => {
+    // 默认值就是信任边界：不设 HOST 时 API 只服务本机（见 docs/decisions.md D55）。
+    expect(loadConfig({}).host).toBe('127.0.0.1');
+    expect(loadConfig({}).host).toBe(DEFAULT_HOST);
+    expect(loadConfig({ HOST: '0.0.0.0' }).host).toBe('0.0.0.0');
+    expect(loadConfig({ HOST: ' 10.32.213.214 ' }).host).toBe('10.32.213.214');
+  });
+
+  it('HOST 是空串时报错，不静默回落默认值', () => {
+    // 「设了但没填」与「没设」是两件事：静默用默认值会让用户以为自己放开了监听。
+    expect(() => loadConfig({ HOST: '' })).toThrow(/HOST/);
+    expect(() => loadConfig({ HOST: '   ' })).toThrow(/HOST/);
   });
 
   it('端口非法时报错', () => {

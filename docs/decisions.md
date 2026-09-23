@@ -1027,6 +1027,36 @@ useEffect(() => {
 1. 网络暴露面：默认收回 `127.0.0.1`（跨设备访问需显式开 `HOST`），还是保留 Tailscale/局域网可用并补一层共享 token？现有文档里没有任何记录说明「监听所有网卡」是刻意的。
 2. `C5`：搜索态下从任务树或面包屑导航时，是清掉搜索词回到看板（与「从结果行进入」一致），还是保持结果页？规范只规定了后者。
 
+**用户答复（2026-09-23，同一次验收里给出）**：问题 1 选「默认只绑 `127.0.0.1`，要跨设备时显式设 `HOST`」——已落成 D55；问题 2 选「清掉搜索词，回到刚点的那一层看板」——落在修复顺序第 3 步。
+
 **修复顺序**见审计报告 F 节，共 8 步，按「先修正在发生的、再修用户能看见的、然后让日常命令重新可信」排；第 8 步（重构与加固）建议等真遇到问题再动。规范措辞那一组（7 条）只能由用户改 `docs/spec.md`，报告里逐条给了建议文字。
 
 **没做的**：没有改任何代码；没有跑 `pnpm audit`（本机 registry 没有审计端点）；没有做 DNS rebinding 的端到端攻击验证、没有做超大 body 的压测；两条需要真机确认的项（依赖图 Esc 的焦点覆盖面、输入法 `keyCode 229`）留到相应修复步骤的真实浏览器验收里。
+
+
+## D55 第 18 步：默认只监听本机 + Host/Origin 白名单 + 请求体上限（2026-09-23，用户拍板「默认收回」）
+
+**问题（实测过，不是推测）**：`apps/api/src/index.ts` 原来只给 `serve()` 传了 `port`，`@hono/node-server` 于是执行 `server.listen(port, undefined)`，Node 对 `undefined` 主机名绑 `::`（本机 `bindv6only=0`，IPv4 一并收）；而启动日志写死「API 监听 http://localhost:…」。用户自己的 dev server 当时就在 `*:3003` 上，实测 `curl http://100.65.77.53:3003/api/health`（Tailscale）与 `curl http://10.32.213.214:3003/api/health`（eth0 私网）都返回 200，而 `/api/tree` 一次返回全库、所有写接口都能改数据，全程无凭据。用户拍板：**默认只服务本机，跨设备访问要显式设 `HOST`**。
+
+**改了什么（`apps/api` 三处 + 一个新模块）**：
+
+- `domain/net.ts`（新增，纯函数）：`hostNameOf` 切分 Host 头（去端口、脱 IPv6 方括号）、`isLoopbackHostName`、`isWildcardHost`、`isAllowedHostHeader`、`isAllowedOrigin`。
+- `config.ts`：新增 `Config.host`，默认 `DEFAULT_HOST='127.0.0.1'`；`HOST` 为空串直接报错——「设了但没填」与「没设」是两件事，静默回落默认值会让用户以为自己放开了监听。
+- `app.ts`：`createApp(db, { host })`。加一个 **Host 白名单中间件**（所有方法、所有路径，放在路由之前）与一个 **写请求的 Origin 校验**；再加 `bodyLimit({ maxSize: 256KB })`（回 `413 {error:'请求体过大'}`）。顺序是先 Host/Origin 再 bodyLimit：前者不读 body，早拒早省事。
+- `index.ts`：`hostname: config.host` 显式传给 `serve()`；日志打印**真实监听地址**；`HOST` 不是回环地址时多打一条「无鉴权、同网段可读写」的提醒。
+
+**Host 白名单的三条规则**（顺序即优先级，全在 `isAllowedHostHeader` 里）：回环主机名永远放行；`listenHost` 本身放行（`HOST=192.168.1.5` 时用那个地址访问要能通）；`listenHost` 是 `0.0.0.0`/`::` 时一律放行。**第三条是刻意的妥协**：通配监听下访问方的地址由路由器/DNS 决定，列不出白名单；但它是用户显式选择的结果，而且此时 API 本来就对同网段敞开，Host 校验已挡不住什么——真正的解法是加鉴权（这一步不做）。这个取舍写在 `net.ts` 的注释里，免得日后被当成漏洞或误以为「有 Host 校验就安全」。
+
+**为什么回环判定用严格正则而不是 `startsWith('127.')`**：`127.0.0.1.evil.com` 这种域名可以被攻击者解析到 `127.0.0.1` 来做 DNS rebinding，`startsWith` 会把它当成回环，Host 校验当场失效。用例 `net.test.ts` 里专门钉了这一个字符串。
+
+**Origin 校验只作用于非 GET/HEAD**：跨站读由浏览器的 CORS 拦（开发态 Vite 同源代理不受影响），而 rebinding 那一类读请求已经死在 Host 这一关。允许的三种情形是：Origin 缺失（curl、同源表单）、Origin 与请求 Host 同主机名（浏览器保证的同源）、Origin 主机本身在白名单里；`Origin: null`、`file://`、畸形串一律拒绝。
+
+**为什么在中间件里从 `c.req.url` 取 Host 而不是 `c.req.header('host')`**：Host 是 fetch 规范的 forbidden header，`app.request()`（Hono 单测全走它）造出来的 Request 拿不到这个头，第一版因此让 123 个既有用例全部 403；而 `@hono/node-server` 恰恰是用 Host 头拼出 `request.url` 的（`server.mjs` 里 `new URL(\`${scheme}://${host}${incomingUrl}\`)`），所以 URL 里的主机名在生产与测试两条路上都等于真实 Host，头部只在别人手工构造 Request 时作兜底。
+
+**验证**：API 单测 239 项全过（原 210 + 新增 29：`net.test.ts` 15 条纯函数、`security.test.ts` 12 条接口级、`config.test.ts` 2 条）；API 端 typecheck 与 build 通过。真实进程两轮：
+
+- 不设 `HOST`：`ss -ltn` 显示 `127.0.0.1:3113`（不再是 `*`）、日志「API 监听 http://127.0.0.1:3113」、`curl` 正常 Host 200、`curl -H 'Host: evil.example'` → `403 {"error":"Host 不在允许列表内"}`、带 `Origin: http://evil.example` 的写请求 → `403 {"error":"Origin 不允许"}`。
+- `HOST=0.0.0.0`：`ss` 显示 `0.0.0.0:3114`、多打印那条无鉴权提醒、经 LAN 地址 `http://10.32.213.214:3114/api/health` 200、同源 Origin 的写请求 201、300KB 请求体 → `413 {"error":"请求体过大"}`。
+
+**没做的**：不做鉴权/令牌（用户选的是「默认收回」这条路）；不做速率限制；`HOST` 是通配地址时 Host 校验会放宽（见上，已在 README 与代码注释里写明）。**需要用户同步 `docs/spec.md`**：环境变量一节补 `HOST`（默认只绑本机），错误契约一节补两个新状态码 `403`（Host/Origin 不在允许列表）与 `413`（请求体过大）。
+
