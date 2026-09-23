@@ -1045,18 +1045,30 @@ useEffect(() => {
 - `app.ts`：`createApp(db, { host })`。加一个 **Host 白名单中间件**（所有方法、所有路径，放在路由之前）与一个 **写请求的 Origin 校验**；再加 `bodyLimit({ maxSize: 256KB })`（回 `413 {error:'请求体过大'}`）。顺序是先 Host/Origin 再 bodyLimit：前者不读 body，早拒早省事。
 - `index.ts`：`hostname: config.host` 显式传给 `serve()`；日志打印**真实监听地址**；`HOST` 不是回环地址时多打一条「无鉴权、同网段可读写」的提醒。
 
-**Host 白名单的三条规则**（顺序即优先级，全在 `isAllowedHostHeader` 里）：回环主机名永远放行；`listenHost` 本身放行（`HOST=192.168.1.5` 时用那个地址访问要能通）；`listenHost` 是 `0.0.0.0`/`::` 时一律放行。**第三条是刻意的妥协**：通配监听下访问方的地址由路由器/DNS 决定，列不出白名单；但它是用户显式选择的结果，而且此时 API 本来就对同网段敞开，Host 校验已挡不住什么——真正的解法是加鉴权（这一步不做）。这个取舍写在 `net.ts` 的注释里，免得日后被当成漏洞或误以为「有 Host 校验就安全」。
+**Host 白名单的三条规则**（顺序即优先级，全在 `isAllowedHostHeader` 里）：回环主机名永远放行；`listenHost` 本身放行（`HOST=192.168.1.5` 时用那个地址访问要能通）；`allowedHosts` 里列出的主机名放行。第三项由启动方填：**本机所有网卡地址**（`os.networkInterfaces()`）+ `HOST_ALLOW` 里用户自己列的名字，所以 `HOST=0.0.0.0` 时手机用 `http://192.168.1.5:3003` 访问直接可用，而攻击者的域名不在枚举结果里、照样被拒。
 
-**为什么回环判定用严格正则而不是 `startsWith('127.')`**：`127.0.0.1.evil.com` 这种域名可以被攻击者解析到 `127.0.0.1` 来做 DNS rebinding，`startsWith` 会把它当成回环，Host 校验当场失效。用例 `net.test.ts` 里专门钉了这一个字符串。
+**为什么不做「通配就一律放行」**（第一版就是这么写的，被审阅推翻）：当时的理由是「通配监听本来就对同网段敞开，Host 校验挡不住什么」——这个理由混淆了两种攻击面。敞开要求攻击者先进入那个网络；DNS rebinding 只要求用户浏览器打开一个网页。用户按 README 的建议设 `HOST=0.0.0.0` 给手机用时，A2 描述的「任意网页读走全库」会重新成立。改成枚举本机地址之后，跨设备访问照旧可用，rebinding 仍然被挡。**用机器名/域名访问**（例如 MagicDNS 名字）需要写进 `HOST_ALLOW`，否则读能通、写会 403（Origin 不在白名单）——这条也写进了 README。
 
-**Origin 校验只作用于非 GET/HEAD**：跨站读由浏览器的 CORS 拦（开发态 Vite 同源代理不受影响），而 rebinding 那一类读请求已经死在 Host 这一关。允许的三种情形是：Origin 缺失（curl、同源表单）、Origin 与请求 Host 同主机名（浏览器保证的同源）、Origin 主机本身在白名单里；`Origin: null`、`file://`、畸形串一律拒绝。
+**为什么回环判定用严格正则而不是 `startsWith('127.')`**：`127.0.0.1.evil.com` 这种域名可以被攻击者解析到 `127.0.0.1` 来做 DNS rebinding，`startsWith` 会把它当成回环，Host 校验当场失效。同样地，`hostNameOf` 按「端口必须是数字」严格解析：`127.0.0.1:3003.evil.com`、`127.0.0.1:3999@evil.com` 这类畸形 authority 一律返回空串（拒绝），不能按第一个冒号宽容切分——否则一个畸形请求就能绕过白名单。用例 `net.test.ts` 专门钉了这些字符串。
 
-**为什么在中间件里从 `c.req.url` 取 Host 而不是 `c.req.header('host')`**：Host 是 fetch 规范的 forbidden header，`app.request()`（Hono 单测全走它）造出来的 Request 拿不到这个头，第一版因此让 123 个既有用例全部 403；而 `@hono/node-server` 恰恰是用 Host 头拼出 `request.url` 的（`server.mjs` 里 `new URL(\`${scheme}://${host}${incomingUrl}\`)`），所以 URL 里的主机名在生产与测试两条路上都等于真实 Host，头部只在别人手工构造 Request 时作兜底。
+**Origin 校验只作用于非 GET/HEAD**：跨站读由浏览器的 CORS 拦（开发态 Vite 同源代理不受影响），而 rebinding 那一类读请求已经死在 Host 这一关。允许的情形是：Origin 缺失（curl、同源表单），或 Origin 的主机名落在同一份白名单里。开发态经 Vite 代理（`changeOrigin: true`）的真实组合是 Host `127.0.0.1:3003` + Origin `http://localhost:5173`，靠「回环」这条规则放行；`Origin: null`、`file://`、畸形串一律拒绝。
 
-**验证**：API 单测 239 项全过（原 210 + 新增 29：`net.test.ts` 15 条纯函数、`security.test.ts` 12 条接口级、`config.test.ts` 2 条）；API 端 typecheck 与 build 通过。真实进程两轮：
+**为什么在中间件里从 `c.req.url` 取 Host 兜底而不是只用 `c.req.header('host')`**：Hono 的 `app.request('/path')` 不会自动加 Host 头（单测全走这条路），第一版因此让 123 个既有用例全部 403；而 `@hono/node-server` 恰恰是用 Host 头拼出 `request.url` 的（`server.mjs` 里 `new URL(\`${scheme}://${host}${incomingUrl}\`)`），所以 URL 里的主机名可以当兜底。真实 Host 头优先——它与适配器看到的是同一个值；测试里显式传 `Host` 可以覆盖生产走的这条路径（审阅实测 `new Request(url, { headers: { Host } })` 是保留该头的，fetch 的 forbidden-header 过滤只作用于 `fetch()`）。
+
+**审阅（子代理，只读 worktree，变异在 `.tmp-review/` 的副本上做）提的问题与处理**：结论是「修复正确、可以合并」，无阻断缺陷。四条已改：
+
+1. **（中）通配 `HOST` 下两道锁同时归零**：见上，改成枚举本机地址 + `HOST_ALLOW`。
+2. **（中）测试没覆盖生产实际路径**：原来的用例全用绝对 URL（走 URL 兜底）与「同名 Origin」，而生产走 Host 头优先、代理组合靠回环规则；把 Origin 校验改成只作用于 POST 时 239 项全绿。已补：显式 Host 头被拒、真实代理组合（Host `127.0.0.1:3003` + Origin `http://localhost:5173`）放行、POST/PATCH/PUT/DELETE 五个写路由各一条跨站 Origin 403、白名单地址作 Origin 时 201。
+3. **（低）`isAllowedOrigin` 里「Origin 主机 === 请求 Host 主机」那条规则在调用路径上不可达**（调用方先做 Host 校验并短路），注释还把开发态代理的功劳记在它头上——已删掉该规则与注释，并补上真实组合的用例。
+4. **（低）注释与实测不符**：`hostNameOf` 的「缺失/空 Host 一律拒绝」只对纯函数成立，`@hono/node-server` 会在 Host 缺失时用监听地址兜底（已写进注释）；`::1` 这类裸 IPv6 监听地址会误报「非本机监听」警告（改用 `isLoopbackListenHost`）；`hostNameOf` 的宽松切分（`127.0.0.1:3999@evil.com`）改成严格解析。
+
+审阅还实测确认了几件「不是缺陷」：Host 校验在路由前、覆盖 `/api/health` 与未知路径；`bodyLimit` 对 chunked 体逐块计数（不是只信 `Content-Length`）；403/413 短路后 keep-alive 连接没有请求夹带；路由表里没有写语义的 GET。
+
+**验证**：API 单测 245 项全过（原 210 + 新增 35：`net.test.ts` 21 条纯函数、`security.test.ts` 12 条接口级、`config.test.ts` 2 条）；API 端 typecheck 与 build 通过。真实进程三轮：
 
 - 不设 `HOST`：`ss -ltn` 显示 `127.0.0.1:3113`（不再是 `*`）、日志「API 监听 http://127.0.0.1:3113」、`curl` 正常 Host 200、`curl -H 'Host: evil.example'` → `403 {"error":"Host 不在允许列表内"}`、带 `Origin: http://evil.example` 的写请求 → `403 {"error":"Origin 不允许"}`。
-- `HOST=0.0.0.0`：`ss` 显示 `0.0.0.0:3114`、多打印那条无鉴权提醒、经 LAN 地址 `http://10.32.213.214:3114/api/health` 200、同源 Origin 的写请求 201、300KB 请求体 → `413 {"error":"请求体过大"}`。
+- `HOST=0.0.0.0`：`ss` 显示 `0.0.0.0:3114`、多打印那条无鉴权提醒与放行名单、经 LAN 地址 `http://10.32.213.214:3114/api/health` 200、同源 Origin 的写请求 201、300KB 请求体 → `413 {"error":"请求体过大"}`、伪造 Host 的请求 403。
+- 真实 Vite 代理：API `PORT=3116` + `vite --port 5316`，`curl http://127.0.0.1:5316/api/health` 200、带 `Origin: http://127.0.0.1:5316` 的写请求 201 且落库——本机 dev 这条链路没被误伤。
 
-**没做的**：不做鉴权/令牌（用户选的是「默认收回」这条路）；不做速率限制；`HOST` 是通配地址时 Host 校验会放宽（见上，已在 README 与代码注释里写明）。**需要用户同步 `docs/spec.md`**：环境变量一节补 `HOST`（默认只绑本机），错误契约一节补两个新状态码 `403`（Host/Origin 不在允许列表）与 `413`（请求体过大）。
+**没做的**：不做鉴权/令牌（用户选的是「默认收回」这条路）；不做速率限制；用机器名/域名跨设备访问要自己配 `HOST_ALLOW`（README 写明）。另外记两条操作事项：**合并后要跑一次 `pnpm build`**——`dist/` 不入版本库，直接 `pnpm start` 跑的是上次构建的产物（`pnpm dev:api` 用 tsx 不受影响）；**需要用户同步 `docs/spec.md`**：环境变量一节补 `HOST` 与 `HOST_ALLOW`（默认只绑本机），错误契约一节补两个新状态码 `403`（Host/Origin 不在允许列表）与 `413`（请求体过大）。
 

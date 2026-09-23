@@ -1,12 +1,18 @@
 import { describe, expect, it } from 'vitest';
 import {
   DEFAULT_HOST,
+  collectLocalAddresses,
   hostNameOf,
   isAllowedHostHeader,
   isAllowedOrigin,
   isLoopbackHostName,
+  isLoopbackListenHost,
   isWildcardHost,
+  parseHostAllow,
 } from '../src/domain/net.js';
+
+/** 默认配置：只服务本机，没有额外放行名单。 */
+const LOCAL = { listenHost: DEFAULT_HOST };
 
 describe('hostNameOf', () => {
   it('去掉端口、转小写、脱掉 IPv6 的方括号', () => {
@@ -19,6 +25,21 @@ describe('hostNameOf', () => {
 
   it('没有端口时原样返回', () => {
     expect(hostNameOf('example.com')).toBe('example.com');
+  });
+
+  it('畸形 authority 一律返回空串（不能按第一个冒号宽容切分）', () => {
+    // 端口不是数字：按第一个冒号切会得到 127.0.0.1 并当成回环，一个畸形请求就绕过白名单。
+    expect(hostNameOf('127.0.0.1:3003.evil.com')).toBe('');
+    expect(hostNameOf('127.0.0.1:3999@evil.com')).toBe('');
+    expect(hostNameOf('127.0.0.1:')).toBe('');
+    expect(hostNameOf('[::1]:abc')).toBe('');
+    expect(hostNameOf('evil.com/x')).toBe('');
+    expect(hostNameOf('evil.com?x=1')).toBe('');
+    expect(hostNameOf('a b')).toBe('');
+    // 裸 IPv6 在 Host 头里必须带方括号。
+    expect(hostNameOf('::1')).toBe('');
+    expect(hostNameOf('a:b:c')).toBe('');
+    expect(hostNameOf('')).toBe('');
   });
 });
 
@@ -41,6 +62,16 @@ describe('isLoopbackHostName', () => {
   });
 });
 
+describe('isLoopbackListenHost', () => {
+  it('接受裸 IPv6 写法（Host 头里它带方括号，监听地址里不带）', () => {
+    expect(isLoopbackListenHost('::1')).toBe(true);
+    expect(isLoopbackListenHost('127.0.0.1')).toBe(true);
+    expect(isLoopbackListenHost('localhost')).toBe(true);
+    expect(isLoopbackListenHost('0.0.0.0')).toBe(false);
+    expect(isLoopbackListenHost('10.32.213.214')).toBe(false);
+  });
+});
+
 describe('isWildcardHost', () => {
   it('只认 0.0.0.0 与 ::', () => {
     expect(isWildcardHost('0.0.0.0')).toBe(true);
@@ -53,62 +84,98 @@ describe('isWildcardHost', () => {
 
 describe('isAllowedHostHeader', () => {
   it('默认（只服务本机）只放行回环主机名', () => {
-    expect(isAllowedHostHeader('127.0.0.1:3003', DEFAULT_HOST)).toBe(true);
-    expect(isAllowedHostHeader('localhost:3003', DEFAULT_HOST)).toBe(true);
-    expect(isAllowedHostHeader('[::1]:3003', DEFAULT_HOST)).toBe(true);
-    expect(isAllowedHostHeader('evil.example', DEFAULT_HOST)).toBe(false);
-    expect(isAllowedHostHeader('127.0.0.1.evil.com', DEFAULT_HOST)).toBe(false);
-    expect(isAllowedHostHeader('10.32.213.214:3003', DEFAULT_HOST)).toBe(false);
+    expect(isAllowedHostHeader('127.0.0.1:3003', LOCAL)).toBe(true);
+    expect(isAllowedHostHeader('localhost:3003', LOCAL)).toBe(true);
+    expect(isAllowedHostHeader('[::1]:3003', LOCAL)).toBe(true);
+    expect(isAllowedHostHeader('evil.example', LOCAL)).toBe(false);
+    expect(isAllowedHostHeader('127.0.0.1.evil.com', LOCAL)).toBe(false);
+    expect(isAllowedHostHeader('10.32.213.214:3003', LOCAL)).toBe(false);
   });
 
   it('缺失或空 Host 一律拒绝', () => {
-    expect(isAllowedHostHeader(undefined, DEFAULT_HOST)).toBe(false);
-    expect(isAllowedHostHeader('', DEFAULT_HOST)).toBe(false);
-    expect(isAllowedHostHeader('   ', DEFAULT_HOST)).toBe(false);
+    expect(isAllowedHostHeader(undefined, LOCAL)).toBe(false);
+    expect(isAllowedHostHeader('', LOCAL)).toBe(false);
+    expect(isAllowedHostHeader('   ', LOCAL)).toBe(false);
   });
 
   it('HOST 设成具体地址时，那个地址也放行', () => {
-    expect(isAllowedHostHeader('10.32.213.214:3003', '10.32.213.214')).toBe(true);
-    expect(isAllowedHostHeader('kanban.local:3003', 'kanban.local')).toBe(true);
+    const options = { listenHost: '10.32.213.214' };
+
+    expect(isAllowedHostHeader('10.32.213.214:3003', options)).toBe(true);
+    expect(isAllowedHostHeader('127.0.0.1:3003', options)).toBe(true);
     // 放行的是「这个地址」，不是「任意地址」。
-    expect(isAllowedHostHeader('10.32.213.215:3003', '10.32.213.214')).toBe(false);
-    expect(isAllowedHostHeader('evil.example', '10.32.213.214')).toBe(false);
+    expect(isAllowedHostHeader('10.32.213.215:3003', options)).toBe(false);
+    expect(isAllowedHostHeader('evil.example', options)).toBe(false);
   });
 
-  it('HOST 是通配地址时一律放行（用户显式选择的结果）', () => {
-    expect(isAllowedHostHeader('evil.example', '0.0.0.0')).toBe(true);
-    expect(isAllowedHostHeader('100.65.77.53:3003', '::')).toBe(true);
+  it('通配监听只放行列进白名单的地址，不是一律放行', () => {
+    const options = { listenHost: '0.0.0.0', allowedHosts: ['10.32.213.214', 'kanban.local'] };
+
+    expect(isAllowedHostHeader('10.32.213.214:3003', options)).toBe(true);
+    expect(isAllowedHostHeader('kanban.local:3003', options)).toBe(true);
+    expect(isAllowedHostHeader('127.0.0.1:3003', options)).toBe(true);
+    // 通配监听下访问方地址由路由器/DNS 决定，但攻击者的域名不在枚举结果里。
+    expect(isAllowedHostHeader('evil.example', options)).toBe(false);
+    expect(isAllowedHostHeader('100.65.77.53:3003', options)).toBe(false);
+  });
+
+  it('通配监听且名单为空时，只有回环能过', () => {
+    const options = { listenHost: '0.0.0.0' };
+
+    expect(isAllowedHostHeader('127.0.0.1:3003', options)).toBe(true);
+    expect(isAllowedHostHeader('10.32.213.214:3003', options)).toBe(false);
+    expect(isAllowedHostHeader('evil.example', options)).toBe(false);
   });
 });
 
 describe('isAllowedOrigin', () => {
-  it('同源（Origin 主机 === 请求 Host 主机）放行', () => {
-    expect(isAllowedOrigin('http://127.0.0.1:5173', '127.0.0.1:3003', DEFAULT_HOST)).toBe(true);
-    expect(isAllowedOrigin('http://localhost:5173', 'localhost:3003', DEFAULT_HOST)).toBe(true);
+  it('回环 Origin 放行（本机 dev、Vite 代理 changeOrigin 的主体）', () => {
+    // 真实的代理组合是 Host: 127.0.0.1:3003 + Origin: http://localhost:5173，
+    // 两者主机名不同，起作用的是「回环」这条规则。
+    expect(isAllowedOrigin('http://localhost:5173', LOCAL)).toBe(true);
+    expect(isAllowedOrigin('http://127.0.0.1:5173', LOCAL)).toBe(true);
   });
 
-  it('回环 Origin 在没有 Host 时也放行（开发态 Vite 代理）', () => {
-    expect(isAllowedOrigin('http://localhost:5173', undefined, DEFAULT_HOST)).toBe(true);
-  });
+  it('白名单里的 Origin 放行，其它站的拒绝', () => {
+    const options = { listenHost: '0.0.0.0', allowedHosts: ['10.32.213.214'] };
 
-  it('其它站的 Origin 拒绝', () => {
-    expect(isAllowedOrigin('http://evil.example', '127.0.0.1:3003', DEFAULT_HOST)).toBe(false);
-    expect(isAllowedOrigin('https://evil.example', '127.0.0.1:3003', DEFAULT_HOST)).toBe(false);
+    expect(isAllowedOrigin('http://10.32.213.214:3003', options)).toBe(true);
+    expect(isAllowedOrigin('http://evil.example', options)).toBe(false);
+    expect(isAllowedOrigin('https://evil.example', LOCAL)).toBe(false);
   });
 
   it('Origin: null 与畸形串拒绝', () => {
-    expect(isAllowedOrigin('null', '127.0.0.1:3003', DEFAULT_HOST)).toBe(false);
-    expect(isAllowedOrigin('不是 URL', '127.0.0.1:3003', DEFAULT_HOST)).toBe(false);
-    expect(isAllowedOrigin('', '127.0.0.1:3003', DEFAULT_HOST)).toBe(false);
+    expect(isAllowedOrigin('null', LOCAL)).toBe(false);
+    expect(isAllowedOrigin('不是 URL', LOCAL)).toBe(false);
+    expect(isAllowedOrigin('', LOCAL)).toBe(false);
   });
 
   it('非 http(s) 协议的 Origin 拒绝', () => {
-    // file:// 页面发来的请求，浏览器给的 Origin 就是这种形态。
-    expect(isAllowedOrigin('file://', '127.0.0.1:3003', DEFAULT_HOST)).toBe(false);
-    expect(isAllowedOrigin('chrome-extension://abc', '127.0.0.1:3003', DEFAULT_HOST)).toBe(false);
+    // file:// 页面发来的请求，浏览器给的 Origin 就是这种形态；
+    // chrome-extension 同理。
+    expect(isAllowedOrigin('file://', LOCAL)).toBe(false);
+    expect(isAllowedOrigin('chrome-extension://abc', LOCAL)).toBe(false);
   });
+});
 
-  it('HOST 是通配地址时，Origin 也跟着放宽', () => {
-    expect(isAllowedOrigin('http://evil.example', '100.65.77.53:3003', '0.0.0.0')).toBe(true);
+describe('parseHostAllow', () => {
+  it('逗号分隔、去空白、丢空项', () => {
+    expect(parseHostAllow(undefined)).toEqual([]);
+    expect(parseHostAllow('')).toEqual([]);
+    expect(parseHostAllow(' , ')).toEqual([]);
+    expect(parseHostAllow('kanban.local, 100.65.77.53')).toEqual(['kanban.local', '100.65.77.53']);
+  });
+});
+
+describe('collectLocalAddresses', () => {
+  it('取出所有网卡地址并去重，跳过 undefined', () => {
+    const addresses = collectLocalAddresses({
+      lo: [{ address: '127.0.0.1' }, { address: '::1' }],
+      eth0: [{ address: '10.32.213.214' }],
+      down: undefined,
+      docker0: [{ address: '10.32.213.214' }, { address: '172.17.0.1' }],
+    });
+
+    expect(addresses.sort()).toEqual(['10.32.213.214', '127.0.0.1', '172.17.0.1', '::1'].sort());
   });
 });

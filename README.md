@@ -37,6 +37,8 @@ pnpm build            # 编译后端到 apps/api/dist，打包前端到 apps/web
 - `HOST` 后端监听地址，默认 `127.0.0.1`，即**只服务本机**。接口没有鉴权（`docs/spec.md` 的「明确排除」不做账号系统），所以想让手机等其它设备访问时才设它，例如 `HOST=0.0.0.0`（所有网卡）或 `HOST=100.65.77.53`（某个具体地址）；设成非本机地址时启动日志会打印一条提醒（见 `docs/decisions.md` D55）。
   - 跨设备访问时，同网段（含 Tailscale）的设备都能读写全部任务，请自行确认这个网络是可信的。
   - Host/Origin 校验跟着这个值走：默认只接受回环主机名，用来挡 DNS rebinding（恶意页面把自己的域名解析到 `127.0.0.1` 后假装与 API 同源）；值留空会直接报错，不会静默回落默认值。
+  - 通配监听（`0.0.0.0`）时白名单里会自动加入**本机所有网卡地址**，所以用 IP 访问（`http://192.168.1.5:3003`）直接可用；用机器名或 MagicDNS 名字访问要写进 `HOST_ALLOW`，否则读能通、写会 403（Origin 不在白名单）。
+- `HOST_ALLOW` 额外放行的 Host 主机名，逗号分隔（例如 `HOST_ALLOW=sgl.local,sgl-1.tailnet.ts.net`）。只影响 Host/Origin 白名单，不改监听地址；不设时为空。
 - `KANBAN_DB_PATH` SQLite 文件路径，默认 `data/kanban.db`。
 
 数据库在启动时自动建表并执行 `apps/api/migrations/` 下未应用过的迁移。

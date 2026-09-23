@@ -43,6 +43,16 @@ describe('loadConfig', () => {
     expect(() => loadConfig({ HOST: '   ' })).toThrow(/HOST/);
   });
 
+  it('HOST_ALLOW 解析成主机名列表，缺省为空', () => {
+    // 用机器名/域名跨设备访问时要显式列进来；用 IP 访问由启动方枚举网卡地址覆盖。
+    expect(loadConfig({}).hostAllow).toEqual([]);
+    expect(loadConfig({ HOST_ALLOW: 'kanban.local, 100.65.77.53' }).hostAllow).toEqual([
+      'kanban.local',
+      '100.65.77.53',
+    ]);
+    expect(loadConfig({ HOST_ALLOW: ' , ' }).hostAllow).toEqual([]);
+  });
+
   it('端口非法时报错', () => {
     expect(() => loadConfig({ PORT: '不是数字' })).toThrow(/PORT/);
     expect(() => loadConfig({ PORT: '0' })).toThrow(/PORT/);

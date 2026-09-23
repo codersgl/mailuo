@@ -1,5 +1,5 @@
 import path from 'node:path';
-import { DEFAULT_HOST } from './domain/net.js';
+import { DEFAULT_HOST, parseHostAllow } from './domain/net.js';
 
 /**
  * apps/api 目录。src/ 运行时其上一级是 apps/api，dist/ 运行时上一级同样是 apps/api，
@@ -20,6 +20,11 @@ export interface Config {
    * `app.ts` 的 Host 白名单与启动日志都用它（见 docs/decisions.md D55）。
    */
   host: string;
+  /**
+   * 额外放行的 Host 主机名（`HOST_ALLOW`，逗号分隔）。用机器名或 MagicDNS 名字访问时才需要，
+   * 用 IP 访问由启动方枚举网卡地址自动覆盖。
+   */
+  hostAllow: string[];
   /** SQLite 文件路径。 */
   dbPath: string;
   /** 迁移文件目录。 */
@@ -70,6 +75,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
   return {
     port,
     host,
+    hostAllow: parseHostAllow(env.HOST_ALLOW),
     dbPath: env.KANBAN_DB_PATH ?? path.join(repoRoot, 'data', 'kanban.db'),
     migrationsDir: path.join(apiRoot, 'migrations'),
   };
