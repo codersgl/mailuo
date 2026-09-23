@@ -2213,3 +2213,30 @@ try renaming your package to '@codersgl/mailuo' and publishing with 'npm publish
   长期事实；scoped 名一次到位。
 - **不加 `npm i -g mailuo` 的兼容别名**：那个名字根本发不出去，没有可兼容的对象。
 - **不改仓库名与品牌**：项目与 CLI 仍然叫「脉络 / mailuo」，只有 npm 上的包名带 scope。
+
+**合并后收尾（2026-09-24，用户验收并合并 `51e37d3` 之后）**：合并用 `--no-ff --autostash`——主仓
+`docs/intend.md` 当时有一份未提交的手改（用户把需求重组成 Features / Tasks / Docs 三节），
+autostash 把它原地保留，没有被本步提交。worktree `.worktrees/scoped-name` 与分支
+`chore/scoped-name` 已删除。主仓跑了 `pnpm install --store-dir .pnpm-store --offline`（改包名会让
+pnpm 的依赖状态检查要求重装）、`pnpm build` 与全量测试：bin 37 / api 273 / web 474 全绿，
+`pnpm typecheck` 通过。`pnpm-lock.yaml` 未被改动。
+
+**发布成功（2026-09-24）**：用户在浏览器里用安全密钥确认后，`npm publish` 输出
+`+ @codersgl/mailuo@0.1.0`。发布物是 `codersgl-mailuo-0.1.0.tgz`（191.0 kB / 67 files，shasum
+`e7600fc042df73b66c2960aae0dd2c6fd728b4bf`）。registry 上 `dist-tags.latest` = `0.1.0`，且
+`https://registry.npmjs.org/%40codersgl%2Fmailuo/latest` 正常返回——这正是启动时版本检查请求的
+形状，说明 D65 那个功能对 scoped 名同样有效。刚发布后的一两分钟里，`npm view` 走完整 packument
+会短暂 404（CDN 未同步），`latest` 端点先可用；重试即恢复，不影响安装。
+
+**「别人装得到」是实测的**：把 `--userconfig` 指到一个空文件（不带任何 token）后
+`npm install -g @codersgl/mailuo` 从官方源装成功，装出来的 `mailuo --version` 输出 `0.1.0`。
+这条专门验 `publishConfig.access: public` 真的生效——它退化成 `restricted` 时，只有登录账号能装，
+而发布者自己永远发现不了。
+
+**发布这一步在无人终端里做不完（留给以后的经验）**：账号是安全密钥（WebAuthn）模式，没有 TOTP
+码可取；npm 在非交互终端下直接返回 `EOTP`，只有在 TTY 里才给出
+`https://www.npmjs.com/auth/cli/…` 的浏览器确认链接。所以每次发布都要人在终端按一次；要免掉它
+只能用勾了 bypass 2FA 的 granular token。
+
+**顺带确认**：主仓 `docs/intend.md` 那份改动是用户自己的（需求重组），本步没动它；
+`Tasks` 一节里的「发布npm包」现在可以勾上了。
