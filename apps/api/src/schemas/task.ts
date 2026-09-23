@@ -61,7 +61,7 @@ export const updateTaskSchema = z
     message: '移动必须同时提供 columnId 与 position',
   });
 
-/** 改父级（文件树拖动）：新父任务 + 落到新父级的哪一列。parentId 必填，null 表示移到根看板。 */
+/** 改父级（任务树拖动）：新父任务 + 落到新父级的哪一列。parentId 必填，null 表示移到根看板。 */
 export const changeTaskParentSchema = z.strictObject(
   {
     parentId: z

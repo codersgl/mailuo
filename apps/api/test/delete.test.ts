@@ -111,7 +111,7 @@ describe('DELETE /api/tasks/:id', () => {
     expect(remainingIds(db)).toEqual([]);
   });
 
-  it('删除后看板、文件树与面包屑都查不到', async () => {
+  it('删除后看板、任务树与面包屑都查不到', async () => {
     const db = createTestDb();
     const aId = insertTask(db, { title: 'A', columnId: 'todo', orders: 1000 });
     const bId = insertTask(db, { title: 'B', columnId: 'todo', orders: 1000, parentId: aId });

@@ -45,7 +45,7 @@ async function treeIds(app: App, includeArchived = false): Promise<string[]> {
 }
 
 describe('PATCH /api/tasks/:id/archive', () => {
-  it('归档整棵子树，并从默认的看板与文件树里消失', async () => {
+  it('归档整棵子树，并从默认的看板与任务树里消失', async () => {
     const db = createTestDb();
     const aId = insertTask(db, { title: 'A', columnId: 'todo', orders: 1000 });
     const bId = insertTask(db, { title: 'B', columnId: 'todo', orders: 1000, parentId: aId });
@@ -70,7 +70,7 @@ describe('PATCH /api/tasks/:id/archive', () => {
     expect(await treeIds(api)).toEqual([dId]);
   });
 
-  it('includeArchived=1 时看板与文件树带上归档任务', async () => {
+  it('includeArchived=1 时看板与任务树带上归档任务', async () => {
     const db = createTestDb();
     const aId = insertTask(db, { title: 'A', columnId: 'todo', orders: 1000 });
     const bId = insertTask(db, { title: 'B', columnId: 'todo', orders: 1000, parentId: aId });
