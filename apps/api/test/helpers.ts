@@ -26,22 +26,27 @@ export function insertTask(
     archived?: boolean;
     /** 工期，单位分钟；不传表示未估。 */
     durationMinutes?: number | null;
+    /** 描述，不传为空串。 */
+    description?: string;
+    /** 更新时间；搜索按它做次序，所以要让测试能造出不同的值。不传用统一的固定时间。 */
+    updatedAt?: string;
   },
 ): string {
   sequence += 1;
   const id = `task-${sequence}`;
   db.prepare(
     `INSERT INTO tasks (id, parent_id, column_id, title, description, duration_minutes, orders, created_at, updated_at, archived_at)
-     VALUES (@id, @parentId, @columnId, @title, '', @durationMinutes, @orders, @createdAt, @updatedAt, @archivedAt)`,
+     VALUES (@id, @parentId, @columnId, @title, @description, @durationMinutes, @orders, @createdAt, @updatedAt, @archivedAt)`,
   ).run({
     id,
     parentId: options.parentId ?? null,
     columnId: options.columnId,
     title: options.title,
+    description: options.description ?? '',
     orders: options.orders,
     durationMinutes: options.durationMinutes ?? null,
     createdAt: FIXED_TIME,
-    updatedAt: FIXED_TIME,
+    updatedAt: options.updatedAt ?? FIXED_TIME,
     archivedAt: options.archived ? FIXED_TIME : null,
   });
   return id;

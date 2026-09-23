@@ -5,6 +5,7 @@ import {
   createTask,
   deleteTask,
   fetchBoard,
+  fetchSearch,
   moveTask,
   setTaskArchived,
   updateTaskFields,
@@ -72,6 +73,18 @@ describe('fetchBoard', () => {
     await fetchBoard('t1', true);
 
     expect(calls.map((call) => call.url)).toEqual(['/api/board/t1?includeArchived=1']);
+  });
+
+  it('搜索把关键词编码进 q，开关打开时追加 includeArchived=1（已有的 ? 后面用 & 接）', async () => {
+    const calls = stubFetch(() => jsonResponse(200, { columns: [], results: [], truncated: false }));
+
+    await fetchSearch('重构 登录', false);
+    await fetchSearch('a/b', true);
+
+    expect(calls.map((call) => call.url)).toEqual([
+      '/api/search?q=%E9%87%8D%E6%9E%84+%E7%99%BB%E5%BD%95',
+      '/api/search?q=a%2Fb&includeArchived=1',
+    ]);
   });
 
   it('成功时返回解析后的看板', async () => {
