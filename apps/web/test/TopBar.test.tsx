@@ -43,7 +43,8 @@ describe('TopBar', () => {
     render(<TopBar crumbs={null} onNavigate={vi.fn()} search={searchProps} />);
 
     expect(screen.queryByText('根看板')).toBeNull();
-    expect(screen.getByText('看板')).toBeTruthy();
+    // 品牌就是页面的 h1（见组件里的注释），所以按 heading 角色断言，而不是按文本存在性。
+    expect(screen.getByRole('heading', { name: '脉络' })).toBeTruthy();
   });
 
   it('右端带主题控件（控件本身的行为在 ThemeToggle.test.tsx）', () => {

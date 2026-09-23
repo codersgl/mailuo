@@ -1,0 +1,17 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512" role="img" aria-label="脉络">
+  <!--
+    脉络 / Mailuo 图标的单色版，供 16–32px 与任何只能给一种颜色的地方使用
+    （favicon、任务栏小图标、README 徽标、单色印刷）。
+
+    与彩色版的差别不只是去色：中间那道折痕的开口从 y=236 加深到 y=224，两条腿
+    也从 96 宽加到 104 宽。理由是小尺寸下两条斜带之间的字腔会被压到不足 1px，
+    加深开口与加宽笔画之后，16px 下才还能读出中间那个 V（实测见 D57）。
+
+    颜色写死成品牌靛 #4a5ad9，而不是 currentColor：这个文件会被当作 <img>/favicon
+    直接加载，currentColor 在那条路径上解析成黑色，且不随深色标签栏反转。
+  -->
+  <path d="M74 112 L74 400 L178 400 L178 219 Z" fill="#4a5ad9"/>
+  <path d="M74 112 L178 112 L256 224 L256 300 Z" fill="#4a5ad9"/>
+  <path d="M438 112 L334 112 L256 224 L256 300 Z" fill="#4a5ad9"/>
+  <path d="M438 112 L438 400 L334 400 L334 219 Z" fill="#4a5ad9"/>
+</svg>

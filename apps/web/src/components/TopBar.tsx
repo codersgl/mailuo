@@ -1,6 +1,7 @@
 import { Fragment } from 'react';
 import type { KeyboardEvent } from 'react';
 import type { BreadcrumbItem } from '../api/types';
+import { BrandMark } from './BrandMark';
 import { SearchBox } from './SearchBox';
 import { ThemeToggle } from './ThemeToggle';
 
@@ -31,22 +32,8 @@ export function TopBar({
     <header className="flex h-[46px] flex-none items-center gap-3 border-b border-line bg-surface px-3.5">
       {/* 品牌就是页面的 h1：看板里的列用 h2，标题层级不悬空。 */}
       <h1 className="flex flex-none items-center gap-1.5 font-semibold tracking-[0.2px]">
-        <span className="grid size-4 place-items-center rounded-[4px] bg-accent text-on-fill">
-          {/* 三条长短线，取自定版原型 A 的品牌标；纯装饰，对读屏隐藏。 */}
-          <svg
-            width="9"
-            height="9"
-            viewBox="0 0 14 14"
-            fill="none"
-            stroke="currentColor"
-            strokeWidth="1.8"
-            strokeLinecap="round"
-            aria-hidden="true"
-          >
-            <path d="M2.5 3.5h9M2.5 7h6M2.5 10.5h4" />
-          </svg>
-        </span>
-        看板
+        <BrandMark />
+        脉络
       </h1>
       <span className="h-[18px] w-px flex-none bg-line" />
       {/* 层级深的时候面包屑会长过顶栏，这里让它横向滚动，而不是把最后一段（当前位置）挤掉。 */}

@@ -278,8 +278,8 @@ SQL 列名保持 `parent_id`、`archived_at` 这类写法，与规范里的建�
 - 只有两种路径形状：`/` 与 `/board/:taskId`。为此不引入路由库：它的嵌套路由、loader、数据 API 这里都用不上，而匹配语义（大小写、结尾斜杠、相对路径）还要额外学一遍。解析与拼装是两个纯函数，`parseRoute` 与 `boardPath` 严格对称（`encodeURIComponent` ↔ `decodeURIComponent`，非法百分号编码按 notFound 处理）。
 - 认不出的路径走一张「地址认不出来」页面，不静默显示根看板：地址栏停在 `/nonsense` 却显示根看板，会让人以为这个地址有效。
 - 前进/后退只改 URL、不重新挂载组件，所以用 `popstate` 把 URL 同步回 state。点当前这一层不 `pushState`（否则连点同一个节点，后退键要按两次才动）。
-- 树节点与面包屑用 `<button>` 而不是 `<a href>`。真实链接会带来「中键新开标签页」的预期，而生产托管还没有 SPA fallback，刷新 `/board/:taskId` 会 404——那是「生产托管」那一步的事，本步不假装链接可用。
-- 已知边界：直接刷新一个任务看板地址，在开发环境（Vite 的 SPA fallback）可用，在生产环境要等托管实现补 fallback。
+- 树节点与面包屑用 `<button>` 而不是 `<a href>`。真实链接会带来「中键新开标签页」的预期，而当时生产托管还没有 SPA fallback，刷新 `/board/:taskId` 会 404——那是「生产托管」那一步的事，本步不假装链接可用。（生产托管的 fallback 已由 D56 补上；树节点要不要因此改回 `<a href>` 留给后续步骤，本步没动。）
+- 已知边界：直接刷新一个任务看板地址，在开发环境（Vite 的 SPA fallback）可用，在生产环境要等托管实现补 fallback。（D56 已实现，这条不再成立。）
 
 **`useAsync`（新）与 `useBoard` 的改写**
 
@@ -447,7 +447,7 @@ Zod 的 `.int()` 拒绝的是**不安全整数**，而所有大于 2^53 的值�
 
 **影响面（审阅后补充）**：
 
-- `apps/api/src/index.ts` 在模块顶层就把 `.env` 灌进 `process.env`，所以生产入口 `pnpm --filter @kanban/api start`（`node dist/index.js`）同样会读到本机残留的根 `.env` 并改变端口。
+- `apps/api/src/index.ts` 在模块顶层就把 `.env` 灌进 `process.env`，所以生产入口 `pnpm --filter @mailuo/api start`（`node dist/index.js`）同样会读到本机残留的根 `.env` 并改变端口。
 - 根 `.env` 的键会被 Vite 看见：配置文件先执行（把根 `.env` 写进 `process.env`），Vite 之后才按 `VITE_` 前缀从 `process.env` 取值送给客户端，所以根 `.env` 里的 `VITE_*` 会被内联进前端产物。`PORT` 不受影响。不要往里放敏感值。
 - 改 `.env` 不会自动重启：`tsx watch` 不监听 `.env`，Vite 只监听自己 envDir（`apps/web`）下的 `.env*`，两个进程都要手动重启。
 - 端口占用时的提示文案同步改了：现在指向「改根目录 `.env` 的 PORT，重启两个进程」，而不是只给 `dev:api` 加前缀——后者会精确复现上面那条 404。
@@ -1075,3 +1075,154 @@ useEffect(() => {
 
 **没做的**：不做鉴权/令牌（用户选的是「默认收回」这条路）；不做速率限制；用机器名/域名跨设备访问要自己配 `HOST_ALLOW`（README 写明）。另外记两条操作事项：**合并后要跑一次 `pnpm build`**——`dist/` 不入版本库，直接 `pnpm start` 跑的是上次构建的产物（`pnpm dev:api` 用 tsx 不受影响）；**`docs/spec.md` 已按用户授权同步**（2026-09-23 用户答复「授权你去修改」）：项目结构一节补了「监听与访问控制」一条（默认只绑 `127.0.0.1`、`HOST`/`HOST_ALLOW`、Host 与 Origin 校验各自的用途），错误契约一节补了 `403` 与 `413`。这次授权只覆盖这两处，审计报告 B 节其余措辞问题仍未动。
 
+## D56 第 19 步：生产静态托管（2026-09-23）
+
+对应审计报告 F 节第 2 步（B1，高）：规范 `docs/spec.md` 的「项目结构」一节写着「生产：Hono 提供 `/api/*`，并用 `serveStatic` 托管 `apps/web/dist`，只跑一个进程」，代码里从来没实现——`pnpm build` 之后跑 `node apps/api/dist/index.js`，`GET /` 只得到 `{"error":"not found"}`，`/board/:taskId` 刷新也没有回落。这一步把代码补到与规范一致，规范不用改。
+
+**改了什么**（`apps/api` 三处 + 根 `package.json` + README）：
+
+- `app.ts`：新增可选 `AppOptions.staticRoot`。传了就在 **API 路由之后**注册三段：补 `Cache-Control` 的中间件、`serveStatic({ root })` 挂在 GET/HEAD、以及 SPA 回退（非 `/api` 前缀的 GET/HEAD 回 `index.html`）；两道静态 handler 都套一层 `isApiPath` 守卫。
+- `config.ts`：新增 `Config.webDistDir`，由 `repoRoot` 推出，与启动目录无关。
+- `index.ts`：启动时看 `<webDistDir>/index.html` 在不在，在才传 `staticRoot`；不在打一行中文提示。监听日志多一行 `页面: <dir>`。
+- 根 `package.json` 加 `start` 脚本（`pnpm --filter @kanban/api start`；这个 scope 在 D57 里改名为 `@mailuo/api`，合并后命令是 `pnpm start`）；README 加「生产运行」一节。
+
+**注册顺序是关键**：Hono 按注册顺序执行、返回即止，所以放在 API 路由之后，静态文件不可能盖住**已注册的**接口；`app.use('*')` 的缓存中间件同理只对「没被接口吃掉」的请求生效。但只靠顺序还不够——`/api/*` 里没注册的那些路径会落到静态层上，所以两道静态 handler 都套了 `isApiPath` 守卫，让「接口的 404 一定是 JSON」不依赖「dist 里恰好没有同名文件」这个巧合。具体触发场景：用户往 `apps/web/public/api/` 放任何东西，Vite 都会原样拷进 `dist/api/`，那时 `GET /api/xxx` 就会被静态层响应成那个文件。用例里故意摆了 `dist/api/echo.json`，断言它仍是 `404 {"error":"not found"}`。
+
+**回退里也排除 `/api` 前缀**，否则接口 404 会变成一张 HTML 页面，而规范要求错误统一是 `{error:string}`。判定写成 `path === '/api' || path.startsWith('/api/')`：`/apiary` 不是接口路径，照常回落页面（有用例）。
+
+**缓存分两档，并且必须在 `serveStatic` 之前设**：`/assets/` 前缀（Vite 产物名带内容哈希）给 `public, max-age=31536000, immutable`，其余非 `/api` 路径给 `no-cache`。`index.html` 绝不能缓存：升级后浏览器拿旧 HTML 去请求已经删掉的旧哈希文件，页面白屏、要手动强刷才能恢复。
+
+- **为什么不能写在 `onFound` 里**（第一版就是这么写的，被我自己的实测推翻）：`serveStatic` 是先 `c.body(stream, 200)` 再回调 `onFound`，而 Hono 的 `#newResponse()` 在构造 Response 时把头部复制了一份，之后 `c.header()` 改的是 `#preparedHeaders`，响应上不会出现这个头。用例里对 `/` 与 `/assets/*` 都断言了具体值，写着 `onFound` 就会红。
+- **为什么判定用请求路径前缀而不是文件系统路径**：Windows 的 `path.sep` 是 `\`，按路径判断会漏（`docs/intend.md` 里桌面端优先支持 Windows）。
+- **为什么中间件要覆盖全部非 `/api` 路径，而不只覆盖回退**：`serveStatic` 自己会把目录路径解析成 `index.html`（`/` 与 `/board/` 都走这条），根本不经过 SPA 回退——只给回退加头会漏掉最需要 `no-cache` 的那一个。第一版正是漏了 `/`。
+
+**绝对路径这条依赖是实测确认的**：`serveStatic` 的类型注释写着 root 相对 cwd、不支持绝对路径，实现却是 `path.join(root, filename)`，绝对 root 可用。这里就传绝对路径（与启动目录无关），并实测了 `cd /tmp && node <worktree>/apps/api/dist/index.js` 之后 `/` 与 `/assets/*` 都是 200；新增用例用的也是临时绝对目录，把这个依赖钉住。改成相对路径反而会把托管绑在启动目录上。
+
+**路径穿越没有自己写校验**，靠 `serveStatic` 内部的 `tryDecodeURI` + 正则（拒绝含 `..`、`\\`、`//` 的路径）。审阅纠正了我最初的归因，值得写清楚每一条规则各自防什么：**POSIX 上 `..` 与 `//` 本来就被 URL 规范化与保留字挡在门外，真正不可替代的是 `\\` 那条——它是 Windows 上的唯一防线**（`path.win32.join(dist, '/..\\secret.txt')` 会跳到上一层，而 `docs/intend.md` 说桌面端优先支持 Windows；这条规则本机没法端到端验证）。
+
+用例的靶子因此摆了三个位置，缺一个断言就是空的：`outerDir/secret.txt`（`..` 真的解出来才读到）、`outerDir/%2fsecret.txt`（`%2f` 不被 `decodeURI` 解码，越过 `..` 后 `path.join` 落到的就是这个字面名）、`dist/..\secret.txt`（POSIX 上的字面文件名、Windows 上的分隔符）。第一版只有一个靶子，审阅指出**删掉 `serveStatic` 的正则后那两条用例照样绿**——它们当时证明的只是「URL 规范化与 `decodeURI` 不产生 `/`」。补了靶子之后我实测：模拟无正则的落点，`path.join` 读到的正是这两个文件，所以现在删正则必红。另外还有一个坑值得记：`/%2e%2e/secret.txt` 这种写法**测不到** `serveStatic` 的防线——URL 规范化阶段就把它变成 `/secret.txt` 了，必须用 `%2f` 让两个点躲过规范化。
+
+**启动时只判一次的取舍**：只看 `apps/web/dist/index.html` 在不在。好处是 `createApp` 完全不碰文件系统，开发态（没构建过前端）也不会让 `serveStatic` 打一行英文告警；代价是服务跑着的时候 `pnpm build` 不生效，要重启——README 写明「先 build 再 start」。没构建过时 `/` 回 404 JSON 并在启动日志里提示，开发态本来就该走 `pnpm dev:web`。审阅另外做了进程级变异（把 `existsSync` 改成恒真）：行为只差一行中文提示与 404 上的一个 `no-cache` 头，`/` 仍 404 JSON、`/api/health` 正常——**所以这条检查是「日志与少一句英文告警」级的，不是正确性所需**，别以为删掉它就会坏。
+
+**两处实现细节是审阅后收敛的**：`app.on('HEAD', ...)` 原来是死代码——Hono 的 `#dispatch` 对 HEAD 直接递归一次 GET 再用 `new Response(null, …)` 丢掉 body，路由只按 GET 匹配，所以现在只注册 GET；SPA 回退里把缓存头改回 `no-cache`——回退发的一定是 `index.html`，而 `/assets/` 下不存在的文件也会走到回退，原来会带着 `immutable` 回来（不存在的文件不该 immutable）。
+
+**验证**：api 单测 264 项全过（基线 249 + 新增 15，`test/static.test.ts`）；两侧 typecheck 通过；`pnpm build` 通过。真实进程（worktree 的构建产物 + 用户库副本 + 端口 3119）14 项：`/` 200 `text/html` 且 `cache-control: no-cache`、`/board/<真实 id>` 200 HTML、`/assets/index-*.js` 200 且 `immutable`、`HEAD /` 200、`/api/health` 200 JSON、`/api/nope` 404 JSON、`POST /board/x` 404 JSON、`Host: evil.example` → 403、编码穿越 200 但响应里没有靶子文件内容、`HOST=0.0.0.0` 下经 LAN 地址 `10.32.213.214:3119` 也能拿到页面、页面引用的两个资源都在。另外几条：`cwd=/tmp` 启动照样托管；把 `dist/` 临时改名后启动，日志给中文提示、`/` 回 404 JSON 而 `/api/health` 正常；**生产态不再经 Vite 代理**，所以专门验了浏览器直连的写请求——同源 `Origin: http://127.0.0.1:3130` 的 `POST /api/tasks` 201 且落库、`Origin: http://evil.example` 403；`HOST=0.0.0.0` 下经 LAN 地址访问页面 200、同源写 201、伪造 Host 403（说明上一步的 Host/Origin 加固在静态托管下没有松动）。
+
+**审阅（子代理，只读；变异检验在 `.tmp-review/` 的副本上做）**：结论「可以合并，没有阻断缺陷」，D55 的三道加固没被削弱、`/api/*` 语义与基线逐条一致（`/api/health` 200；`/api`、`/api/`、`/api/不存在`、`/api/echo.json` 都是 404 JSON；`/%61pi/health` 因为 Hono 先解码路径，照样命中接口而不是绕过守卫）。它做了 22 处变异，其中 4 处全绿经复核是等价变异（缓存中间件去掉 `isApiPath` 守卫、整块静态注册挪到路由之前、删掉 `HEAD` 注册、对照），并实测确认了「缓存头必须写在 `serveStatic` 之前」这条论断（写在 `onFound` 里三处断言变红）与「绝对 root 可用」。四条已改：
+
+1. **（中）穿越用例假通过**：见上，补了两个靶子文件，现在删正则必红。
+2. **（低）`app.on('HEAD', …)` 是死代码**：Hono 自己把 HEAD 转成 GET，删掉两行。
+3. **（低）注释过度归因**：我原写「注册在 API 路由之后，所以静态文件不可能盖住接口」——变异把整块挪到路由之前全绿，真正的保证是 `isApiPath` 守卫；注释已改成这个口径。
+4. **（低）不存在的 `/assets/*` 带 `immutable`**：回退里改回 `no-cache`（并补了一条断言），给 `/api`、`/api/` 的精确边界补了用例（原来 `isApiPath` 的 `=== '/api'` 那一半零覆盖，变异全绿）。
+
+它另外确认不是缺陷的点里，有两条对以后有用：POSIX 上 17 种穿越载荷都读不到 dist 外的文件（`path.join` 不会因第二段以 `/` 开头而跳根，与 `resolve` 不同）；`serveStatic` 的类型注释写「不支持绝对路径」是**注释错、代码对**。**没做的**：Windows 的 `\`、大小写不敏感文件系统、设备名行为本机验证不了（`path.win32` 结论是离线算的）；没有真实浏览器渲染验收；`apps/api/test/*` 不在 tsconfig include（D3），新增用例的类型错误 `tsc` 查不出来。
+
+**留给用户验收的环境**：worktree 的生产进程留在 `http://127.0.0.1:3119`（后端 3119，读 `.tmp-verify/kanban-user.db` 这份用户库副本，页面是 worktree 里 `pnpm build` 的真实产物）。主仓自己的 dev server（3003 + 5173）没动过。验收完我会停掉进程并删掉 `.tmp-verify/`。
+
+**没做的**：不做按 `Accept` 头区分「浏览器导航」与「资源请求」（未知路径一律回页面，拼错的资源路径也会拿到 200 的 HTML，由前端路由画「未找到」）；不做压缩（`precompressed` 没开，Vite 产物没有 `.br`/`.gz` 文件）；不做 ETag/Last-Modified 的条件请求（`serveStatic` 只回 `Content-Length` 与这次的 `Cache-Control`）；不做多进程/反向代理部署的说明。真实浏览器验收只到 curl 这一层：页面能在浏览器里正常渲染与操作要靠用户这次点一遍。
+
+
+## D57 第 20 步：品牌设计——改名「脉络 / Mailuo」与图标落地（2026-09-23，用户分三次拍板）
+
+对应 `docs/intend.md` 的「品牌设计项目图标等」。这一步分三段：产品名、图标造型、资产管线。每段都是先出原型再定版，定版前不动应用代码。
+
+### 产品名：从「看板」到「脉络 / Mailuo」
+
+候选是四个，都做了**实际查询**的撞名调研（npm registry 状态码 + GitHub 搜索 + 应用商店），不是凭记忆：
+
+- **看山 / Kanshan**：唯一一个拉丁名在 npm 上未被占用、且没有知名同名软件的候选（`kanshan` 返回 404，GitHub 精确同名仓库最高 1 star）。但它被用户否掉，理由是「感觉和我的项目没什么关系，更像是旅游 App」。**同意，而且这个否法比撞名更要紧**：它的字面联想是风景，要讲一段禅宗三重境界才能跟任务管理接上——需要说明书才成立的名字就是错的名字。图标还得为这个错配补课。
+- **简素 / Kanso**：至少三个同类同名产品（Nextcloud 的 Kanso 看板应用、Kanso 待办 Chrome 扩展等），另有同名医疗器械品牌。
+- **石垒 / Cairn**：已有同定位产品（Cairn MCP 自述为 local-first 的笔记与项目跟踪工具），npm `cairn` 已占用。
+- **巢 / Nest**：NestJS（76712 star）在开发者语境里独占这个词，另有 Google Nest 与 npm `nest`。
+
+改成 **脉络 / Mailuo**：层级是一棵树、依赖是一张网，合起来就是脉络——名字直接描述这个工具做的事，不需要典故。中文名与小米商店一款生活服务 App 同名，属不同类撞名，可接受。
+
+改名范围由用户拍板为「显示名 + 包名 + 仓库名全改，数据文件名不动」：`index.html` 的 title、顶栏 h1、README 标题与说明、`package.json` 的 `name` 与 `@kanban` → `@mailuo` scope、`docs/spec.md` 的标题与项目结构树（`KanBan/` → `mailuo/`）。
+
+**刻意不改三类，因为它们是「已经存在的身份」而不是品牌**：
+
+1. `data/kanban.db` 与 `KANBAN_DB_PATH`——里面是真实任务数据，跟着改名等于让旧库失联；
+2. 前端 localStorage 的 `kanban.*` 键——改了只会让用户已选的深色模式、折叠状态、显示已归档开关悄悄回默认值，没有任何收益；
+3. 迁移文件里的 `-- kanban:no-foreign-keys` 标记与测试夹具里的 `kanban.local` 主机名——前者是历史迁移文件的内容，后者是通用夹具，都没有品牌含义。
+
+操作事项：包名变了，**合并到主干后要跑一次 `pnpm install`**（沙箱里要带 `--store-dir`，见 D42）。本 worktree 的 `node_modules` 是指向主仓的软链，所以验证时直接跑 `apps/*/node_modules/.bin/vitest` 与 `tsc`，没有跑 `pnpm install`（那会把主仓的 node_modules 改成新包名）。
+
+### 图标第一轮为什么被否：错在 brief 不在执行
+
+第一轮按「16px 优先 + 圆角方底色块 + 居中单色几何符号 + 只用界面那个低饱和蓝」出了 7 个变体（山形、节点树、三列、节点分叉、叶脉、螺旋…）。用户评价「都好土啊，没有新意而且很简单」。**同意**，而且原因在 brief：这几个约束一起用，必然产出通用企业图标——形状词汇只剩那几种，配色是 2010 年代的企业蓝，而「一套几何通吃 16–512px」会把造型压到最保守的形态。第一轮里最花力气的一版（把连线从 40 单位压到 32、净空从 60/48 拉到 40/72）也只是让一个通用图形达到及格线。
+
+纠正了两个假设，也征得了用户同意：
+
+- **小尺寸不必与 512px 用同一套几何**。favicon 用专门简化的版本是通行做法，强行一套通吃只会让大图也变简陋。
+- **界面强调色与应用图标配色不必是同一件事**。前者是 UI 令牌（要满足对比度、要与灰阶共存），后者是品牌资产（可以渐变、双色、深底）。用户选了「图标另配一套」。
+
+### 第二轮：四个方向并行，12 个变体里留 4 个
+
+按用户勾选的四个风格锚点各派一个子代理：A 冷色极简、B 字标型、C 线条编织/叶脉、D 轮廓即结构（非方片）。每个方向至少 3 个变体，都要求在 512px 下先做讲究、允许自己的配色、允许小尺寸用简化变体。
+
+淘汰的 8 个与理由（都看过 512 原图）：
+
+- **A1 主干三泳道**——深色块 + 居中符号，结构上就是被否掉的那个模板；
+- **A3 刻痕料**——斜置带槽的厚料，读成钱包/卡包/擦丝器，不像任务工具；
+- **C1 单叶脉**——深底荧光绿，像水培灯或植物 App；
+- **C2/C3 三股辫**——读成绳结、麻花，与任务没有语义连接，且 16px 要另做一套近乎重画；
+- **D2 螺脉**——像肉桂卷或海螺，暖色渐变与整套冷色体系打架；
+- **D3 河脉**——像鹿角或珊瑚；
+- **B3「脉」字**——16px 只剩月字旁，读成「月/日」；
+- **B1 节点 M**——语义最好，但圆点收尾偏幼稚，放大看像分子结构图。
+
+留下的四个是 A2 同构嵌套、B2 折带 M、D1 叶脉剪影、B1 节点 M。**这里有一条值得记下来的判断**：C1 与 D1 是手艺最好的一族（D1 的叶脉是从叶面真正挖掉的负空间，技术上最难），但它们发的是**植物/生态信号**——跟「看山像旅游 App」属于同一类错误，只是把风景换成了绿植。个人任务工具挂一片叶子，第一眼会被当成植物识别或健康类应用。造型好不等于信号对。
+
+用户选 **B2 折带 M**。我提过一条顾虑并记录在案：界面上的名字是中文「脉络」，旁边放一个拉丁字母 M 会读成「M 脉络」。实测顶栏（20px，见下）里 M 作为图形记号不构成阅读干扰——它更像一个符号而不是一个待读的字母，所以按用户的选择落地。
+
+### 资产：母版、产物与管线
+
+`brand/` 放四份**手改的唯一来源**：
+
+- `icon.svg`——彩色应用图标，四个梯形折面（左靛 #4a5ad9 / 左斜 #6f7dff / 右斜 #18aecb / 右腿 #0e7f96）。两条斜带在 x=256 合拢成 M 中间的折痕，折痕落在字母自己的对角线上；左右分色承担「一分为二」（父任务与子任务）。整份文件没有渐变、没有描边、没有滤镜——纯色填充才能在 16px 与深色任务栏上都不糊，也才能被任何光栅化工具稳定渲染。
+- `icon-mono.svg`——单色版，供 16–32px 与任何只能给一种颜色的地方。它不只是去色：折痕开口从 y=236 加深到 224、腿宽从 96 加到 104，因为小尺寸下两条斜带之间的字腔会被压到不足 1px。
+- `icon-tile.svg`——靛色圆角块 + 白 M，只用在无法透明或背景不可控的地方。
+- `favicon.svg`——透明底单色 M，内联 `prefers-color-scheme` 切深浅两色。
+
+`scripts/build-icons.mjs`（`pnpm icons`）用**无头 Chrome** 光栅化，产出 `apps/web/public/` 下的 `favicon.svg`、`favicon.ico`（16/32/48 三帧内嵌 PNG）、`apple-touch-icon.png`（180×180，不透明）、`icon.svg`、`icon-512.png`。**产物提交进版本库**：普通构建、CI、新克隆都不需要装 Chrome，只有改母版时才跑这个脚本。
+
+**为什么不用 ImageMagick（实测，不是推测）**：同一份带 `<mask>` 的 SVG，Chrome 渲出来中心像素是 `(0,0,0,0)`（透明，符合预期），`convert -background none` 渲出来是 `(14,127,150,255)`——mask 被静默忽略；同一处笔画颜色也不同（convert 92,106,228 vs Chrome 105,119,242，渐变被按自己的方式重算）。本机的 `convert -list delegate` 里配了 `svg => rsvg-convert`，但 `rsvg-convert` 这个二进制并没有装（`which` 退出 1），所以实际回落到 ImageMagick 内置的 MSVG 渲染器；装齐 librsvg 之后结论是否改变没有验证。图标正是靠这些细节成立的东西，所以宁可靠浏览器自己渲染。ICO 没有用任何编码库：Vista 起 ICO 允许每帧内嵌 PNG，脚本自己拼 6 字节文件头 + 每帧 16 字节目录项。
+
+**favicon 的取舍**：透明单色 M 在深色标签栏（#202124）上对比度只有 2.9:1，所以 `favicon.svg` 按系统配色切换 #4a5ad9（对白 5.6:1）与 #8fa2ff（对 #202124 6.7:1）；不支持这条媒体查询的浏览器用默认值，在浅色标签栏上依然成立。`favicon.ico` 回退用带底版的那张——它在任何底色上都成立。
+
+**这条切换只验证了一半**：浅色分支实测渲染出的唯一实色是 `(74,90,217)`（等于 #4a5ad9，且黑像素为 0，同时证明 `<style>` 在图片上下文里确实生效）；**深色分支未能验证**——无头 Chrome 翻不动 `prefers-color-scheme`（试过无 flag、`--force-dark-mode`、`--force-prefers-color-scheme=dark`、`--enable-features=WebContentsForceDark` 四种，`matchMedia('(prefers-color-scheme: dark)').matches` 始终 false）。唯一的旁证是把 `@media (prefers-color-scheme: dark)` 改成 `@media all` 之后渲出的实色变成 `(143,162,255)` = #8fa2ff，说明规则本身语法正确、优先级也对，但**媒体查询在真实深色标签栏下是否触发，本环境证明不了**。
+
+**同一条限制也适用于 `theme-color`**：它和 favicon 跟的是**系统**配色，而应用主题是用户可以在界面里手动覆盖的（`kanban.theme` + `html.dark`，见 D43）。所以在浅色系统下手动选深色的用户，页面是深色而移动端地址栏仍是浅色。要修就得在切主题时去写 document 上那两条 meta 的 `media`/`content`，而 favicon 那条换不动（SVG 里的媒体查询按系统走）——一半能修一半不能，收益不值这个复杂度，因此作为已知限制记在这里，不实现。
+
+**顶栏品牌标**用 `<img src="/icon.svg">` 引母版，而不是在组件里内联一份 SVG 路径：几何只存在一份，代价是顶栏多一次静态请求（会被缓存）。尺寸取 20px 而不是 16px，因为母版按 512 画布留了内边距（M 只占画布 71% 宽、56% 高），按 16px 渲染会比旁边 13px 的文字还显小。
+
+### 验证
+
+- web 单测 448 项全过（基线 437 + 新增 11：`BrandMark` 3、`brandAssets` 8），api 249 项全过，两端 typecheck 干净。
+- `brandAssets.test.ts` 分两层核对产物：**结构**（ICO 必须是 16/32/48 三帧且每帧内嵌 PNG 而不是 BMP、apple-touch-icon 必须 180×180 且 colorType 2、icon-512 必须 512×512 且带 alpha），以及**像素**（三帧的 ICO 里白 M 占 5% 以上、靛底占 30% 以上；apple-touch 的白与靛同上；icon-512 四角 alpha=0 且四个折面各占 3% 以上）。只看 IHDR 是不够的——白图、全透明图、三帧全糊成纯靛色的 ICO，IHDR 全都完全正常（见下面审阅一节）。另外两条防漂移：`public/` 下的 SVG 与母版**逐字节一致**，且 `icon-mono` / `icon-tile` / `favicon` 三份母版里的四条 M 路径必须相同。
+- 解码 PNG 的能力放在 `scripts/png-stats.mjs`（配 `png-stats.d.mts` 声明），测试与 `scripts/build-icons.mjs` 共用一份：脚本在写进 `public/` 之前就会拒绝一张空白图，不必等到跑测试。
+- 变异检验（我自己跑的，改完立刻还原）：改 `icon-mono.svg` 的腿宽、把 `apple-touch-icon.png` 换成纯白、把 `icon-512.png` 换成全透明——三种坏法都让 `brandAssets` 变红。
+- 真实 dev server（Vite 5317）截图核对顶栏浅色与深色各一张：20px 的 M 在两种底色上都成立。
+- 产物逐像素核对：icon-512 四角透明、左腿 #4a5ad9、折痕 #18aecb；ICO 三帧尺寸正确，16px 最近邻放大 8 倍后仍读得出 M。
+
+### 审阅（子代理，只读）与修复
+
+审阅在 worktree 副本上做，结论是**可以直接合并**，无阻断项；它自己写了一个独立的 ICO 解析器（不复用被审脚本的函数）核对二进制结构，并把管线复制到 scratch 目录重跑，五份产物与提交进库的**逐字节相同**——说明提交的产物确实由提交的母版生成。三条中/低问题已在本步修掉：
+
+1. **（中）孤儿母版与假的「引用关系」**：`brand/icon-mono.svg` 当时没有任何消费者，而 `icon-tile.svg` 的注释写着「改 M 的几何只改 icon-mono，这里是引用关系」——事实是四条路径在三个文件里各复制了一份，而当时没有任何断言守着它们一致。审阅的变异实测：改 `icon-mono.svg` 的腿宽，测试全绿、产物不变。修法：注释改成「三份逐字节相同、由测试守着」，并补上面那条几何一致性断言。**这是本轮最有价值的一条**——它正是 `build-icons.mjs` 开头声明要防的那类不一致，而当时的守卫漏掉了它。
+2. **（中）守卫不看像素**：原断言只解码 IHDR，所以「白图」「全透明图」「三帧全换成纯靛色块（M 消失）」三种坏法都能全绿，而测试注释里写的恰恰是要挡这些。修法：加 `png-stats.mjs` 与像素断言，并把同样的检查加进构建脚本。
+3. **（低）`docs/decisions.md` 里一条已失效的命令**：D41 一节写着 `pnpm --filter @kanban/api start`，改名后 `pnpm` 会报 `No projects matched the filters`。已改成 `@mailuo/api`——它不在「刻意保留」的三类里，是纯粹的漏改。
+4. **（低）`sizes="32x32"` 与三帧 ICO 不符**：按 `sizes` 挑选的浏览器（Firefox）只会用其中一帧，另外两帧白做。已改成 `16x16 32x32 48x48`，并加一条断言让它与 ICO 的真实帧集合对齐。
+5. **（低）D57 自己的措辞**：原写「本机没有 librsvg delegate」，实测 delegate 配置**在**（`svg => rsvg-convert`），只是那个二进制没装，所以回落到内置 MSVG。以及 favicon 的深色分支与 `theme-color` 跟系统配色这条限制，已按审阅要求写明「未能验证」而不是含糊过去。
+
+审阅明确报告**未能验证**的一项：`favicon.svg` 的 `prefers-color-scheme: dark` 分支——无头 Chrome 翻不动这个媒体查询（四种 flag 都试过），只证明了规则语法与优先级正确，真实深色标签栏下的表现本环境证明不了。
+
+### 没做的
+
+- 没有做 Tauri 的图标集（等桌面端那一步，从 `icon-512.png` 出 ICO/PNG 套件）；没有 PWA manifest 与 192/512 那套；没有做字标设计（顶栏现在是「M + 脉络」的字体排版，中文名没有做成图形）；没有在 iOS/Android 真机上验证 apple-touch-icon；没有做 GitHub social preview 图。
+
+### 与其它步骤的关系
+
+本步最初写在这里的一段话是「`apps/api/src` 里至今没有 `serveStatic`，图标的生产链路要等静态托管补齐」——**合并时已经不成立**：D56（第 19 步）的生产静态托管在先，本分支是在它之上合并的。所以顺序是：`feat/static-hosting` 先合进本分支，再一起进主干。
+
+对图标的影响是具体的：`apps/web/public/` 下的五份产物会被 `vite build` 原样复制进 `apps/web/dist/`，而 Hono 的 `serveStatic` 托管的正是那个目录——所以 `pnpm build && pnpm start` 之后 `/favicon.ico`、`/icon.svg` 是直接由后端返回的。合并后实测过这条链路（见下面「合并后的端到端验证」）。

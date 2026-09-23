@@ -3,7 +3,25 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>看板</title>
+    <title>脉络</title>
+    <!--
+      图标三件套（见 brand/ 与 scripts/build-icons.mjs）：
+      - favicon.svg 给支持 SVG 图标的浏览器，带 prefers-color-scheme，深色标签栏下自动换亮色；
+      - favicon.ico 是老浏览器与 Windows 的回退，同时兜住「不支持 SVG 图标」这一档；
+        sizes 必须与 ICO 里的三帧一致，否则按 sizes 挑选的浏览器只会用其中一帧；
+      - apple-touch-icon 必须不透明（iOS 会把透明像素填黑），且要 180×180。
+    -->
+    <link rel="icon" href="/favicon.ico" sizes="16x16 32x32 48x48" />
+    <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
+    <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
+    <!--
+      移动端地址栏配色与标签页图标跟随的是**系统**配色，不是应用内那个可以手动覆盖的
+      主题（见 src/lib/theme.ts 与上面的内联脚本）。用户在浅色系统下手动选了深色时，
+      页面变深而地址栏仍是浅色——这是刻意的取舍：媒体查询改不了，要在切主题时同步
+      改这两条 meta 得让组件去写 document，代价比收益大（D57 记了这条限制）。
+    -->
+    <meta name="theme-color" content="#f6f7f9" media="(prefers-color-scheme: light)" />
+    <meta name="theme-color" content="#17191d" media="(prefers-color-scheme: dark)" />
     <script>
       /*
        * 深色模式防闪烁：必须在样式生效之前就把 class 挂上（见 docs/decisions.md D43）。
