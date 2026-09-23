@@ -73,6 +73,25 @@ pnpm start            # 只起一个进程：/api/* 是接口，其余路径由 
 `PORT`/`HOST`/`KANBAN_DB_PATH` 写进了进程环境，而 `process.loadEnvFile` 不覆盖已有的变量。
 `HOST_ALLOW` 是例外——命令行不设它时它是空的，服务端读 `.env` 的那一步就会把它填上。
 
+## README 截图
+
+`README.md` 的截图放在 `docs/images/`（webp，单张 40–55KB），一共五张：根看板浅色与深色、
+子看板浅色与深色、依赖图。它们是**真实界面**，不是手绘的 mock，所以界面改版后要重拍。
+
+重拍的做法（一次性操作，没有留下脚本）：
+
+1. 用临时数据库起一个服务，别指到真实数据：
+   `node bin/mailuo.mjs --port 3099 --db .tmp-readme/demo.db --no-open`。
+2. 通过接口造演示数据：四个根任务、一个带孙子任务的子看板、两条依赖，再给几个任务填工期。
+   想让「超期」标记出现在图里，就把某个「进行中」任务的工期改成小于已用时间（例如 5 分钟）。
+3. 无头 Chrome 起调试端口，用 CDP 的 `Page.captureScreenshot`
+   （`format: webp`、`captureBeyondViewport: true`、`deviceScaleFactor: 1.5`）整页截图；
+   深色模式用 `Emulation.setEmulatedMedia` 把 `prefers-color-scheme` 设成 `dark`，
+   依赖图用 `Runtime.evaluate` 点一下界面上的「依赖图」按钮。
+4. 覆盖 `docs/images/` 下的同名文件，并在 README 里顺手核对图注里的数字（进度计数、工期）还对不对。
+
+截图里的演示数据全部是虚构的，不要用真实任务数据截图——README 会进版本库与 npm 页面。
+
 ## 品牌与图标
 
 产品名是 **脉络 / Mailuo**。图标是「四个折面拼出的 M」，左右两组折面用靛青两色区分
