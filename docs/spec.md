@@ -1,4 +1,4 @@
-# 任务看板规范
+# 脉络规范
 
 ## 项目定位
 
@@ -69,7 +69,7 @@
 ## 项目结构
 
 ```
-KanBan/
+mailuo/
   apps/web/                    React 前端
   apps/api/                    Hono 后端
     migrations/                SQL 迁移文件

@@ -1,4 +1,7 @@
-这是一个任务看板的网页端应用
+# 脉络
+
+个人使用的任务看板网页应用。任务和看板是同一个东西：一个任务一旦有子任务，它自己就是一个看板。
+功能范围与全部界面口径见 `docs/spec.md`。
 
 ## 技术栈
 
@@ -41,6 +44,8 @@ pnpm build            # 编译后端到 apps/api/dist，打包前端到 apps/web
   - 通配监听（`0.0.0.0`）时用 IP 访问（`http://192.168.1.5:3003`）直接可用；用机器名或 MagicDNS 名字访问要写进 `HOST_ALLOW`，否则直接访问时 Host 就被拒（读也 403），经 Vite 代理时读能通、写会 403（Origin 不在白名单）。
 - `HOST_ALLOW` 额外放行的 Host 主机名，逗号分隔（例如 `HOST_ALLOW=sgl.local,sgl-1.tailnet.ts.net`）。只影响 Host/Origin 白名单，不改监听地址；不设时为空。IPv6 地址可以写裸形式（`fd7a::1`），也可以写 `[fd7a::1]:3003`。
 - `KANBAN_DB_PATH` SQLite 文件路径，默认 `data/kanban.db`。
+  - 变量名与文件名里的 `kanban` 是产品还叫「看板」时留下的（改名经过见 `docs/decisions.md` D56）。
+    里面是真实任务数据，跟着改名只会让旧库失联，所以这两处与前端 localStorage 的 `kanban.*` 键一起保持不变。
 
 数据库在启动时自动建表并执行 `apps/api/migrations/` 下未应用过的迁移。
 

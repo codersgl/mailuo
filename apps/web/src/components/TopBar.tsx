@@ -46,7 +46,7 @@ export function TopBar({
             <path d="M2.5 3.5h9M2.5 7h6M2.5 10.5h4" />
           </svg>
         </span>
-        看板
+        脉络
       </h1>
       <span className="h-[18px] w-px flex-none bg-line" />
       {/* 层级深的时候面包屑会长过顶栏，这里让它横向滚动，而不是把最后一段（当前位置）挤掉。 */}

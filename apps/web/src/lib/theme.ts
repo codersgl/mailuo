@@ -10,7 +10,7 @@ import { readStored } from './storage';
  * 两份必须一致——test/themeBoot.test.ts 会真的执行那段内联脚本，不一致就会红。
  */
 
-/** 主题偏好在 localStorage 里的 key。与其他前端偏好一样以 `kanban.` 开头。 */
+/** 主题偏好在 localStorage 里的 key。与其他前端偏好一样以 `kanban.` 开头（理由见 lib/preferences.ts）。 */
 export const THEME_KEY = 'kanban.theme';
 
 export type Theme = 'light' | 'dark';
