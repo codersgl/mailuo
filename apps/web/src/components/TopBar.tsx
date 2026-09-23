@@ -1,9 +1,18 @@
 import { Fragment } from 'react';
+import type { KeyboardEvent } from 'react';
 import type { BreadcrumbItem } from '../api/types';
+import { SearchBox } from './SearchBox';
 import { ThemeToggle } from './ThemeToggle';
 
+/** 搜索框是一个受控控件：关键词与按键处理都在 BoardPage，这里只负责把它摆进顶栏。 */
+export interface TopBarSearch {
+  keyword: string;
+  onKeywordChange: (keyword: string) => void;
+  onKeyDown: (event: KeyboardEvent<HTMLInputElement>) => void;
+}
+
 /**
- * 顶部栏：品牌 + 面包屑 + 主题控件。
+ * 顶部栏：品牌 + 面包屑 + 搜索框 + 主题控件。
  *
  * 面包屑由 `GET /api/breadcrumb/:taskId` 给出（见 docs/spec.md）；根看板那一段没有任务可查，
  * 由 src/hooks/useBreadcrumb.ts 用同一个文案常量补上。crumbs 为 null 表示还没拿到（加载中或失败），
@@ -12,9 +21,11 @@ import { ThemeToggle } from './ThemeToggle';
 export function TopBar({
   crumbs,
   onNavigate,
+  search,
 }: {
   crumbs: BreadcrumbItem[] | null;
   onNavigate: (boardId: string | null) => void;
+  search: TopBarSearch;
 }) {
   return (
     <header className="flex h-[46px] flex-none items-center gap-3 border-b border-line bg-surface px-3.5">
@@ -69,6 +80,12 @@ export function TopBar({
           );
         })}
       </nav>
+      {/* 搜索框自带 ml-auto，把「面包屑」与「搜索框 + 主题控件」分成左右两组。 */}
+      <SearchBox
+        value={search.keyword}
+        onValueChange={search.onKeywordChange}
+        onKeyDown={search.onKeyDown}
+      />
       {/* flex-none：面包屑再长也不该压扁它。 */}
       <ThemeToggle />
     </header>

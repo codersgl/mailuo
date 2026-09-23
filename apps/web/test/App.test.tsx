@@ -21,6 +21,8 @@ interface FakeTask {
   durationMinutes: number | null;
   orders: number;
   archivedAt: string | null;
+  /** 更新时间。搜索的排序要用它，所以假数据得能造出不同的值。 */
+  updatedAt: string;
 }
 
 interface RecordedCall {
@@ -37,13 +39,26 @@ function task(overrides: Partial<FakeTask> & Pick<FakeTask, 'id' | 'title'>): Fa
     durationMinutes: null,
     orders: 1000,
     archivedAt: null,
+    updatedAt: '2026-09-22T00:00:00.000Z',
     ...overrides,
   };
 }
 
+const COLUMNS = [
+  { id: 'todo', name: '待办', orders: 1000 },
+  { id: 'doing', name: '进行中', orders: 2000 },
+  { id: 'done', name: '完成', orders: 3000 },
+];
+
 function createFakeApi(
   initial: FakeTask[],
-  options: { postError?: string; archiveError?: string; deleteError?: string } = {},
+  options: {
+    postError?: string;
+    archiveError?: string;
+    deleteError?: string;
+    /** 非空时所有看板读请求都回这个错误（模拟当前这层看板被别处删掉）。 */
+    boardError?: string;
+  } = {},
 ) {
   const tasks = initial.map((item) => ({ ...item }));
   const calls: RecordedCall[] = [];
@@ -72,21 +87,16 @@ function createFakeApi(
     return {
       ...item,
       createdAt: '2026-09-22T00:00:00.000Z',
-      updatedAt: '2026-09-22T00:00:00.000Z',
+      updatedAt: item.updatedAt,
       childTotal: children.length,
       childDone: children.filter((child) => child.columnId === 'done').length,
     };
   }
 
   function boardFor(parentId: string | null, includeArchived: boolean): Board {
-    const columns = [
-      { id: 'todo', name: '待办', orders: 1000 },
-      { id: 'doing', name: '进行中', orders: 2000 },
-      { id: 'done', name: '完成', orders: 3000 },
-    ];
     return {
       parentId,
-      columns: columns.map((column) => ({
+      columns: COLUMNS.map((column) => ({
         ...column,
         tasks: visible(includeArchived)
           .filter((item) => item.parentId === parentId && item.columnId === column.id)
@@ -136,6 +146,7 @@ function createFakeApi(
 
     /** 看板读请求；holdBoardReads 打开时先挂起，由放行函数决定什么时候返回。 */
     const readBoard = (parentId: string | null) => {
+      if (options.boardError !== undefined) return json({ error: options.boardError }, 404);
       const payload = boardFor(parentId, includeArchived);
       if (!holdingBoardReads) return json(payload);
       return new Promise<Response>((resolve) => boardWaiters.push(() => resolve(json(payload))));
@@ -155,6 +166,42 @@ function createFakeApi(
       return json({ items: breadcrumb(taskId) });
     }
 
+    /**
+     * 搜索。真后端按「标题命中优先 + 最近更新」排序（apps/api/src/repositories/search.ts），
+     * 这里的用例都只命中一条、或断言的是全集，所以不重做那套排序。
+     */
+    if (method === 'GET' && path === '/api/search') {
+      const keyword = (new URLSearchParams(query).get('q') ?? '').trim().toLowerCase();
+      const matched = visible(includeArchived).filter(
+        (item) =>
+          item.title.toLowerCase().includes(keyword) ||
+          item.description.toLowerCase().includes(keyword),
+      );
+      // 排序照真后端的三档来：标题命中优先、其次最近更新、最后按 id
+      // （真后端 ORDER BY (title LIKE …) DESC, updated_at DESC, id）。
+      // 不还原这三档的话，任何关于顺序的端到端断言证明的都只是假后端的顺序。
+      const results = matched
+        .sort((left, right) => {
+          const titleHit =
+            Number(right.title.toLowerCase().includes(keyword)) -
+            Number(left.title.toLowerCase().includes(keyword));
+          if (titleHit !== 0) return titleHit;
+          if (left.updatedAt !== right.updatedAt) return left.updatedAt < right.updatedAt ? 1 : -1;
+          return left.id < right.id ? -1 : 1;
+        })
+        .map((item) => ({
+          id: item.id,
+          title: item.title,
+          // 标题命中时不给摘要，与后端一致（repositories/search.ts 的 buildSnippet）。
+          snippet: item.title.toLowerCase().includes(keyword) ? null : item.description,
+          columnId: item.columnId,
+          durationMinutes: item.durationMinutes,
+          archivedAt: item.archivedAt,
+          path: breadcrumb(item.id).slice(0, -1),
+        }));
+      return json({ columns: COLUMNS, results, truncated: false });
+    }
+
     if (method === 'POST' && path === '/api/tasks') {
       if (options.postError !== undefined) return json({ error: options.postError }, 400);
       sequence += 1;
@@ -168,6 +215,7 @@ function createFakeApi(
         durationMinutes: null,
         orders: 1000 + sequence,
         archivedAt: null,
+        updatedAt: '2026-09-22T00:00:00.000Z',
       };
       tasks.push(created);
       return json(toBoardTask(created), 201);
@@ -622,5 +670,211 @@ describe('App 增删改', () => {
 
     await waitFor(() => expect(window.location.pathname).toBe('/board/a'));
     expect(screen.queryByRole('dialog')).toBeNull();
+  });
+});
+
+describe('App 搜索', () => {
+  /** 顶栏的搜索框。 */
+  function searchBox(): HTMLElement {
+    return screen.getByRole('textbox', { name: '搜索任务' });
+  }
+
+  /** 输入关键词。结果页要等防抖窗口（200ms）过去才有内容，所以调用方得用 findBy* 等。 */
+  function type(value: string): void {
+    fireEvent.change(searchBox(), { target: { value } });
+  }
+
+  it('输入关键词后主区换成结果页：按列分组、显示路径与工期，看板列消失', async () => {
+    createFakeApi([
+      task({ id: 'b', title: '支付对账', durationMinutes: 1440 }),
+      task({ id: 'b1', title: '对账脚本', parentId: 'b' }),
+      task({ id: 'a', title: '重构登录', columnId: 'doing', orders: 2000 }),
+    ]);
+    render(<App />);
+    await boardArea().findByText('重构登录');
+
+    type('对账');
+
+    expect(await boardArea().findByText('找到 2 个任务')).toBeTruthy();
+    // 两条都在「待办」，所以只有这一组；看板自己的列标题不再出现。
+    expect(boardArea().getByText('待办')).toBeTruthy();
+    expect(boardArea().queryByText('进行中')).toBeNull();
+    expect(boardArea().getByText('2 个')).toBeTruthy();
+    // 子任务那条显示层级路径，根层那条只有「根看板」。
+    expect(boardArea().getByText('根看板 / 支付对账')).toBeTruthy();
+    // 估过工期的显示工期胶囊。
+    expect(boardArea().getByText('工期 3 天')).toBeTruthy();
+  });
+
+  it('Enter 进入选中的第一条结果，并清掉搜索回到看板', async () => {
+    createFakeApi(fixtures);
+    render(<App />);
+    await boardArea().findByText('支付对账');
+
+    type('脚本');
+    await boardArea().findByText('找到 1 个任务');
+
+    fireEvent.keyDown(searchBox(), { key: 'Enter' });
+
+    await waitFor(() => expect(window.location.pathname).toBe('/board/b1'));
+    // 搜索词被清掉：结果页让位给刚打开的那一层。
+    // 断言 DOM 的 value 属性（受控 input 的当前值），不是 HTML 属性。
+    await waitFor(() => expect((searchBox() as HTMLInputElement).value).toBe(''));
+    await waitFor(() => expect(screen.queryByText('找到 1 个任务')).toBeNull());
+  });
+
+  it('↓ 换选中项，Enter 进入的是当前选中那条', async () => {
+    createFakeApi([
+      task({ id: 'x', title: '对账甲' }),
+      task({ id: 'y', title: '对账乙', orders: 2000 }),
+    ]);
+    render(<App />);
+    await boardArea().findByText('对账甲');
+
+    type('对账');
+    await boardArea().findByText('找到 2 个任务');
+
+    // 默认选中第一条，按一次 ↓ 落到第二条。
+    fireEvent.keyDown(searchBox(), { key: 'ArrowDown' });
+    fireEvent.keyDown(searchBox(), { key: 'Enter' });
+
+    await waitFor(() => expect(window.location.pathname).toBe('/board/y'));
+  });
+
+  it('点结果行进入该任务看板', async () => {
+    createFakeApi(fixtures);
+    render(<App />);
+    await boardArea().findByText('支付对账');
+
+    type('脚本');
+    const row = await boardArea().findByRole('button', { name: /对账脚本/ });
+    fireEvent.click(row);
+
+    await waitFor(() => expect(window.location.pathname).toBe('/board/b1'));
+  });
+
+  it('Esc 清空搜索并回到看板', async () => {
+    createFakeApi(fixtures);
+    render(<App />);
+    await boardArea().findByText('支付对账');
+
+    type('脚本');
+    await boardArea().findByText('找到 1 个任务');
+
+    fireEvent.keyDown(searchBox(), { key: 'Escape' });
+
+    await waitFor(() => expect(boardArea().queryByText('找到 1 个任务')).toBeNull());
+    expect((searchBox() as HTMLInputElement).value).toBe('');
+    // 看板列回来了。
+    expect(boardArea().getByText('进行中')).toBeTruthy();
+  });
+
+  it('清除按钮清空搜索框并回到看板', async () => {
+    createFakeApi(fixtures);
+    render(<App />);
+    await boardArea().findByText('支付对账');
+
+    type('脚本');
+    await boardArea().findByText('找到 1 个任务');
+
+    fireEvent.click(screen.getByRole('button', { name: '清空搜索' }));
+
+    await waitFor(() => expect(boardArea().queryByText('找到 1 个任务')).toBeNull());
+  });
+
+  it('没有匹配时给空状态，并指向「显示已归档」这条出路', async () => {
+    createFakeApi(fixtures);
+    render(<App />);
+    await boardArea().findByText('支付对账');
+
+    type('不存在的词');
+
+    expect(await boardArea().findByText('没有匹配「不存在的词」的任务')).toBeTruthy();
+    expect(boardArea().getByText(/显示已归档/)).toBeTruthy();
+  });
+
+  it('「显示已归档」开着时归档任务参与搜索并带标记，关着时搜不到', async () => {
+    const api = createFakeApi(fixtures);
+    render(<App />);
+    await boardArea().findByText('支付对账');
+
+    type('旧版导出');
+    expect(await boardArea().findByText('没有匹配「旧版导出」的任务')).toBeTruthy();
+
+    // 打开侧栏开关后重搜：归档任务出现，并带上「已归档」标记。
+    fireEvent.click(screen.getByRole('checkbox', { name: /显示已归档/ }));
+
+    expect(await boardArea().findByText('找到 1 个任务')).toBeTruthy();
+    expect(boardArea().getByText('已归档')).toBeTruthy();
+    // 请求确实带上了开关，而不是前端自己过滤的。
+    expect(api.calls.some((call) => call.url.includes('/api/search') && call.url.includes('includeArchived=1'))).toBe(true);
+  });
+
+  it('防抖窗口内按 Enter 不会打开上一个关键词的结果', async () => {
+    createFakeApi([
+      task({ id: 'a', title: '甲任务' }),
+      task({ id: 'b', title: '乙任务', orders: 2000 }),
+    ]);
+    render(<App />);
+    await boardArea().findByText('甲任务');
+
+    type('甲');
+    await boardArea().findByText('找到 1 个任务');
+
+    // 改成另一个词后立刻按 Enter：结果还是「甲」那批，绝不能进 /board/a。
+    type('乙');
+    fireEvent.keyDown(searchBox(), { key: 'Enter' });
+    expect(window.location.pathname).toBe('/');
+
+    // 等新结果真的到了再按（不能等「找到 1 个任务」：上一批的同一句话还在，等于没等）。
+    // 也不能按文本找标题：命中片段被 <mark> 切开了，按行按钮的名字才稳。
+    await boardArea().findByRole('button', { name: /乙任务/ });
+    fireEvent.keyDown(searchBox(), { key: 'Enter' });
+    await waitFor(() => expect(window.location.pathname).toBe('/board/b'));
+  });
+
+  it('抽屉开着时在搜索框按 Esc：只清掉搜索，不关抽屉（草稿不丢）', async () => {
+    createFakeApi(fixtures);
+    render(<App />);
+    await boardArea().findByText('支付对账');
+
+    await openEditor('支付对账');
+    // 抽屉的遮罩只盖住看板，搜索框仍然可以聚焦——这就是这条冲突的入口。
+    const box = searchBox();
+    box.focus();
+    type('脚本');
+    await boardArea().findByText('找到 1 个任务');
+
+    fireEvent.keyDown(box, { key: 'Escape' });
+
+    // 一次按键只做一个动作：搜索清空，抽屉（以及里面没保存的草稿）留着。
+    expect((box as HTMLInputElement).value).toBe('');
+    expect(screen.getByRole('dialog')).toBeTruthy();
+  });
+
+  it('当前这层看板取不到（被别处删掉）时，搜索仍然能用', async () => {
+    createFakeApi(fixtures, { boardError: '任务不存在' });
+    render(<App />);
+    // 看板区是错误态。
+    expect(await boardArea().findByText('任务不存在')).toBeTruthy();
+
+    type('脚本');
+
+    // 结果页照常画出来：列名与顺序来自搜索响应自带的列字典，不依赖看板接口。
+    expect(await boardArea().findByText('找到 1 个任务')).toBeTruthy();
+    expect(boardArea().getByText('待办')).toBeTruthy();
+    fireEvent.click(await boardArea().findByRole('button', { name: /对账脚本/ }));
+    await waitFor(() => expect(window.location.pathname).toBe('/board/b1'));
+  });
+
+  it('关键词只有空白时不进入搜索态', async () => {
+    createFakeApi(fixtures);
+    render(<App />);
+    await boardArea().findByText('支付对账');
+
+    type('   ');
+
+    expect(boardArea().queryByText(/找到/)).toBeNull();
+    expect(boardArea().getByText('进行中')).toBeTruthy();
   });
 });

@@ -36,6 +36,9 @@ export interface BoardColumn {
   tasks: BoardTask[];
 }
 
+/** 列的静态信息（不含该列的任务）。看板接口的列与搜索接口的列字典都是这个形状。 */
+export type ColumnRecord = Pick<BoardColumn, 'id' | 'name' | 'orders'>;
+
 export interface Board {
   /** null 表示根看板。 */
   parentId: string | null;
@@ -60,4 +63,33 @@ export interface TreeTask {
 export interface BreadcrumbItem {
   id: string | null;
   title: string;
+}
+
+/**
+ * 搜索命中一条任务（`GET /api/search`）。它不是任务记录的子集：
+ * 列表要显示的「在哪一层」「为什么命中」都由后端算好，前端不再自己拼。
+ */
+export interface SearchResult {
+  id: string;
+  title: string;
+  /** 命中在描述里时的一段上下文（含省略号）；只有标题命中时为 null。 */
+  snippet: string | null;
+  columnId: string;
+  /** 工期，单位分钟；null 表示未估。结果行上「未估就不显示工期」用它判断。 */
+  durationMinutes: number | null;
+  /** 非空表示已归档（只有开着「显示已归档」时才可能命中）。 */
+  archivedAt: string | null;
+  /** 祖先链，从根看板到该任务的父任务，不含任务自己。 */
+  path: BreadcrumbItem[];
+}
+
+export interface SearchResponse {
+  /**
+   * 列字典（列名与顺序）。结果页按列分组，而列名只由后端定，所以跟着结果一起给——
+   * 搜索是全库的，不该因为「当前这一层看板取不到」就画不出来。
+   */
+  columns: ColumnRecord[];
+  results: SearchResult[];
+  /** 命中数超过后端上限，界面据此提示只显示了一部分。 */
+  truncated: boolean;
 }

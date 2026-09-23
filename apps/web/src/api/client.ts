@@ -1,4 +1,4 @@
-import type { Board, BreadcrumbItem, TaskRecord, TreeTask } from './types';
+import type { Board, BreadcrumbItem, SearchResponse, TaskRecord, TreeTask } from './types';
 
 /**
  * 后端错误统一是 `{ error: string }`（见 docs/spec.md），这里把它变成异常，
@@ -80,21 +80,22 @@ function readErrorMessage(body: unknown): string | undefined {
 /**
  * 「显示已归档」开关。后端认 `1` 和 `true`（见 docs/spec.md），这里统一发 `1`。
  * 开关状态只存在前端（D24），所以每次都要显式传，不能靠后端记住。
- * 看板、文件树、以及文件树的重新取数都走这一个函数，避免三处各写一遍。
+ * 看板、文件树、搜索以及文件树的重新取数都走这一个函数，避免几处各写一遍。
  */
-function archivedQuery(includeArchived: boolean): string {
-  return includeArchived ? '?includeArchived=1' : '';
+function withArchived(url: string, includeArchived: boolean): string {
+  if (!includeArchived) return url;
+  return url.includes('?') ? `${url}&includeArchived=1` : `${url}?includeArchived=1`;
 }
 
 /** 读某一层看板。parentId 为 null 时读根看板。开关打开时列里也带归档卡片。 */
 export function fetchBoard(parentId: string | null, includeArchived: boolean): Promise<Board> {
   const path = parentId === null ? '/api/board' : `/api/board/${encodeURIComponent(parentId)}`;
-  return request<Board>(`${path}${archivedQuery(includeArchived)}`);
+  return request<Board>(withArchived(path, includeArchived));
 }
 
 /** 读完整任务树，用来建左侧文件树。默认不含归档节点。 */
 export function fetchTree(includeArchived: boolean): Promise<TreeTask[]> {
-  return request<{ tasks: TreeTask[] }>(`/api/tree${archivedQuery(includeArchived)}`).then(
+  return request<{ tasks: TreeTask[] }>(withArchived('/api/tree', includeArchived)).then(
     (body) => body.tasks,
   );
 }
@@ -104,6 +105,16 @@ export function fetchBreadcrumb(taskId: string): Promise<BreadcrumbItem[]> {
   return request<{ items: BreadcrumbItem[] }>(
     `/api/breadcrumb/${encodeURIComponent(taskId)}`,
   ).then((body) => body.items);
+}
+
+/**
+ * 全库搜索。关键词两端空白在这里去掉，与后端 trim 的口径一致；
+ * 空白关键词不该走到这里（调用方据此不发请求），所以不做特判，让后端回 400 暴露调用方的问题。
+ * `includeArchived` 与其它读接口同一个开关：打开后归档任务也参与匹配。
+ */
+export function fetchSearch(keyword: string, includeArchived: boolean): Promise<SearchResponse> {
+  const params = new URLSearchParams({ q: keyword.trim() });
+  return request<SearchResponse>(withArchived(`/api/search?${params.toString()}`, includeArchived));
 }
 
 /** 新建任务的入参。工期与描述不在这里给：建完在面板里改（见 docs/decisions.md D33）。 */

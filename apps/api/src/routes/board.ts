@@ -1,10 +1,14 @@
+import { zValidator } from '@hono/zod-validator';
 import { Hono } from 'hono';
 import type { Db } from '../db/client.js';
 import { readBoard } from '../repositories/board.js';
+import { searchTasks } from '../repositories/search.js';
 import { findTask, listTreeTasks, readBreadcrumb } from '../repositories/tasks.js';
+import { searchQuerySchema } from '../schemas/search.js';
 import { wantsArchived } from './query.js';
+import { validationHook } from './validation.js';
 
-/** 读接口：看板、任务树、面包屑。 */
+/** 读接口：看板、任务树、面包屑、搜索。 */
 export function createBoardRoutes(db: Db): Hono {
   const routes = new Hono();
 
@@ -27,6 +31,13 @@ export function createBoardRoutes(db: Db): Hono {
       return c.json({ error: '任务不存在' }, 404);
     }
     return c.json({ items });
+  });
+
+  // 搜索是读接口，但和看板不同：它跨层级、不受当前看板限制（见 docs/spec.md 的「第二批」）。
+  // 匹配范围与排序口径在 repositories/search.ts。
+  routes.get('/api/search', zValidator('query', searchQuerySchema, validationHook), (c) => {
+    const { q } = c.req.valid('query');
+    return c.json(searchTasks(db, q, wantsArchived(c)));
   });
 
   return routes;
