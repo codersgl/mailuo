@@ -151,6 +151,7 @@ CREATE INDEX idx_deps_successor ON task_deps(successor_id);
 | ------ | -------------------------- | -------------------------- |
 | GET    | `/api/board`               | 根看板                     |
 | GET    | `/api/board/:parentId`     | 指定任务的子看板           |
+| GET    | `/api/board/cpm`           | 根看板的依赖图与关键路径（第三批） |
 | GET    | `/api/tree`                | 完整任务树（默认不含归档） |
 | GET    | `/api/breadcrumb/:taskId`  | 沿 parent_id 回溯的面包屑  |
 | POST   | `/api/tasks`               | 新建任务                   |
@@ -189,7 +190,34 @@ ORDER BY t.column_id, t.orders;
 
 `PATCH /api/tasks/:id/archive` 入参 `{ archived: boolean }`。服务端按上述归档规则处理整棵子树，返回 `{ task, columnTasks }`：`task` 是改动后的任务，`columnTasks` 是它所在列的列表（归档后该任务默认不在其中，取消归档后回到原列原位置）。
 
-`PUT /api/tasks/:id/deps` 入参 `{ predecessorIds: string[] }`，整体替换该任务的前置依赖。写入前做环检测和同层校验。
+`PUT /api/tasks/:id/deps` 入参 `{ predecessorIds: string[] }`，整体替换该任务的前置依赖，空数组表示清空。写入前做环检测和同层校验：自己依赖自己或与已有依赖形成环返回 `409`，前置任务不存在返回 `404`，前置任务与目标任务不同 `parentId`（跨层）或已归档返回 `400`，同一个依赖在列表里重复出现返回 `400`。依赖集合没变化时不写库，也不刷新 `updated_at`。响应 `{ task, predecessorIds }`，其中 `predecessorIds` 按 id 升序——依赖在库里是一个集合（主键是两端），没有顺序，升序只是让响应稳定。
+
+`GET /api/board/cpm` 是根看板的依赖图与关键路径，`GET /api/board/:parentId/cpm` 是某个任务看板的。根看板没有 `parentId`，所以单独占一条路径，与 `GET /api/board` 对称。两者都接受其它读接口共用的 `?includeArchived`（缺省只含未归档任务），跨层的脏依赖记录被忽略，不会返回端点不在这一层的边。返回结构：
+
+```jsonc
+{
+  "parentId": null,            // null 表示根看板
+  "projectDuration": 210,      // 该层总工期（分钟）：所有任务最早完成时间的最大值
+  "nodes": [
+    {
+      "id": "…",
+      "title": "…",
+      "columnId": "todo",
+      "durationMinutes": null, // null 表示未估；CPM 按 0 计算，界面据此提示未估
+      "archivedAt": null,
+      "earliestStart": 0,
+      "earliestFinish": 0,
+      "latestStart": 0,
+      "latestFinish": 0,
+      "slack": 0,              // 最晚开始 − 最早开始；0 表示这个任务在关键路径上
+      "critical": true
+    }
+  ],
+  "edges": [{ "predecessorId": "…", "successorId": "…", "critical": true }]
+}
+```
+
+节点顺序是列 `orders` 加列内 `orders`，前端不需要再排一次。边上的 `critical` 是「两端都关键，且前置任务的最早完成时间等于后继任务的最早开始时间」——只看两端是否关键，会把关键任务之间的非紧边也标成关键。空层返回 `projectDuration: 0` 与两个空数组。计算结果不落库，依赖或工期一变，下一次读取就是重算的结果。
 
 `GET /api/search` 入参 `q`（必需，去掉两端空白后不能为空，最多 100 字）与其它读接口共用的 `?includeArchived`。匹配标题与描述，**只做连续子串**：不切词、不做顺序模糊匹配，大小写对 ASCII 不敏感，`%`、`_`、`\` 按字面处理。排序是「标题命中的排前面」→「最近更新的排前面」→ `id`，不做相关度打分。一次最多返回 50 条，超出时置 `truncated`，界面只提示「找到 N 条以上任务」而不写死这个 50。返回结构：
 

@@ -729,7 +729,7 @@ Zod 的 `.int()` 拒绝的是**不安全整数**，而所有大于 2^53 的值�
 
 **读取端 `GET /api/board/cpm` 与 `GET /api/board/:parentId/cpm`**
 
-- 根看板没有 `parentId`，所以给它一条独立路径 `/api/board/cpm`，与 `/api/board`（根看板）对称，而不是给 `/api/board/:parentId/cpm` 编一个特殊 id（例如 `root`）。它注册在 `/api/board/:parentId` 之前，并由测试钉住「`/api/board/cpm` 拿到的是图、`/api/board` 与 `/api/board/:parentId` 都还照常」。spec 的 API 表只写了 `GET /api/board/:parentId/cpm`，根看板这一条待用户补。
+- 根看板没有 `parentId`，所以给它一条独立路径 `/api/board/cpm`，与 `/api/board`（根看板）对称，而不是给 `/api/board/:parentId/cpm` 编一个特殊 id（例如 `root`）。它注册在 `/api/board/:parentId` 之前，并由测试钉住「`/api/board/cpm` 拿到的是图、`/api/board` 与 `/api/board/:parentId` 都还照常」。spec 原先只有 `GET /api/board/:parentId/cpm` 一行，用户验收时授权后已把根看板这一条与两个响应形状（`PUT deps` 的 `{ task, predecessorIds }`、cpm 的 `{ parentId, projectDuration, nodes, edges }`）补进 `docs/spec.md`。
 - 响应 `{ parentId, projectDuration, nodes, edges }`。`nodes` 是任务字段（`id`、`title`、`columnId`、`durationMinutes`、`archivedAt`）加上 `earliestStart`、`earliestFinish`、`latestStart`、`latestFinish`、`slack`、`critical`；`edges` 是 `{ predecessorId, successorId, critical }`。节点顺序跟着看板走（列 `orders` + 列内 `orders`），前端不用再排一次。
 - 工期原值保留：`null` 表示未估，CPM 按 0 参与计算，界面自己提示未估（spec 的「关键路径」一节要求明确提示）。把 null 在这个接口里改写成 0 会让「未估」在界面上不可分辨。
 - **关键边不能只判「两端都关键」**。一个关键任务可能有多个后继，其中一条边并不是让它成为关键的那条：它的最早完成时间早于后继的最早开始时间，迟一点开始也不影响后继。判定是「两端都关键 + 前置的最早完成 == 后继的最早开始」。两个方向的反例（关键节点之间的非紧边、紧边但后继不关键）都写进了 `cpm.test.ts`。
