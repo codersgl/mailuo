@@ -15,6 +15,10 @@ export interface TaskRecord {
   description: string;
   /** 工期，单位分钟；null 表示未估工期，0 表示瞬时任务。 */
   durationMinutes: number | null;
+  /** 已结算的累计用时（分钟），只在「进行中」列里增长（见 docs/spec.md 的「工期提醒」）。 */
+  spentMinutes: number;
+  /** 正在计时的这一段的开始时刻；非空表示任务此刻在跑。非空 ⟺ 进行中且未归档。 */
+  runningSince: string | null;
   orders: number;
   createdAt: string;
   updatedAt: string;
@@ -46,9 +50,11 @@ export interface Board {
 }
 
 /**
- * 任务树里的一个节点（`GET /api/tree`）。只有建树需要的字段：描述、工期、
- * 子任务计数都在点进它的看板后由看板接口给出；树上的进度徽标是用这份列表就地算的
+ * 任务树里的一个节点（`GET /api/tree`）。只有建树、画节点与算工期标记需要的字段：
+ * 描述与子任务计数在点进它的看板后由看板接口给出，树上的进度徽标是用这份列表就地算的
  * （见 lib/tree.ts 的 countChildren）。
+ *
+ * 工期与计时三件套必须在树里也带上：看板接口只返回当前这一层，而任务树要画每一层的标记。
  */
 export interface TreeTask {
   id: string;
@@ -57,6 +63,9 @@ export interface TreeTask {
   columnId: string;
   /** 非空表示已归档。用它把归档节点画成另一种样式。 */
   archivedAt: string | null;
+  durationMinutes: number | null;
+  spentMinutes: number;
+  runningSince: string | null;
 }
 
 /** 面包屑的一项。id 为 null 表示根看板，也就是面包屑的第一段。 */

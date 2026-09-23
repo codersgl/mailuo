@@ -8,7 +8,7 @@ import { TaskCardFace } from './TaskCardFace';
  * 尺寸与位置取自被拖卡片按下时的快照：宽度用内联样式钉死（换列后列宽可能不同，
  * 克隆卡片要保持原样），位置让卡片左上角跟着「按下时抓住的那个点」走。
  */
-export function DragGhost({ preview }: { preview: CardDragPreview }) {
+export function DragGhost({ preview, nowMs }: { preview: CardDragPreview; nowMs: number }) {
   const { task, clientX, clientY, grabX, grabY, width, height } = preview;
 
   return (
@@ -23,7 +23,7 @@ export function DragGhost({ preview }: { preview: CardDragPreview }) {
       aria-hidden="true"
     >
       <div className="h-full rounded-[5px] border border-accent-border bg-surface px-[11px] py-[9px] shadow-ghost">
-        <TaskCardFace task={task} archived={false} />
+        <TaskCardFace task={task} archived={false} nowMs={nowMs} />
       </div>
     </div>
   );

@@ -33,6 +33,7 @@ const MENU_HEIGHT = 110;
 export function TaskCard({
   task,
   dragging,
+  nowMs,
   onOpen,
   onEdit,
   onSetArchived,
@@ -42,6 +43,8 @@ export function TaskCard({
   task: BoardTask;
   /** 这张卡片正被拖动：留在原位当占位，内容降透明度。 */
   dragging?: boolean;
+  /** 当前时刻，卡片上的工期提醒标记要它（见 hooks/useNow）。 */
+  nowMs: number;
   onOpen: (taskId: string) => void;
   onEdit: (task: BoardTask) => void;
   onSetArchived: (task: BoardTask, archived: boolean) => void;
@@ -116,7 +119,7 @@ export function TaskCard({
         onClick={() => onOpen(task.id)}
         className="block w-full cursor-grab rounded-[5px] px-[11px] py-[9px] text-left active:cursor-grabbing"
       >
-        <TaskCardFace task={task} archived={archived} />
+        <TaskCardFace task={task} archived={archived} nowMs={nowMs} />
       </button>
 
       <button

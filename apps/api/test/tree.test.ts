@@ -36,7 +36,7 @@ describe('GET /api/board/:parentId', () => {
 });
 
 describe('GET /api/tree', () => {
-  it('一次返回全部未归档任务，字段是 id/parentId/title/columnId/archivedAt', async () => {
+  it('一次返回全部未归档任务，字段含建树与工期提醒要用的那几项', async () => {
     const db = createTestDb();
     const rootId = insertTask(db, { title: '根任务', columnId: 'todo', orders: 1000 });
     const childId = insertTask(db, { title: '子任务', columnId: 'doing', orders: 1000, parentId: rootId });
@@ -59,6 +59,9 @@ describe('GET /api/tree', () => {
       title: '子任务',
       columnId: 'doing',
       archivedAt: null,
+      durationMinutes: null,
+      spentMinutes: 0,
+      runningSince: null,
     });
     expect(tasks.find((task: { id: string }) => task.id === rootId).parentId).toBeNull();
   });
@@ -71,7 +74,16 @@ describe('GET /api/tree', () => {
 
     const { tasks } = await response.json();
     expect(tasks).toEqual([
-      { id: archivedId, parentId: null, title: '已归档任务', columnId: 'todo', archivedAt: '2024-01-01T00:00:00.000Z' },
+      {
+        id: archivedId,
+        parentId: null,
+        title: '已归档任务',
+        columnId: 'todo',
+        archivedAt: '2024-01-01T00:00:00.000Z',
+        durationMinutes: null,
+        spentMinutes: 0,
+        runningSince: null,
+      },
     ]);
   });
 

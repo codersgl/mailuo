@@ -17,6 +17,8 @@ function task(): BoardTask {
     title: '写测试',
     description: '',
     durationMinutes: null,
+    spentMinutes: 0,
+    runningSince: null,
     orders: 1000,
     createdAt: '2026-09-22T00:00:00.000Z',
     updatedAt: '2026-09-22T00:00:00.000Z',

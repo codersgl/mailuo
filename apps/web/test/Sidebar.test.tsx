@@ -13,18 +13,21 @@ import type { TreeTask } from '../src/api/types';
  */
 
 const treeTasks: TreeTask[] = [
-  { id: 'a', parentId: null, title: '重构登录', columnId: 'doing', archivedAt: null },
-  { id: 'a1', parentId: 'a', title: '抽出鉴权中间件', columnId: 'done', archivedAt: null },
-  { id: 'a2', parentId: 'a', title: '前端表单改造', columnId: 'doing', archivedAt: null },
-  { id: 'a1x', parentId: 'a1', title: '补单元测试', columnId: 'done', archivedAt: null },
-  { id: 'b', parentId: null, title: '支付对账', columnId: 'todo', archivedAt: null },
-  { id: 'b1', parentId: 'b', title: '对账脚本', columnId: 'todo', archivedAt: null },
+  { id: 'a', parentId: null, title: '重构登录', columnId: 'doing', archivedAt: null, durationMinutes: null, spentMinutes: 0, runningSince: null },
+  { id: 'a1', parentId: 'a', title: '抽出鉴权中间件', columnId: 'done', archivedAt: null, durationMinutes: null, spentMinutes: 0, runningSince: null },
+  { id: 'a2', parentId: 'a', title: '前端表单改造', columnId: 'doing', archivedAt: null, durationMinutes: null, spentMinutes: 0, runningSince: null },
+  { id: 'a1x', parentId: 'a1', title: '补单元测试', columnId: 'done', archivedAt: null, durationMinutes: null, spentMinutes: 0, runningSince: null },
+  { id: 'b', parentId: null, title: '支付对账', columnId: 'todo', archivedAt: null, durationMinutes: null, spentMinutes: 0, runningSince: null },
+  { id: 'b1', parentId: 'b', title: '对账脚本', columnId: 'todo', archivedAt: null, durationMinutes: null, spentMinutes: 0, runningSince: null },
   {
     id: 'z',
     parentId: null,
     title: '旧版导出',
     columnId: 'todo',
     archivedAt: '2026-09-22T00:00:00.000Z',
+    durationMinutes: null,
+    spentMinutes: 0,
+    runningSince: null,
   },
 ];
 

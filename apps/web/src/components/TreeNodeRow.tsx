@@ -1,9 +1,11 @@
 import type { PointerEvent as ReactPointerEvent } from 'react';
 import { DONE_COLUMN_ID, DOING_COLUMN_ID } from '../domain/columns';
+import { reminderView } from '../domain/reminder';
 import { cx } from '../lib/cx';
 import { countChildren } from '../lib/tree';
 import type { TreeNode } from '../lib/tree';
 import type { TreeDragState } from '../hooks/useTreeDrag';
+import { DurationBar } from './DurationBar';
 
 interface TreeNodeRowProps {
   node: TreeNode;
@@ -15,6 +17,8 @@ interface TreeNodeRowProps {
   onDragStart: (taskId: string, event: ReactPointerEvent<HTMLElement>) => void;
   /** 拖拽状态；null 表示当前没有在拖。 */
   drag: TreeDragState | null;
+  /** 当前时刻，节点上的工期进度条要它（见 hooks/useNow）。 */
+  nowMs: number;
   /** 这一层在树里的深度，从 0 开始，渲染成 data-tree-depth 供调试与验收脚本使用。 */
   depth: number;
 }
@@ -35,6 +39,7 @@ export function TreeNodeRow({
   onOpen,
   onDragStart,
   drag,
+  nowMs,
   depth,
 }: TreeNodeRowProps) {
   const { task, children } = node;
@@ -43,6 +48,7 @@ export function TreeNodeRow({
   const hasChildren = children.length > 0;
   const { total, done } = countChildren(node);
   const archived = task.archivedAt !== null;
+  const reminder = reminderView(task, nowMs);
 
   const dragging = drag?.draggingId === task.id;
   const dropParentId = drag?.drop?.parentId ?? null;
@@ -115,6 +121,21 @@ export function TreeNodeRow({
           {task.title}
         </button>
 
+        {/*
+          工期进度条放在标题与右侧状态之间：252px 的面板里放不下整条进度条，
+          所以用一条 24×3 的小短条表示比例，完整文案（工期 / 已用 / 剩多久）放在 title 与
+          可访问名字上。它不是装饰——这一行没有别的地方表达剩余工期。
+        */}
+        {reminder.fill !== null && (
+          <DurationBar
+            fill={reminder.fill}
+            percent={reminder.percent}
+            detail={reminder.detail}
+            accessible
+            className="h-[3px] w-6 flex-none overflow-hidden rounded-[2px] bg-track"
+          />
+        )}
+
         {archived && (
           <span className="flex-none rounded-[4px] border border-dashed border-line-strong px-1 text-[10px] italic leading-[14px] text-ink-3">
             归档
@@ -177,6 +198,7 @@ export function TreeNodeRow({
               onOpen={onOpen}
               onDragStart={onDragStart}
               drag={drag}
+              nowMs={nowMs}
               depth={depth + 1}
             />
           ))}

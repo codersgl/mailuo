@@ -11,6 +11,8 @@ function boardTask(overrides: Partial<BoardTask> = {}): BoardTask {
     title: '灰度开关',
     description: '先内部账号生效',
     durationMinutes: null,
+    spentMinutes: 0,
+    runningSince: null,
     orders: 1000,
     createdAt: '2026-09-22T00:00:00.000Z',
     updatedAt: '2026-09-22T00:00:00.000Z',
@@ -31,6 +33,7 @@ function renderCard(overrides: Partial<BoardTask> = {}) {
   render(
     <TaskCard
       task={task}
+      nowMs={Date.now()}
       onOpen={onOpen}
       onEdit={onEdit}
       onSetArchived={onSetArchived}
@@ -215,6 +218,16 @@ describe('TaskCard', () => {
 
     expect(screen.queryByText('归档')).toBeNull();
     expect(screen.getByText('灰度开关').closest('article')?.className).not.toContain('border-dashed');
+  });
+
+  it('卡片根元素不能加 overflow-hidden：右上角的「⋯」菜单要能伸出卡片', () => {
+    // 工期进度条贴着卡片下沿画，最容易顺手给卡片加 overflow-hidden 去剪那 5px 圆角——
+    // 那会连带把伸出卡片的菜单一起裁掉（审阅在真实浏览器里量过：加了之后菜单项中心命中的是 BODY）。
+    // 圆角由进度条自己带 rounded-b-[4px] 解决，卡片的 overflow 必须保持 visible。
+    renderCard();
+
+    const article = screen.getByText('灰度开关').closest('article')!;
+    expect(article.className).not.toContain('overflow-hidden');
   });
 });
 

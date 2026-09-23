@@ -26,6 +26,9 @@ const task: TreeTask = {
   title: '任务 A',
   columnId: 'todo',
   archivedAt: null,
+  durationMinutes: null,
+  spentMinutes: 0,
+  runningSince: null,
 };
 
 afterEach(() => {

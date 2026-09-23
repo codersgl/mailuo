@@ -10,10 +10,10 @@ import type { TreeTask } from '../src/api/types';
  */
 
 const tasks: TreeTask[] = [
-  { id: 'a', parentId: null, title: 'A', columnId: 'todo', archivedAt: null },
-  { id: 'a1', parentId: 'a', title: 'A1', columnId: 'todo', archivedAt: null },
-  { id: 'a1x', parentId: 'a1', title: 'A1X', columnId: 'todo', archivedAt: null },
-  { id: 'b', parentId: null, title: 'B', columnId: 'todo', archivedAt: null },
+  { id: 'a', parentId: null, title: 'A', columnId: 'todo', archivedAt: null, durationMinutes: null, spentMinutes: 0, runningSince: null },
+  { id: 'a1', parentId: 'a', title: 'A1', columnId: 'todo', archivedAt: null, durationMinutes: null, spentMinutes: 0, runningSince: null },
+  { id: 'a1x', parentId: 'a1', title: 'A1X', columnId: 'todo', archivedAt: null, durationMinutes: null, spentMinutes: 0, runningSince: null },
+  { id: 'b', parentId: null, title: 'B', columnId: 'todo', archivedAt: null, durationMinutes: null, spentMinutes: 0, runningSince: null },
 ];
 
 function Harness({ log, over }: { log: string[]; over: () => string }) {

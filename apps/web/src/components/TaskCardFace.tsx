@@ -1,18 +1,33 @@
 import { DONE_COLUMN_ID } from '../domain/columns';
+import { reminderView } from '../domain/reminder';
 import { cx } from '../lib/cx';
 import { formatDuration, formatProgress, isDurationEstimated, progressPercent } from '../lib/format';
 import type { BoardTask } from '../api/types';
+import { DurationBar } from './DurationBar';
 
 /**
- * 卡片的正面：标题、描述（有才显示）、进度条 + 计数 + 工期胶囊 + 归档标记。
+ * 卡片的正面：标题、描述（有才显示）、进度条 + 计数 + 工期胶囊 + 归档标记，
+ * 以及工期提醒的进度条与小字（定版原型 B）。
  *
  * 抽出来是因为拖拽的克隆卡片（DragGhost）与看板里的卡片（TaskCard）要长得一模一样，
  * 而拖动期间两处同时在屏幕上，样式一旦分叉就会一眼看出「克隆的和真的不一样」。
  * 里层元素一律用 span：它可能被放进 button（TaskCard 的主体），button 只允许短语内容。
+ *
+ * `nowMs` 由上层整块传下来（见 hooks/useNow 的说明），不在每张卡片里各挂一个定时器。
  */
-export function TaskCardFace({ task, archived }: { task: BoardTask; archived: boolean }) {
+export function TaskCardFace({
+  task,
+  archived,
+  nowMs,
+}: {
+  task: BoardTask;
+  archived: boolean;
+  /** 当前时刻，用于算「已用多久 / 还剩多久」。 */
+  nowMs: number;
+}) {
   const isDone = task.columnId === DONE_COLUMN_ID;
   const estimated = isDurationEstimated(task.durationMinutes);
+  const reminder = reminderView(task, nowMs);
 
   return (
     <>
@@ -62,6 +77,35 @@ export function TaskCardFace({ task, archived }: { task: BoardTask; archived: bo
           </span>
         )}
       </span>
+
+      {/* 提醒小字：只有「临近」与「超期」两档有字，还没到 90% 的进行中任务只有下面的条。 */}
+      {reminder.note !== null && (
+        <span
+          title={reminder.detail}
+          className={cx(
+            'mt-[5px] flex justify-end text-[11px] leading-4 tabular-nums',
+            reminder.noteKind === 'over' ? 'text-danger' : 'text-accent',
+          )}
+        >
+          {reminder.note}
+        </span>
+      )}
+
+      {/*
+        贴卡片下沿的 2px 进度条。绝对定位的包含块是卡片（article）：这里虽然是 button 的子元素，
+        但 button 没有定位，所以 inset-x-0/bottom-0 落在卡片下沿，而不是被按钮的内边距缩进去。
+        卡片自己不能加 overflow-hidden（右上角的「⋯」菜单要伸出卡片），所以圆角单独给这条。
+      */}
+      {reminder.fill !== null && (
+        <DurationBar
+          fill={reminder.fill}
+          percent={reminder.percent}
+          detail={reminder.detail}
+          // 有小字时条只是装饰，避免读屏把同一件事念两遍。
+          accessible={reminder.note === null}
+          className="absolute inset-x-0 bottom-0 h-[2px] overflow-hidden rounded-b-[4px] bg-track"
+        />
+      )}
     </>
   );
 }
