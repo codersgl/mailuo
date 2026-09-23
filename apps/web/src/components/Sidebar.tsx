@@ -36,6 +36,7 @@ export function Sidebar({
   showArchived,
   onShowArchivedChange,
   refreshToken,
+  onParentChanged,
 }: {
   /** 当前看板对应的任务 id；根看板为 null。 */
   boardId: string | null;
@@ -44,6 +45,14 @@ export function Sidebar({
   onShowArchivedChange: (showArchived: boolean) => void;
   /** 写操作成功后由上层加一，用来让树静默重取一次（树的数据获取仍在 Sidebar 内部）。 */
   refreshToken: number;
+  /**
+   * 树拖动改父级成功后调用，由看板页统一静默重取。
+   *
+   * 为什么不能让 Sidebar 只重取自己的树：被拖的节点可能正是当前看板的直接子任务，
+   * 改父级之后它就该从看板上消失；依赖图（关键路径）也会跟着变。D58 当时记的理由
+   * 「改父级不影响当前看板的卡片与面包屑」对这种情况不成立（规范第 7 步核对时发现）。
+   */
+  onParentChanged: () => void;
 }) {
   const [collapsedIds, setCollapsedIds] = usePersistentState<string[]>(
     COLLAPSED_TASKS_KEY,
@@ -65,7 +74,8 @@ export function Sidebar({
 
   /**
    * 落定一次树拖动。新父级下挂到哪一列由后端决定（追加到该列末尾），这里只把任务当前所在列带过去，
-   * 所以这一步只换层级、不换列。成功后只重取树：改父级不影响当前看板的卡片与面包屑。
+   * 所以这一步只换层级、不换列。成功后交给上层的统一刷新入口：被拖的节点可能就是当前看板的
+   * 直接子任务（改完父级要从未刷新的看板上消失），依赖图也依赖层内结构。
    */
   const commitParentChange = useCallback(
     async (taskId: string, parentId: string | null) => {
@@ -74,12 +84,12 @@ export function Sidebar({
       setDragError(null);
       try {
         await changeTaskParent(taskId, { parentId, columnId: task.columnId });
-        refresh();
+        onParentChanged();
       } catch (cause: unknown) {
         setDragError(cause instanceof ApiError ? cause.message : '移动任务失败');
       }
     },
-    [tasks, refresh],
+    [tasks, onParentChanged],
   );
 
   const treeDrag = useTreeDrag({

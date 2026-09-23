@@ -373,6 +373,8 @@ function BoardPage({
           showArchived={showArchived}
           onShowArchivedChange={setShowArchived}
           refreshToken={treeRefreshToken}
+          // 树拖动改级也是一次写：走同一个刷新入口，看板与依赖图才会跟着更新。
+          onParentChanged={refreshAll}
         />
         <main className="flex min-w-0 flex-1 flex-col overflow-hidden">
           {actionError !== null && (

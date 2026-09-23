@@ -369,6 +369,20 @@ function createFakeApi(
       return json({ task: toBoardTask(item), columnTasks: [] });
     }
 
+    /**
+     * 改父级（任务树拖动）。真后端会把任务追加到新父级下目标列的末尾；这里只改层级与列，
+     * orders 不是这些用例的断言对象。
+     */
+    if (method === 'PATCH' && path.endsWith('/parent')) {
+      const item = tasks.find(
+        (candidate) => candidate.id === id('/api/tasks/').replace(/\/parent$/, ''),
+      );
+      if (!item) return json({ error: '任务不存在' }, 404);
+      item.parentId = (body.parentId as string | null) ?? null;
+      item.columnId = body.columnId as string;
+      return json({ task: toBoardTask(item), columnTasks: [] });
+    }
+
     if (method === 'PATCH' && path.startsWith('/api/tasks/')) {
       const item = tasks.find((candidate) => candidate.id === id('/api/tasks/'));
       if (!item) return json({ error: '任务不存在' }, 404);
@@ -436,6 +450,9 @@ beforeEach(() => {
 
 afterEach(() => {
   vi.unstubAllGlobals();
+  // 树拖动的用例会给 document 装一个 elementFromPoint 替身（jsdom 本来没有这个 API），
+  // 与 Sidebar.test.tsx 同一手法，这里统一拆掉，免得漏给后面的用例。
+  delete (document as unknown as { elementFromPoint?: unknown }).elementFromPoint;
   // vitest 没开 globals，@testing-library 的自动清理不会注册，这里手动清 DOM。
   cleanup();
 });
@@ -568,6 +585,43 @@ describe('App 增删改', () => {
     await act(async () => {});
 
     expect(boardCalls()).toBe(before);
+  });
+
+  it('任务树改父级后看板跟着重取：被移走的卡片从当前看板消失', async () => {
+    const api = createFakeApi(fixtures);
+    render(<App />);
+
+    // 根看板上有「重构登录」这张卡（a），树里也有它这一行。
+    expect(await boardArea().findByText('重构登录')).toBeTruthy();
+    const tree = within(document.querySelector('aside')!);
+    const row = await tree.findByText('重构登录');
+
+    // jsdom 没有布局也没有 elementFromPoint，用一个替身告诉 useTreeDrag「指针压在
+    // b（支付对账）这一行的上半区」——落点是「成为 b 的子节点」。
+    (document as unknown as { elementFromPoint: () => Element | null }).elementFromPoint = () => {
+      const target = {
+        getAttribute: () => 'b',
+        getBoundingClientRect: () => ({ top: 0, height: 20 }),
+      };
+      return { closest: () => target } as unknown as Element;
+    };
+    const boardCalls = () =>
+      api.calls.filter((call) => call.method === 'GET' && call.url === '/api/board').length;
+    const before = boardCalls();
+
+    fireEvent.pointerDown(row, { button: 0, clientX: 0, clientY: 0 });
+    fireEvent.pointerMove(document, { clientX: 40, clientY: 5 });
+    fireEvent.pointerUp(document, { clientX: 40, clientY: 5 });
+
+    // 回归点：这一条以前只重取任务树，看板不刷新，a 会一直留在根看板上直到下一次别的刷新。
+    await waitFor(() =>
+      expect(
+        api.calls.some((call) => call.method === 'PATCH' && call.url.endsWith('/parent')),
+      ).toBe(true),
+    );
+    await waitFor(() => expect(boardCalls()).toBe(before + 1));
+    // a 现在是 b 的子任务，不再是根看板的卡片（树里还有那一行，所以按 main 取）。
+    await waitFor(() => expect(boardArea().queryByText('重构登录')).toBeNull());
   });
 
   it('指针还按在卡片上时落地的写操作只是推迟刷新，松手后看板补上新任务', async () => {
