@@ -12,10 +12,11 @@
     "mailuo": "bin/mailuo.mjs"
   },
   "files": [
-    "bin/",
+    "bin/mailuo.mjs",
     "apps/api/dist/",
     "apps/api/migrations/",
     "apps/web/dist/",
+    "LICENSE",
     "README.md"
   ],
   "scripts": {
@@ -24,7 +25,15 @@
     "build": "pnpm -r build",
     "icons": "node scripts/build-icons.mjs",
     "start": "pnpm --filter @mailuo/api start",
+    "prepack": "pnpm build",
     "test": "node --test bin/*.test.mjs && pnpm -r test",
     "typecheck": "pnpm -r typecheck"
+  },
+  "dependencies": {
+    "@hono/node-server": "^1.19.6",
+    "@hono/zod-validator": "^0.9.1",
+    "better-sqlite3": "^13.0.3",
+    "hono": "^4.13.8",
+    "zod": "^4.6.5"
   }
 }

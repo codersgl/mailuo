@@ -14,16 +14,18 @@
  *
  * 所以职责就一条：把命令行参数与环境变量合成一份确定的配置，起服务、开浏览器。
  *
- * 它只用 Node 内置模块，没有运行时依赖：`npx` 首次执行不必先装一堆包。
+ * 它自己只用 Node 内置模块，没有运行时依赖；但它是 `apps/api/dist` 的加载方，所以服务端的
+ * 运行时依赖（hono、better-sqlite3 等）必须声明在**根** `package.json` 里，npm 才会把它们装到
+ * 这个包能找到的位置——否则全局安装后 `import` 服务端产物会报「找不到包」。
  */
 
 import { spawn } from 'node:child_process';
-import { existsSync, readFileSync } from 'node:fs';
+import { existsSync, readFileSync, realpathSync } from 'node:fs';
 import { mkdir } from 'node:fs/promises';
 import net from 'node:net';
 import { homedir } from 'node:os';
 import path from 'node:path';
-import { fileURLToPath, pathToFileURL } from 'node:url';
+import { pathToFileURL } from 'node:url';
 
 /** 本包根目录。bin/ 的上一级就是包根，源码运行与全局安装都一样。 */
 const packageRoot = path.resolve(import.meta.dirname, '..');
@@ -43,6 +45,10 @@ const PORT_SCAN_LIMIT = 20;
 /** 端口探测的超时：连不上就说明这个端口空着。 */
 const PORT_PROBE_TIMEOUT_MS = 300;
 
+/** 等端口真正开始监听的轮询参数：每 100ms 探一次，最多 10 秒。 */
+const READY_POLL_INTERVAL_MS = 100;
+const READY_POLL_LIMIT = 100;
+
 const HELP = `脉络（Mailuo）本地服务
 
 用法
@@ -57,6 +63,8 @@ const HELP = `脉络（Mailuo）本地服务
       --no-open       不自动打开浏览器
   -h, --help          显示本帮助
   -v, --version       显示版本号
+
+参数支持 \`--port 3010\` / \`--port=3010\` / \`-p 3010\` / \`-p3010\` 四种写法。
 
 环境变量
   PORT             同 --port
@@ -84,7 +92,12 @@ export function parseArgs(argv) {
   const valueOptions = { '-p': 'port', '--port': 'port', '--host': 'host', '--db': 'db' };
 
   for (let index = 0; index < argv.length; index += 1) {
-    const arg = argv[index];
+    const raw = argv[index];
+    // `--port=3010` 是绝大多数命令行工具的写法，用户会先试它；`-p3010` 同理。
+    const match = /^(--[a-z-]+)=([\s\S]*)$/.exec(raw) ?? /^(-p)(\S+)$/.exec(raw);
+    const arg = match ? match[1] : raw;
+    let inlineValue = match ? match[2] : null;
+
     if (arg === '-h' || arg === '--help') {
       flags.help = true;
       continue;
@@ -105,17 +118,19 @@ export function parseArgs(argv) {
     }
     const key = valueOptions[arg];
     if (key !== undefined) {
-      const value = argv[index + 1];
+      const value = inlineValue ?? argv[index + 1];
       // 值的首字符是 '-' 时视为漏写值（例如 `--port --db x`），避免把下一个选项名当成端口；
       // 空串同样是漏写（`--db ''` 会悄悄解析成当前目录）。
       if (value === undefined || value.trim() === '' || value.startsWith('-')) {
         throw new Error(`选项 ${arg} 需要接一个值，例如 ${arg} ${key === 'host' ? DEFAULT_HOST : '3001'}`);
       }
       values[key] = value;
-      index += 1;
+      if (inlineValue === null) {
+        index += 1;
+      }
       continue;
     }
-    throw new Error(`不认识的选项：${arg}（用 --help 看用法）`);
+    throw new Error(`不认识的选项：${raw}（用 --help 看用法）`);
   }
 
   return { values, flags };
@@ -182,6 +197,11 @@ export function resolveConfig(argv, env = process.env) {
   }
 
   const dbRaw = values.db ?? env.KANBAN_DB_PATH ?? defaultDbPath(env);
+  if (String(dbRaw).trim() === '') {
+    // 与 HOST 同口径：空串是「设了但没填」。不拦的话 `path.resolve('')` 会得到当前目录，
+    // 随后 better-sqlite3 打开目录报一个与「路径是空串」无关的错。
+    throw new Error('数据库路径不能为空；用 --db 指定一个文件路径');
+  }
 
   return {
     host,
@@ -193,9 +213,6 @@ export function resolveConfig(argv, env = process.env) {
     dbPath: path.resolve(dbRaw),
     open: flags.hasOpenFlag ? flags.open : env.MAILUO_NO_OPEN !== '1',
     hostAllow: env.HOST_ALLOW ?? '',
-    help: flags.help,
-    version: flags.version,
-    cliVersion: findVersion(),
   };
 }
 
@@ -250,6 +267,8 @@ export async function findFreePort(startPort, host) {
 
 /** 按平台打开浏览器，失败不抛：打不开只是少一步便利，服务该继续跑。 */
 function openBrowser(url) {
+  // Windows 上 explorer.exe 对含逗号的 URL 会被截断（逗号是它自己的参数分隔符）。默认地址
+  // 是 127.0.0.1，只有 --host 带特殊字符时才会碰到；这里不额外处理，出问题时给出手动地址。
   const command =
     process.platform === 'darwin' ? 'open' : process.platform === 'win32' ? 'explorer.exe' : 'xdg-open';
   const child = spawn(command, [url], { stdio: 'ignore', detached: true });
@@ -259,11 +278,33 @@ function openBrowser(url) {
   child.unref();
 }
 
+/**
+ * 等端口真正开始监听。
+ *
+ * 为什么需要：`import` 服务端入口只等到模块执行完，`serve()` 的 listen 回调是异步的。
+ * 直接打印「已启动」会在绑定失败时也照样打出来——用户先看到成功横幅、再看到失败。
+ * 这里以「能连上」为准。
+ */
+async function waitUntilListening(port, host) {
+  for (let attempt = 0; attempt < READY_POLL_LIMIT; attempt += 1) {
+    if (await probePort(port, host)) {
+      return true;
+    }
+    await new Promise((resolve) => setTimeout(resolve, READY_POLL_INTERVAL_MS));
+  }
+  return false;
+}
+
 /** 起服务：在进程内加载服务端产物，与服务端入口共用同一份 Host 白名单与静态托管逻辑。 */
 async function startServer(config) {
   const serverEntry = path.join(packageRoot, SERVER_ENTRY_RELATIVE);
   if (!existsSync(serverEntry)) {
-    throw new Error(`找不到服务端产物：${serverEntry}\n请先构建（见 README 的「从源码运行」）。`);
+    throw new Error(`找不到服务端产物：${serverEntry}\n从源码运行时请先构建：pnpm install && pnpm build。`);
+  }
+  // 显式指定端口时先自己看一眼：端口被占的服务端提示是写给源码开发的（改根目录 .env、重启
+  // dev:api/dev:web），命令行用户照着做没有用。这里提前失败，给一条对的命令。
+  if (await probePort(config.port, config.host)) {
+    throw new Error(`端口 ${config.port} 已被占用，请换一个：mailuo --port ${config.port + 1}`);
   }
 
   // 服务端入口先读自己目录下的 .env、再读这份环境变量；进程环境优先，所以命令行说了算。
@@ -276,6 +317,21 @@ async function startServer(config) {
 
   await mkdir(path.dirname(config.dbPath), { recursive: true });
   await import(pathToFileURL(serverEntry).href);
+
+  const ready = await waitUntilListening(config.port, config.host);
+  if (!ready) {
+    throw new Error(`服务在 ${config.port} 上没能开始监听（等了 ${(READY_POLL_LIMIT * READY_POLL_INTERVAL_MS) / 1000} 秒）`);
+  }
+}
+
+/**
+ * argv 里有没有某个开关，不看其它参数是否合法。
+ *
+ * 专供 `--help` / `--version`：它们是「求助」路径，`mailuo --help --nonsense` 应该打印用法而
+ * 不是报参数错，所以要在完整解析与校验之前就问出来。
+ */
+function hasFlag(argv, ...names) {
+  return argv.some((arg) => names.includes(arg));
 }
 
 /**
@@ -288,19 +344,22 @@ async function startServer(config) {
 export async function main(argv, options = {}) {
   const env = options.env ?? process.env;
   const start = options.startServer ?? startServer;
-  const config = resolveConfig(argv, env);
 
-  if (config.help) {
+  // 先看帮助与版本，再做任何校验。
+  if (hasFlag(argv, '-h', '--help')) {
     console.log(HELP);
     return 0;
   }
-  if (config.version) {
-    if (config.cliVersion === null) {
+  if (hasFlag(argv, '-v', '--version')) {
+    const version = findVersion();
+    if (version === null) {
       throw new Error('读不到包版本号，请检查安装是否完整');
     }
-    console.log(config.cliVersion);
+    console.log(version);
     return 0;
   }
+
+  const config = resolveConfig(argv, env);
 
   // 只对默认端口做扫描：显式给了 --port 就是用户的决定，被占用应原样报错。
   if (config.portIsDefault) {
@@ -313,6 +372,8 @@ export async function main(argv, options = {}) {
 
   await start(config);
 
+  // 服务端自己也会打印监听地址与数据库；这两行是给「我就是要一个地址」的场景（例如复制到别的
+  // 设备），并确认用的是哪个端口——自动换端口时用户需要知道换了。
   const url = formatUrl(browserHost(config.host), config.port);
   console.log(`脉络已启动：${url}（数据库 ${config.dbPath}）`);
   console.log('按 Ctrl+C 退出。');
@@ -322,8 +383,30 @@ export async function main(argv, options = {}) {
   return 0;
 }
 
-// 只有被当作可执行文件直接跑时才启动；被 import（例如单测）时只导出上面的纯函数。
-if (process.argv[1] !== undefined && import.meta.url === pathToFileURL(process.argv[1]).href) {
+/**
+ * 这次运行是不是「直接执行本文件」。
+ *
+ * 为什么不能直接比 `import.meta.url === pathToFileURL(process.argv[1]).href`：
+ * npm / pnpm 全局安装后的 bin 是指向真实文件的**符号链接**，npx 也是。Node 经符号链接执行时
+ * `import.meta.url` 是解析后的真实路径，而 `process.argv[1]` 是那个符号链接的路径，两者永不
+ * 相等——判定恒假，命令静默什么都不做、退出码还是 0。所以先把 argv[1] 解析成真实路径。
+ *
+ * @param {string | undefined} argv1 进程的第二个参数（脚本路径）
+ * @param {string} moduleUrl 本模块的 import.meta.url
+ */
+export function isDirectRun(argv1, moduleUrl) {
+  if (argv1 === undefined) {
+    return false;
+  }
+  try {
+    return pathToFileURL(realpathSync(argv1)).href === moduleUrl;
+  } catch {
+    // argv1 不存在（例如 `node --test` 之类）时 realpathSync 抛错，按「不是直接执行」处理。
+    return false;
+  }
+}
+
+if (isDirectRun(process.argv[1], import.meta.url)) {
   main(process.argv.slice(2)).catch((error) => {
     console.error(`启动失败：${error instanceof Error ? error.message : String(error)}`);
     process.exit(1);
