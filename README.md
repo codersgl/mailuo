@@ -43,9 +43,16 @@ node bin/mailuo.mjs
 | `--db` | `KANBAN_DB_PATH` | `~/.mailuo/kanban.db` | 相对路径按当前工作目录解析 |
 | — | `HOST_ALLOW` | 空 | 额外放行的 Host 主机名，逗号分隔 |
 | `--no-open` | `MAILUO_NO_OPEN=1` | 打开浏览器 | 不自动打开；`--open` 可压过环境变量 |
+| — | `MAILUO_NO_UPDATE_CHECK=1` | 空（启动时查一次） | 不查 npm 上的新版本 |
+| — | `MAILUO_REGISTRY` | `https://registry.npmjs.org` | 查新版本用的 registry；未设时跟随 `npm_config_registry`（镜像 / 私有源） |
 | `-h, --help` / `-v, --version` | — | — | 用法与版本号 |
 
 参数写法四种都认：`--port 3010`、`--port=3010`、`-p 3010`、`-p3010`。
+
+启动最后会查一次 registry 上有没有新版本，有就打印一行升级命令；包还没发布（404）、
+网络不通或超时（1.5 秒）都静默跳过。这一步排在启动横幅与打开浏览器之后，不会拖慢启动。
+它走 Node 内置的 `fetch`，不读 npm 的代理配置（`HTTP_PROXY` 与 `.npmrc` 里的 proxy 都不生效），
+强制代理的网络里就是没有提示，不影响使用。不想要这一步就设 `MAILUO_NO_UPDATE_CHECK=1`。
 
 优先级：命令行 > 环境变量 > 默认值。数据库固定放用户目录，与包的安装位置、版本无关，
 重装或升级不会换掉数据；`~/.mailuo/` 不存在时自动创建。命令行启动不看仓库根的 `.env`

@@ -1684,3 +1684,88 @@ Ctrl+C 直接作用于唯一进程；也不需要为「子进程崩了」再写�
   现在靠 21 条单测与实机验收守着。
 - README 仍然保留开发与生产两段（给源码开发者）。`docs/intend.md` 里「README 只包含使用方法和
   功能介绍」是另外一条待办，那时再删。
+
+## D65 第 28 步：启动时提示新版本（2026-09-23）
+
+需求（`docs/intend.md`）：「支持启动时提示新版本：查 npm registry 的 latest，给一行升级命令」。
+
+### 问题
+
+全局装下的 `mailuo` 不会自己告诉用户它旧了。用户能看到的只有 `--version`，而那要他自己想起来敲。需求要的不是一个 `mailuo upgrade` 子命令，而是启动时顺手看一眼、有新版就提一句。
+
+具体例子：用户三个月前 `npm i -g mailuo` 装的是 0.1.0，期间发过 0.2.0 与 0.3.0。他今天敲 `mailuo`，除了启动横幅什么都不知道；这一步之后终端会多出一行 `发现新版本 0.3.0（当前 0.1.0）：npm i -g mailuo@latest`。
+
+### 做法
+
+- **时机**：排在启动横幅、`按 Ctrl+C 退出` 与打开浏览器之后。前面任何一步失败（端口被占、找不到服务端产物）都走不到这里，也就不必为一次注定看不到的提示联网；registry 慢也不会推迟用户可感知的动作。实测 registry 连不上时启动横幅仍在 190ms 内打印。
+- **查什么**：`<registry>/<包名>/latest`，包名从包自己的 `package.json` 读，不写死——改名或换 scope 时提示里的命令跟着变。只取响应里的 `version` 一个字段。
+- **怎么比**：`parseVersion` 只认三段数字，忽略 `v` 前缀与 `-beta.1` 之类的后缀；`isNewerVersion` 只在严格更新时返回 true。任一侧解析不出来就当成「没有新版本」：宁可不提示，也不要凭半截比较给出一个错的升级建议（例如 dist-tag 被指到了别的字符串）。
+- **失败一律静默**：`fetchLatestVersion` 不抛异常——网络不通、超时（1.5 秒）、包还没发布（404）、响应不是 JSON 都返回 null；`reportUpdate` 自己再包一层 try，连自己的 package.json 读不到也直接跳过。版本提示是附加信息，不该在启动路径上制造错误。
+- **怎么关**：`MAILUO_NO_UPDATE_CHECK=1`，与 `MAILUO_NO_OPEN` 同一口径（只认 `1`）。
+- **镜像与私有源**：`MAILUO_REGISTRY` > `npm_config_registry` > `https://registry.npmjs.org`。用户既然已经为 npm 配过镜像，这里就不该让他再配一遍。URL 用相对拼接（先补末尾的 `/`），带路径的私有 registry 不会被当成根路径截掉。
+- **可注入**：`main` 增加 `reportUpdate` 选项，单测据此在不联网的前提下核对「开 / 关」与「传进去的是哪个 registry」。
+
+### 验证
+
+- `node --test bin/*.test.mjs`：32 条全绿（基线 21 条 + 新增 11 条）。新增覆盖：`parseVersion` / `isNewerVersion` 的边界（逐段数值比较，0.10.0 与 0.9.9、后缀、`^` 锚点、解析失败）、`fetchLatestVersion` 对「新版本 / 带后缀 / 同版本 / 更旧 / 404 / 非 JSON / 换行伪造命令 / ANSI 擦行」八种响应、显式超时与默认超时（1.5 秒量级）、带路径的私有 registry 前缀与 scoped 包名编码、非法 registry 地址、`reportUpdate` 打印与不打印、`resolveConfig` 的开关与三级回落、`main` 的调用顺序与「启动失败不联网」。
+- 新增的两条进程级用例：真起 CLI 子进程 + 本地假 registry，确认提示行排在启动横幅之后；其余进程级用例在子进程环境里默认 `MAILUO_NO_UPDATE_CHECK=1`，套件不联网（原来 21 条用例在改动后仍全绿）。
+- `apps/api` 的 273 条全绿：本步没动后端，跑它是确认没被牵连。
+- 实机（worktree 源码运行，`.tmp-verify/` 下的临时库与假 registry）：假 registry 上有 0.2.0 时打印升级命令；只有当前版本时静默；registry 换成连不上的黑洞地址时启动横幅仍在 190ms 内出现且无输出。真实 registry 上 `mailuo` 返回 404（名字还没被占用），此时同样静默。
+- 按发布后的形状验了一遍（`.tmp-verify/installed/`：`bin/`、`apps/*/dist`、`package.json` 复制到 `lib/node_modules/mailuo/`，bin 走符号链接）：`--version` 正常，版本提示照常打印。说明读的是安装目录下的 package.json，不依赖源码仓库。
+
+### 顺带发现（不在本步范围）
+
+`mailuo | head -1` 这类「stdout 被提前关掉」的场景会让进程以 `Error: write EPIPE` 崩掉，抛点在
+**启动横幅**（`bin/mailuo.mjs` 的 `console.log('脉络已启动…')`），是 D64 就有的行为，与本步新增的
+版本提示无关（本步那行在 try 内，且它是异步的 `error` 事件，try 也拦不住）。修它要在进程级挂
+stdout 的 `error` 处理，值得单独一小步，这里只记录。
+
+### 审阅（子代理，只读）与修复
+
+两个只读审阅并行：一个查安全与健壮性，一个查正确性与测试覆盖（变异检验）。
+
+**安全与健壮性那份**（结论：不能直接合并，一条中等问题）：
+
+1. **（中，已修）终端注入**：`version` 来自 registry，是外部输入。原来的 `parseVersion` 是前缀
+   匹配，`"9.9.9\r\n发现新版本 99.0.0（当前 0.0.1）：npm i -g evil@latest"` 能取到 `9.9.9` 通过
+   比较，随后原文被 `console.log` 打出来——`\r\n` 加擦行符可以伪造出一整行「升级命令」，而
+   这句话正是项目引导用户去执行的位置（社工 `npm i -g evil@latest`）。改法两条：版本号改成
+   **整串**匹配并限定字符集（三段各最多 9 位，后缀只允许 `[0-9A-Za-z.-]`），`fetchLatestVersion`
+   返回 `latest.join('.')` 这个**本地拼出来的**串，而不是 registry 的原文。已用假 registry
+   端到端复验：恶意串现在既不打印伪造命令，也不打印任何 ESC 字符。
+2. **（低，已修）`npm_config_registry` 不 trim、非法值静默失效**：`' https://mirror.example/ '`
+   会被 `new URL` 拒绝，异常又被 catch 吞掉，表现成「这项功能永远没反应」，比回落更难排查。
+   改成两个变量都过 `normalizeRegistry`（trim + `new URL` 校验），非法值当没设、继续回落。
+3. **（低，已记录，不改）隐私与代理**：审阅抓包确认请求是 `GET /mailuo/latest`，只有
+   `accept: application/json` 一个头，无 body、无 Authorization；URL 里的 `?token=` 会被相对
+   解析丢掉，userinfo 留着但不会变成 Basic 鉴权。已安装版本号不出本机。代价是 registry 能看到
+   安装量与活跃频率——「每次启动一个请求、不做缓存与节流」是下面「没做的」里已记的取舍。
+   `fetch` 不认 `HTTP_PROXY` / `.npmrc` 里的代理，已写进 README：强制代理的网络里就是没有提示。
+4. **（低，已改）帮助文案**：`--help` 现在写明 `MAILUO_REGISTRY` 未设时跟随 `npm_config_registry`。
+
+**正确性与测试覆盖那份**（结论：可以合并，没有实现缺陷，全是测试缺口）。它实测确认了超时定时器
+不 ref 事件循环（单独一个 `AbortSignal.timeout` 时进程 4ms 就退出）、被 abort 的 fetch 到点即退、
+以及 `fetchLatestVersion` 的全部失败分支都返回 null。它列出的缺口除两条外都已补上：
+
+1. **（中，已补）带路径的私有 registry 拼接没有用例**：注释里承诺支持 Artifactory 式
+   `/api/npm/npm/`，但假 registry 全挂在根路径，改成 `new URL('/'+name+'/latest', base)` 会全绿。
+   已补：假 registry 挂到 `/api/npm/npm/`（末尾带与不带 `/` 各一次），断言收到
+   `GET /api/npm/npm/mailuo/latest`；顺带断言 scoped 包名编码成 `/%40scope%2Fpkg/latest`。
+2. **（中，已补）版本比较缺多位数段边界**：没有 0.10.0 与 0.9.9，换成字符串比较也能全绿。已补
+   正反两条，另加 1.10.0 与 1.9.0。
+3. **（中，已补）默认超时 1500 只被「存在」覆盖，值本身没人管**：改成 5000 会全绿，而 README 向
+   用户承诺了「1.5 秒」。已补一条不传 `timeoutMs`、打挂起 registry 的用例，断言在 1.4–3 秒窗口
+   内返回。
+4. **（低，已补）404 夹具的 body 不带 version**：删掉 `!response.ok` 判断也会全绿。已把 404 的
+   body 改成带一个更新的 version，让这条只可能因为状态码被拒。
+5. **（低）`package.json` 读不到就跳过这条降级路径没有用例**：`findPackage` 依赖包根路径、又带
+   缓存，做成可注入只为一个三行的防御分支服务，属可选复杂性，**不改**。
+6. **（低）变异检验未跑完**：它自己声明 M2 与 M6 之后的多条变异结果只是推断，不是实测；这里按
+   「推断」对待。补的用例把最要紧的几条（路径拼接、数值比较、默认超时、非 2xx）钉住了。
+
+### 没做的（可选复杂性）
+
+- 不做真正的自动更新（`docs/intend.md` 的下一步），只提示一行命令：自动更新要处理全局安装目录的写权限、Windows 上正在运行的文件、失败回滚，是另一个量级。
+- 不加 `--no-update-check` 命令行开关：环境变量足够，避免再扩一套参数解析。
+- 不缓存检查结果、不做「每隔 N 天再查」：本机工具每次启动一个请求可以接受，不想等就关掉。
+- 不提示预发布版本。
