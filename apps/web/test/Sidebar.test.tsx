@@ -1,3 +1,4 @@
+import { StrictMode } from 'react';
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { Sidebar } from '../src/components/Sidebar';
@@ -53,7 +54,7 @@ function jsonResponse(body: unknown, status = 200): Response {
 
 function renderSidebar(
   boardId: string | null = null,
-  options: { showArchived?: boolean; refreshToken?: number } = {},
+  options: { showArchived?: boolean; refreshToken?: number; strict?: boolean } = {},
 ) {
   const onNavigate = vi.fn();
   const onShowArchivedChange = vi.fn();
@@ -64,7 +65,19 @@ function renderSidebar(
     onShowArchivedChange,
     refreshToken: options.refreshToken ?? 0,
   };
-  const view = render(<Sidebar {...props} />);
+  /**
+   * `strict` 用于「挂载时不该做副作用」这一类用例：真实入口 main.tsx 开着 StrictMode，
+   * 它会把挂载 effect 跑两遍。只在那些用例里打开，免得其余 15 条的行为被它改掉。
+   */
+  const view = render(
+    options.strict ? (
+      <StrictMode>
+        <Sidebar {...props} />
+      </StrictMode>
+    ) : (
+      <Sidebar {...props} />
+    ),
+  );
   return { onNavigate, onShowArchivedChange, props, ...view };
 }
 
@@ -253,5 +266,111 @@ describe('Sidebar', () => {
     renderSidebar();
 
     expect(await screen.findByText('暂无任务')).toBeTruthy();
+  });
+
+  describe('面板收起', () => {
+    /**
+     * 面板本体。`aside` 在 ARIA 里是 complementary 角色，`getByLabelText` 只认表单控件，
+     * 所以用角色 + 名字取。名字固定是「文件树」，不随收起状态变。
+     */
+    const panel = () => screen.getByRole('complementary', { name: '文件树' });
+    /** 收起按钮（展开与收起共用同一个，名字随状态变）。 */
+    const toggle = () => screen.getByRole('button', { name: /(收起|展开)文件树/ });
+    /**
+     * 树在不在无障碍树里。不用 `closest('[hidden]')` 这种结构判断，而是问测试库
+     * 「还能不能按角色拿到树里的按钮」——这正是读屏与 Tab 顺序关心的问题。
+     * 注意 jsdom 不模拟 display:none 的命中测试，所以这个断言证明的是语义，不是像素。
+     */
+    const isTreeVisible = () =>
+      screen.queryByRole('button', { name: '折叠「重构登录」' }) !== null;
+
+    it('点收起：面板变窄条、开关收起、树被隐藏但不再取数，偏好落 localStorage', async () => {
+      stubTreeFetch();
+      renderSidebar();
+      await screen.findByText('重构登录');
+
+      expect(panel().style.width).toBe('252px');
+      expect(toggle().getAttribute('aria-expanded')).toBe('true');
+      fireEvent.click(toggle());
+
+      expect(panel().style.width).toBe('44px');
+      // aria-expanded 表达被控内容可不可见，所以收起时是 false（与图标方向相反是正常的）。
+      expect(toggle().getAttribute('aria-expanded')).toBe('false');
+      // aria-controls 指向被控制的那棵树，读屏用户能从按钮跳过去。
+      const controlled = toggle().getAttribute('aria-controls');
+      expect(controlled).toBeTruthy();
+      expect(document.getElementById(controlled!)?.hidden).toBe(true);
+      // 树留在 DOM 里（展开是瞬时的），但用 hidden 藏起来：display:none 之后它不再参与
+      // 读屏与 Tab 顺序，所以这里断言的是「不可见」，不是「节点不存在」。
+      expect(isTreeVisible()).toBe(false);
+      expect(screen.getByText('重构登录')).toBeTruthy();
+      expect(screen.queryByRole('checkbox', { name: '显示已归档' })).toBeNull();
+      // fireEvent.click 由 act 包着，落盘的 effect 在它返回前就跑完了（见 docs/decisions.md D44）。
+      expect(window.localStorage.getItem('kanban.tree.panelCollapsed')).toBe('true');
+
+      // 同一个按钮换名字与图标方向，再点一次就回到展开，且不重新发请求。
+      fireEvent.click(toggle());
+      expect(panel().style.width).toBe('252px');
+      expect(toggle().getAttribute('aria-expanded')).toBe('true');
+      expect(isTreeVisible()).toBe(true);
+      expect(window.localStorage.getItem('kanban.tree.panelCollapsed')).toBe('false');
+      expect(requested).toEqual(['/api/tree']);
+    });
+
+    it('收起时焦点从被隐藏的树接到按钮上', async () => {
+      stubTreeFetch();
+      renderSidebar();
+      const node = await screen.findByText('前端表单改造');
+      node.focus();
+
+      fireEvent.click(toggle());
+
+      // 焦点当时在树里，树不可见之后不接管的话焦点会掉回 body，键盘用户下一次 Tab 从头开始。
+      expect(document.activeElement).toBe(toggle());
+    });
+
+    it('首屏收起时不抢焦点（StrictMode 下也不抢），树照常取到', async () => {
+      // StrictMode 是真实入口 main.tsx 的配置，它会把挂载 effect 跑两遍。
+      // 之前 effect 只看 `collapsed`，挂载那次就会聚焦，用户按第一次 Tab 会跳过整个顶栏
+      // 落到看板里（审阅实测）；现在只认 false → true 这一跳。
+      window.localStorage.setItem('kanban.tree.panelCollapsed', 'true');
+      stubTreeFetch();
+      renderSidebar(null, { strict: true });
+
+      expect(panel().style.width).toBe('44px');
+      expect(document.activeElement).toBe(document.body);
+      // 树的数据仍然照取（useTree 在 Sidebar 里，不随收起与否开关）：代价是收着也发一次
+      // /api/tree，换来的是点展开时数据已经在手上、不闪一帧加载态。
+      // 次数只断言「至少一次」：StrictMode 会挂载两次，这个测试不替 useTree 记流水账。
+      await waitFor(() => expect(requested.length).toBeGreaterThan(0));
+      // 数据回来后有一次 re-render，也不该把焦点挪走。
+      expect(document.activeElement).toBe(document.body);
+    });
+
+    it('本地偏好说收起时首屏就是窄条，展开即用、不重新取数', async () => {
+      window.localStorage.setItem('kanban.tree.panelCollapsed', 'true');
+      stubTreeFetch();
+      renderSidebar();
+
+      expect(panel().style.width).toBe('44px');
+      await waitFor(() => expect(requested).toEqual(['/api/tree']));
+
+      fireEvent.click(toggle());
+
+      expect(panel().style.width).toBe('252px');
+      expect(isTreeVisible()).toBe(true);
+      expect(screen.getByText('重构登录')).toBeTruthy();
+      // 展开只是把已经取到的树画出来，不重新请求。
+      expect(requested).toEqual(['/api/tree']);
+    });
+
+    it('本地偏好不是 boolean 时按展开算', async () => {
+      window.localStorage.setItem('kanban.tree.panelCollapsed', '"yes"');
+      stubTreeFetch();
+      renderSidebar();
+
+      expect(panel().style.width).toBe('252px');
+      expect(await screen.findByText('重构登录')).toBeTruthy();
+    });
   });
 });

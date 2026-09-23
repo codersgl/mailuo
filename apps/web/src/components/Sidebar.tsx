@@ -1,23 +1,32 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useId, useRef, useState } from 'react';
 import { ApiError, changeTaskParent } from '../api/client';
 import { usePersistentState } from '../hooks/usePersistentState';
 import { useTree } from '../hooks/useTree';
 import { useTreeDrag } from '../hooks/useTreeDrag';
-import { COLLAPSED_TASKS_KEY } from '../lib/preferences';
+import { COLLAPSED_TASKS_KEY, TREE_COLLAPSED_KEY } from '../lib/preferences';
 import { ancestorIds, buildTree, expandAncestors, toggleCollapsed } from '../lib/tree';
 import { ErrorNote, LoadingNote } from './StatusNote';
 import { TreeNodeRow } from './TreeNodeRow';
 
-/** 面板宽度取自定版原型 A：固定 252px、不可折叠。 */
+/** 展开时的面板宽度，取自定版原型 A。 */
 const PANEL_WIDTH = 252;
+/**
+ * 收起后的窄条宽度。只放得下一个 22px 的展开按钮与两侧留白，
+ * 比展开态窄 208px，长看板下等于多出一列卡片的位置。
+ */
+const RAIL_WIDTH = 44;
 
 const isStringArray = (value: unknown): boolean =>
   Array.isArray(value) && value.every((item) => typeof item === 'string');
+
+const isBoolean = (value: unknown): boolean => typeof value === 'boolean';
 
 /**
  * 左侧文件树。点任务名进入该任务的看板；三角只负责展开折叠。
  * 归档是否出现在树里由后端的 `?includeArchived` 决定，开关本身由 BoardPage 持有
  * （看板列也要认同一个开关，见 docs/decisions.md D35），这里只做受控显示与回调。
+ *
+ * 整个面板的收起/展开是这一层自己的事：顶栏、看板都不需要知道，收起只是把宽度让出去。
  */
 export function Sidebar({
   boardId,
@@ -39,6 +48,11 @@ export function Sidebar({
     [],
     isStringArray,
   );
+  // 面板收起：默认展开，坏掉的本地值（不是 boolean）按默认算（与「显示已归档」同一套兜底）。
+  const [collapsed, setCollapsed] = usePersistentState(TREE_COLLAPSED_KEY, false, isBoolean);
+  /** 收起按钮的 aria-controls 要指向被它控制的那块。用 useId 而不是写死字符串：写死的话
+   *  同一个页面里出现第二个 Sidebar（例如将来的分屏）就会撞 id。 */
+  const panelId = useId();
   const { state, reload, refresh } = useTree(showArchived);
   const [dragError, setDragError] = useState<string | null>(null);
 
@@ -73,6 +87,21 @@ export function Sidebar({
     onCancel: () => {},
   });
 
+  /**
+   * 收起时，如果焦点在树里（键盘用户选中了一个节点），树一变成 display:none 焦点就掉回 body，
+   * 下一次 Tab 从页面开头重来、读屏用户也会发现自己「丢」了位置。所以收起的那一次把焦点接到按钮上。
+   *
+   * 只在 false → true 这一跳里聚焦，用 ref 记住上一次的值：effect 的依赖数组挂载时也会跑，
+   * 只看 `collapsed` 的话，「本地存的就是收起」的首屏会去抢用户焦点（曾实测到，见 D46）。
+   * 也正因如此不把 focus 写进点击处理函数：那样键盘之外的来源（StorageEvent 等）就漏了。
+   */
+  const toggleRef = useRef<HTMLButtonElement>(null);
+  const wasCollapsed = useRef(collapsed);
+  useEffect(() => {
+    if (collapsed && !wasCollapsed.current) toggleRef.current?.focus();
+    wasCollapsed.current = collapsed;
+  }, [collapsed]);
+
   // 写操作（新建、改名、归档、删除）之后树必须是新的：D34 遗留的那条「写操作那一步必须显式刷新树」。
   // 0 是初始值，挂载时不用多取一次。
   useEffect(() => {
@@ -97,29 +126,76 @@ export function Sidebar({
 
   return (
     <aside
+      // 名字固定不随状态变：状态已经由按钮的 aria-expanded 表达，可访问名字保持稳定是惯例。
       aria-label="文件树"
-      className="flex flex-none flex-col border-r border-line bg-surface"
-      style={{ width: PANEL_WIDTH }}
+      // width 走过渡：收起/展开时看板是挤过去而不是跳过去，用户能看清是哪一块变窄了。
+      // 收起态只留窄条，所以 transition 结束时布局与「一开始就是收起的」完全一致。
+      //
+      // overflow-hidden 是过渡期的裁剪：展开的那几帧里盒子还是 44px 宽，而展开态的内容
+      // （「显示已归档」有 whitespace-nowrap、树容器 overflow-y-auto 会把横向也算成 auto）
+      // 已经渲染出来了，不裁的话标题会被逐字换行、文字和多出来的滚动条会画到看板列上
+      // （审阅实测首帧 aside 宽 44 而内容宽 99）。按钮距面板边缘 11px，聚焦环不会被剪到。
+      className="flex flex-none flex-col overflow-hidden border-r border-line bg-surface transition-[width] duration-150"
+      style={{ width: collapsed ? RAIL_WIDTH : PANEL_WIDTH }}
     >
-      <div className="flex flex-none items-center justify-between gap-2 border-b border-line py-[9px] pl-3 pr-2.5">
-        <h2 className="text-[11.5px] font-semibold tracking-[0.3px] text-ink-2">文件树</h2>
-        <label className="flex cursor-pointer items-center gap-1.5">
-          {/* 用 sr-only 的原生 checkbox 而不是自绘按钮：键盘可达、有无障碍名称，样式交给后面的 span。 */}
-          <input
-            type="checkbox"
-            className="peer sr-only"
-            checked={showArchived}
-            onChange={(event) => onShowArchivedChange(event.target.checked)}
+      <div
+        className={
+          collapsed
+            ? 'flex flex-none justify-center border-b border-line py-[9px]'
+            : 'flex flex-none flex-col border-b border-line px-3 py-[9px]'
+        }
+      >
+        <div className="flex items-center justify-between gap-2">
+          {/*
+            收起时标题藏到 sr-only（窄条放不下可见的标题），收益是标题导航里仍然留着「文件树」。
+            按钮的名字不依赖它：按钮自己带 aria-label。
+          */}
+          <h2
+            className={
+              collapsed
+                ? 'sr-only'
+                : 'text-[11.5px] font-semibold tracking-[0.3px] text-ink-2'
+            }
+          >
+            文件树
+          </h2>
+          <CollapseToggle
+            toggleRef={toggleRef}
+            panelId={panelId}
+            collapsed={collapsed}
+            onToggle={() => setCollapsed((value) => !value)}
           />
-          <span
-            className="relative h-[15px] w-[26px] flex-none rounded-full bg-line-strong after:absolute after:left-0.5 after:top-0.5 after:size-[11px] after:rounded-full after:bg-surface peer-checked:bg-accent peer-checked:after:left-[13px] peer-focus-visible:outline-2 peer-focus-visible:outline-offset-1 peer-focus-visible:outline-accent-border"
-            aria-hidden="true"
-          />
-          <span className="whitespace-nowrap text-[11px] text-ink-3">显示已归档</span>
-        </label>
+        </div>
+        {!collapsed && (
+          <label className="mt-[7px] flex cursor-pointer items-center gap-1.5">
+            {/* 用 sr-only 的原生 checkbox 而不是自绘按钮：键盘可达、有无障碍名称，样式交给后面的 span。 */}
+            <input
+              type="checkbox"
+              className="peer sr-only"
+              checked={showArchived}
+              onChange={(event) => onShowArchivedChange(event.target.checked)}
+            />
+            <span
+              className="relative h-[15px] w-[26px] flex-none rounded-full bg-line-strong after:absolute after:left-0.5 after:top-0.5 after:size-[11px] after:rounded-full after:bg-surface peer-checked:bg-accent peer-checked:after:left-[13px] peer-focus-visible:outline-2 peer-focus-visible:outline-offset-1 peer-focus-visible:outline-accent-border"
+              aria-hidden="true"
+            />
+            <span className="whitespace-nowrap text-[11px] text-ink-3">显示已归档</span>
+          </label>
+        )}
       </div>
 
-      <div className="min-h-0 flex-1 overflow-y-auto px-2 pb-3 pt-1.5">
+      {/*
+        树用 `hidden` 藏起来，而不是从 DOM 里拿掉。
+        取中理由：`hidden` 是 display:none，树照样离开无障碍树与 Tab 顺序（收起后不会有人在
+        读屏里读到一棵看不见的树），同时 React 不卸载它，展开时立刻就有内容。
+        卸载的代价实测过：每次展开都会重新发一次 /api/tree，网络往返期间窄条里先空一下，
+        这么高频的开关不该带一次请求。收起时那次挂载请求留着（见 D46 的取舍）。
+      */}
+      <div
+        id={panelId}
+        hidden={collapsed}
+        className="min-h-0 flex-1 overflow-y-auto px-2 pb-3 pt-1.5"
+      >
         {boardMissingFromTree && (
           <p className="px-2 py-1 text-[11px] text-ink-3">当前看板不在树里，可能已归档</p>
         )}
@@ -147,7 +223,7 @@ export function Sidebar({
                 selectedId={boardId}
                 collapsedIds={collapsedIds}
                 onToggle={(taskId) =>
-                  setCollapsedIds((collapsed) => toggleCollapsed(collapsed, taskId))
+                  setCollapsedIds((ids) => toggleCollapsed(ids, taskId))
                 }
                 onOpen={(taskId) => {
                   // 拖完那一下浏览器仍会补一个 click，不拦就会顺手进入它的看板。
@@ -162,5 +238,57 @@ export function Sidebar({
         )}
       </div>
     </aside>
+  );
+}
+
+/**
+ * 面板收起/展开按钮。图标是一块面板加一个指向内侧的箭头：箭头指向「点下去树会往哪走」，
+ * 收起时指向右（收进窄条），展开时指向左（推出来）。
+ *
+ * aria-expanded 表达的是「它控制的那块内容是否可见」，所以收起时是 false —— 与图标方向相反是正常的；
+ * aria-controls 指向被控制的树容器，读屏用户可以从按钮直接跳到那块内容。
+ *
+ * `toggleRef` 而不是 `ref`：收起时 Sidebar 要用它把焦点接到这个按钮上，走普通 prop 比
+ * 依赖 ref 转发更直白，也不需要给这个内部组件声明 forwardRef。
+ */
+function CollapseToggle({
+  toggleRef,
+  panelId,
+  collapsed,
+  onToggle,
+}: {
+  toggleRef: React.RefObject<HTMLButtonElement | null>;
+  panelId: string;
+  collapsed: boolean;
+  onToggle: () => void;
+}) {
+  const label = collapsed ? '展开文件树' : '收起文件树';
+  return (
+    <button
+      ref={toggleRef}
+      type="button"
+      aria-expanded={!collapsed}
+      aria-controls={panelId}
+      aria-label={label}
+      title={label}
+      onClick={onToggle}
+      className="grid size-[22px] flex-none place-items-center rounded-[5px] text-ink-3 hover:bg-track hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent-border"
+    >
+      <svg
+        width="14"
+        height="14"
+        viewBox="0 0 16 16"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="1.5"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+        aria-hidden="true"
+      >
+        <rect x="1.75" y="2.75" width="12.5" height="10.5" rx="2" />
+        <path d="M6.25 2.75v10.5" />
+        <path d={collapsed ? 'M8.75 6.25 10.5 8l-1.75 1.75' : 'M10.5 6.25 8.75 8l1.75 1.75'} />
+      </svg>
+    </button>
   );
 }
