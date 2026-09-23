@@ -554,4 +554,19 @@ Zod 的 `.int()` 拒绝的是**不安全整数**，而所有大于 2^53 的值�
 
 **审阅认为可以不动的地方（同意，记录在此免得下次重开）**：三态控件继续用 `role="group"` + 三个 `aria-pressed` 按钮（省掉方向键处理，代价是读屏逐个报「切换按钮」）；`--color-on-fill` 一个令牌服务 `bg-accent` 与 `bg-danger`（浅色都配白、深色都配近黑，没有需要分开的证据）；`removeStored` 保留（写 `null` 会在 localStorage 留一条读不出意图的记录）；`mediaStub.ts` 放在 `test/` 下不叫 `.test.ts`（vitest 默认只收 `*.test.*`，typecheck 照样管）；`TopBar.test.tsx` 里用 `within(面包屑)` 收窄断言而不是排除法。
 
+## D44 测试不要断言还没落盘的副作用（2026-09-23）
+
+**问题**：深色模式合并进主干后，全量测试在**两套并行跑**（相当于 CI，或本机同时开两个套件）时偶发失败，约十次里错两次；串行跑从不失败，所以之前一直没露头。
+
+**追踪**：失败的是 `Sidebar.test.tsx` 的「当前看板的祖先被折叠过时自动展开」，错在最后一行——`expected '["a","b"]' to be '["b"]'`。界面已经展开了祖先（上一行 `findByText('补单元测试')` 通过），但 localStorage 里还是旧值。原因是展开走 `setCollapsedIds`，**落盘却在 `usePersistentState` 的 effect 里**，即那次渲染提交之后；`findBy*` 只等到 DOM 出现，不保证 effect 已经跑完。机器越忙，那一帧越容易输掉。
+
+**对照实验**（避免误判成「深色模式改坏了 Sidebar」）：合并前的 `adfe4cb` 单独建 worktree，同样两套并行跑 5 轮共 10 次，全绿；主干同样跑法 5 轮里红 2 次。结论：既有竞态，被新增测试带来的负载暴露——这一步把 web 测试从 20 个文件 / 197 项加到 25 个 / 226 项，worker 争用变高。
+
+**修法**：那一行改成 `await waitFor(() => expect(...).toBe(...))`。改完同样两套并行跑 10 轮共 20 次，全绿。
+
+**顺带检查过的同类写法**（都安全，没动）：`fireEvent.click` 之后的断言（`act` 会把 effect 冲干净，见 `Sidebar.test.tsx:108` 与 `App.test.tsx:503`）；`usePersistentState.test.ts` / `useTheme.test.ts` 里在 `renderHook` / `act` 之后的断言。另外 `useTheme.choose()` 把写盘放在事件处理函数里而不是 effect 里，天然没有这个竞态——D43 当时只是为了「没选过就不写」，顺带也躲开了这一类。
+
+**规矩**：要断言 localStorage 或任何 effect 的产物时，要么紧跟 `fireEvent` / `act`，要么用 `waitFor`；只靠 `findBy*` 等 DOM 不够。判断一条 flaky 测试归谁时，先在改动前的提交上做同样的并行对照，别凭「看起来无关」下结论。
+
+
 

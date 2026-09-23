@@ -173,7 +173,14 @@ describe('Sidebar', () => {
     expect(await screen.findByText('补单元测试')).toBeTruthy();
     // b 与当前看板无关，保持折叠。
     expect(screen.getByRole('button', { name: '展开「支付对账」' })).toBeTruthy();
-    expect(window.localStorage.getItem('kanban.tree.collapsed')).toBe(JSON.stringify(['b']));
+    /**
+     * 这一条必须等，不能像上面那样直接断言：展开是渲染出来的，落盘却发生在
+     * usePersistentState 的 effect 里，也就是那次渲染提交之后。
+     * 直接断言会偶发读到还没被改写的旧值（负载高时约十次里错两次，见 docs/decisions.md D44）。
+     */
+    await waitFor(() =>
+      expect(window.localStorage.getItem('kanban.tree.collapsed')).toBe(JSON.stringify(['b'])),
+    );
   });
 
   it('选中的节点用 aria-current 标出', async () => {
