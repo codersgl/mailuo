@@ -8,13 +8,23 @@
   "engines": {
     "node": ">=22"
   },
+  "bin": {
+    "mailuo": "bin/mailuo.mjs"
+  },
+  "files": [
+    "bin/",
+    "apps/api/dist/",
+    "apps/api/migrations/",
+    "apps/web/dist/",
+    "README.md"
+  ],
   "scripts": {
     "dev:api": "pnpm --filter @mailuo/api dev",
     "dev:web": "pnpm --filter @mailuo/web dev",
     "build": "pnpm -r build",
     "icons": "node scripts/build-icons.mjs",
     "start": "pnpm --filter @mailuo/api start",
-    "test": "pnpm -r test",
+    "test": "node --test bin/*.test.mjs && pnpm -r test",
     "typecheck": "pnpm -r typecheck"
   }
 }
