@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useId, useRef, useState } from 'react';
 import { ApiError, changeTaskParent } from '../api/client';
 import { usePersistentState } from '../hooks/usePersistentState';
 import { useTree } from '../hooks/useTree';
@@ -50,6 +50,9 @@ export function Sidebar({
   );
   // 面板收起：默认展开，坏掉的本地值（不是 boolean）按默认算（与「显示已归档」同一套兜底）。
   const [collapsed, setCollapsed] = usePersistentState(TREE_COLLAPSED_KEY, false, isBoolean);
+  /** 收起按钮的 aria-controls 要指向被它控制的那块。用 useId 而不是写死字符串：写死的话
+   *  同一个页面里出现第二个 Sidebar（例如将来的分屏）就会撞 id。 */
+  const panelId = useId();
   const { state, reload, refresh } = useTree(showArchived);
   const [dragError, setDragError] = useState<string | null>(null);
 
@@ -85,16 +88,18 @@ export function Sidebar({
   });
 
   /**
-   * 收起后树整块从 DOM 里消失，如果焦点当时在树里（键盘用户选中了一个节点），
-   * 焦点会掉回 body，下一次 Tab 从头开始、方向键也没了目标。所以收起时把焦点交给那个按钮。
+   * 收起时，如果焦点在树里（键盘用户选中了一个节点），树一变成 display:none 焦点就掉回 body，
+   * 下一次 Tab 从页面开头重来、读屏用户也会发现自己「丢」了位置。所以收起的那一次把焦点接到按钮上。
    *
-   * 只在「收起」时抢焦点，不写进点击处理函数：键盘之外还有 StorageEvent 之类的来源，
-   * 但更要紧的是这样不会在首次挂载（本地存的本来就是收起）时抢走用户的焦点——
-   * 这条 effect 只跑在 collapsed 真正变化之后。
+   * 只在 false → true 这一跳里聚焦，用 ref 记住上一次的值：effect 的依赖数组挂载时也会跑，
+   * 只看 `collapsed` 的话，「本地存的就是收起」的首屏会去抢用户焦点（曾实测到，见 D46）。
+   * 也正因如此不把 focus 写进点击处理函数：那样键盘之外的来源（StorageEvent 等）就漏了。
    */
   const toggleRef = useRef<HTMLButtonElement>(null);
+  const wasCollapsed = useRef(collapsed);
   useEffect(() => {
-    if (collapsed) toggleRef.current?.focus();
+    if (collapsed && !wasCollapsed.current) toggleRef.current?.focus();
+    wasCollapsed.current = collapsed;
   }, [collapsed]);
 
   // 写操作（新建、改名、归档、删除）之后树必须是新的：D34 遗留的那条「写操作那一步必须显式刷新树」。
@@ -121,10 +126,16 @@ export function Sidebar({
 
   return (
     <aside
-      aria-label={collapsed ? '文件树（已收起）' : '文件树'}
+      // 名字固定不随状态变：状态已经由按钮的 aria-expanded 表达，可访问名字保持稳定是惯例。
+      aria-label="文件树"
       // width 走过渡：收起/展开时看板是挤过去而不是跳过去，用户能看清是哪一块变窄了。
       // 收起态只留窄条，所以 transition 结束时布局与「一开始就是收起的」完全一致。
-      className="flex flex-none flex-col border-r border-line bg-surface transition-[width] duration-150"
+      //
+      // overflow-hidden 是过渡期的裁剪：展开的那几帧里盒子还是 44px 宽，而展开态的内容
+      // （「显示已归档」有 whitespace-nowrap、树容器 overflow-y-auto 会把横向也算成 auto）
+      // 已经渲染出来了，不裁的话标题会被逐字换行、文字和多出来的滚动条会画到看板列上
+      // （审阅实测首帧 aside 宽 44 而内容宽 99）。按钮距面板边缘 11px，聚焦环不会被剪到。
+      className="flex flex-none flex-col overflow-hidden border-r border-line bg-surface transition-[width] duration-150"
       style={{ width: collapsed ? RAIL_WIDTH : PANEL_WIDTH }}
     >
       <div
@@ -136,8 +147,8 @@ export function Sidebar({
       >
         <div className="flex items-center justify-between gap-2">
           {/*
-            收起时标题藏起来（窄条放不下），但按钮要留在同一个位置、同一个热区大小，
-            所以标题用 sr-only 而不是不渲染：按钮的可访问名字仍能读成「收起文件树」。
+            收起时标题藏到 sr-only（窄条放不下可见的标题），收益是标题导航里仍然留着「文件树」。
+            按钮的名字不依赖它：按钮自己带 aria-label。
           */}
           <h2
             className={
@@ -150,8 +161,9 @@ export function Sidebar({
           </h2>
           <CollapseToggle
             toggleRef={toggleRef}
+            panelId={panelId}
             collapsed={collapsed}
-            onToggle={() => setCollapsed(!collapsed)}
+            onToggle={() => setCollapsed((value) => !value)}
           />
         </div>
         {!collapsed && (
@@ -180,6 +192,7 @@ export function Sidebar({
         这么高频的开关不该带一次请求。收起时那次挂载请求留着（见 D46 的取舍）。
       */}
       <div
+        id={panelId}
         hidden={collapsed}
         className="min-h-0 flex-1 overflow-y-auto px-2 pb-3 pt-1.5"
       >
@@ -222,8 +235,8 @@ export function Sidebar({
               />
             ))}
           </ul>
-          )}
-        </div>
+        )}
+      </div>
     </aside>
   );
 }
@@ -232,17 +245,20 @@ export function Sidebar({
  * 面板收起/展开按钮。图标是一块面板加一个指向内侧的箭头：箭头指向「点下去树会往哪走」，
  * 收起时指向右（收进窄条），展开时指向左（推出来）。
  *
- * aria-expanded 表达的是「它控制的那块内容是否可见」，所以收起时是 false —— 与图标方向相反是正常的。
+ * aria-expanded 表达的是「它控制的那块内容是否可见」，所以收起时是 false —— 与图标方向相反是正常的；
+ * aria-controls 指向被控制的树容器，读屏用户可以从按钮直接跳到那块内容。
  *
- * `toggleRef` 而不是 `ref`：收起时要由 Sidebar 把焦点从被移除的树上接到这个按钮，
- * 用普通 prop 传 ref，避免组件再依赖 React 19 才有的 ref-as-prop 写法。
+ * `toggleRef` 而不是 `ref`：收起时 Sidebar 要用它把焦点接到这个按钮上，走普通 prop 比
+ * 依赖 ref 转发更直白，也不需要给这个内部组件声明 forwardRef。
  */
 function CollapseToggle({
   toggleRef,
+  panelId,
   collapsed,
   onToggle,
 }: {
   toggleRef: React.RefObject<HTMLButtonElement | null>;
+  panelId: string;
   collapsed: boolean;
   onToggle: () => void;
 }) {
@@ -252,6 +268,7 @@ function CollapseToggle({
       ref={toggleRef}
       type="button"
       aria-expanded={!collapsed}
+      aria-controls={panelId}
       aria-label={label}
       title={label}
       onClick={onToggle}
