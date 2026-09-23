@@ -3,6 +3,7 @@ import { Hono } from 'hono';
 import type { Db } from '../db/client.js';
 import { readColumnTasks } from '../repositories/board.js';
 import { columnExists } from '../repositories/columns.js';
+import { findDependencyCycle, listPredecessorIds, setTaskDeps } from '../repositories/deps.js';
 import {
   applyTaskUpdate,
   changeTaskParent,
@@ -13,6 +14,7 @@ import {
   setTaskArchived,
   type TaskRecord,
 } from '../repositories/tasks.js';
+import { setTaskDepsSchema } from '../schemas/deps.js';
 import {
   changeTaskParentSchema,
   createTaskSchema,
@@ -22,16 +24,22 @@ import {
 import { wantsArchived } from './query.js';
 import { validationHook } from './validation.js';
 
-/** 写接口：新建、改字段与移动、改父级、归档、删除。 */
+/** 写接口：新建、改字段与移动、改父级、归档、删除、设置依赖。 */
 export function createTaskRoutes(db: Db): Hono {
   const routes = new Hono();
 
   // zValidator 在 Content-Type 不是 JSON 时会直接跳过解析，请求体变成 undefined，
   // 报错就成了「列 id 必须是字符串」这种误导文案（curl -d 默认发 form-urlencoded）。
-  // 先明确提示，省掉一轮排查。只拦 /api/tasks 下的写请求，别影响其他路径的 404。
+  // 先明确提示，省掉一轮排查。
+  //
+  // 路径判据要带边界：`startsWith('/api/tasks')` 会把 /api/tasks-nope 也算进来，
+  // 把本该 404 的路径变成 400。这里刻意**宁可多拦**：
+  // /api/tasks/<id> 这类不存在的写路由也会拿到这条 400 而不是 404，代价可接受；
+  // 反过来漏拦会让新加的写路由静默退回那条误导文案（见 docs/decisions.md D15）。
   routes.use('*', async (c, next) => {
-    const isWrite = c.req.method === 'POST' || c.req.method === 'PATCH';
-    if (isWrite && c.req.path.startsWith('/api/tasks')) {
+    const isWrite = ['POST', 'PATCH', 'PUT'].includes(c.req.method);
+    const isTaskApiPath = c.req.path === '/api/tasks' || c.req.path.startsWith('/api/tasks/');
+    if (isWrite && isTaskApiPath) {
       const contentType = c.req.header('content-type') ?? '';
       if (!contentType.includes('application/json')) {
         return c.json({ error: 'Content-Type 必须是 application/json' }, 400);
@@ -153,6 +161,61 @@ export function createTaskRoutes(db: Db): Hono {
       columnTasks: readColumnTasks(db, removed.parentId, removed.columnId, wantsArchived(c)),
     });
   });
+
+  /**
+   * 整体替换任务的前置依赖（见 docs/spec.md 的 `PUT /api/tasks/:id/deps`）。
+   *
+   * 校验顺序固定为：任务存在（404）→ 任务未归档（400）→ 依赖自己（409）→ 逐个前置任务
+   * （不存在 404 → 不同层 400 → 已归档 400）→ 成环（409）。顺序由测试钉死；
+   * 「先资源后入参」与两条 PATCH 一致（见 docs/decisions.md D23），而入参本身的形状
+   * （数组、重复项）在 schema 里就拦掉了，排在所有这些之前。
+   *
+   * 依赖变化会影响这个任务的最早 / 最晚开始时间，所以响应给出 `task`，前端按 D35 的做法
+   * 静默重取整个图（`GET /api/board[/:parentId]/cpm`），不在这里回一整张图。
+   */
+  routes.put(
+    '/api/tasks/:id/deps',
+    zValidator('json', setTaskDepsSchema, validationHook),
+    (c) => {
+      const id = c.req.param('id');
+      const { predecessorIds } = c.req.valid('json');
+
+      const task = findTask(db, id);
+      if (!task) {
+        return c.json({ error: '任务不存在' }, 404);
+      }
+      if (task.archivedAt !== null) {
+        return c.json({ error: '任务已归档' }, 400);
+      }
+      // 自己依赖自己在图的定义里就是一个环，单独给一句更直白的文案。
+      if (predecessorIds.includes(id)) {
+        return c.json({ error: '任务不能依赖自己' }, 409);
+      }
+      for (const predecessorId of predecessorIds) {
+        const predecessor = findTask(db, predecessorId);
+        if (!predecessor) {
+          return c.json({ error: `前置任务不存在: ${predecessorId}` }, 404);
+        }
+        // 依赖两端必须同层，否则关键路径会在两个看板之间串算（见 docs/spec.md 的「数据模型」）。
+        if (predecessor.parentId !== task.parentId) {
+          return c.json({ error: `跨层依赖不允许: ${predecessorId}` }, 400);
+        }
+        if (predecessor.archivedAt !== null) {
+          return c.json({ error: `前置任务已归档: ${predecessorId}` }, 400);
+        }
+      }
+      const cyclic = findDependencyCycle(db, id, predecessorIds);
+      if (cyclic !== undefined) {
+        return c.json({ error: `依赖形成环: ${cyclic}` }, 409);
+      }
+
+      const updated = setTaskDeps(db, id, predecessorIds);
+      if (!updated) {
+        return c.json({ error: '任务不存在' }, 404);
+      }
+      return c.json({ task: updated, predecessorIds: listPredecessorIds(db, id) });
+    },
+  );
 
   return routes;
 }
