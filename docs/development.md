@@ -45,6 +45,42 @@ TypeScript 7，所以根 `devDependencies` 里的 `typescript@6` 只服务 lint�
 `typescript@7` 才是 `pnpm typecheck` / `pnpm build` 用的那个。原因与后续处置见
 `docs/decisions.md` D70。
 
+## 发布（npm）
+
+发布由 `.github/workflows/release.yml` 完成：在 GitHub 上建 Release（tag 形如 `v0.2.0`）后自动跑
+`pnpm lint` / `pnpm typecheck` / `pnpm build` / `pnpm test`，然后 `npm publish`。认证走 npm
+Trusted Publishing（OIDC），仓库里没有任何 npm token，也不需要人工确认。
+
+发一个版本：
+
+1. 在 worktree 里把根 `package.json` 的 `version` 改成新版本，合入 main。
+2. GitHub -> Releases -> Draft a new release，tag 填与版本号一致的（`v0.2.0` 对应 `0.2.0`），
+   目标选 main，写好说明后 Publish。
+3. `Release` 工作流跑完后 npm 上就有这个版本，包页面能看到 provenance（自动生成，不用写
+   `--provenance`；前提是仓库与包都是 public）。
+
+workflow 分两步：`guard` 先校验 tag 与版本一致、再查 npm 上有没有这个版本；只有确实没有时
+`npm-publish` 才跑。检查排在装依赖与门禁之前，所以补记一个老 tag（例如 `v0.1.0`，那个提交上还
+没有 `lint` 脚本）也只会走完 `guard` 就跳过发布，不会因为门禁红掉，也不会重复发布。
+
+回填或试跑一个「早于本 workflow」的老 tag 时，不要指望 release 事件：`release` 取哪一份 workflow
+文件没有明文规定，若取的是 tag 所在提交上的那份，那个提交上没有这个文件，就什么都不会发生。
+用 Actions -> Release -> Run workflow，分支选 main，`tag` 输入填对应 tag——这条路径与事件路径
+做的是同一件事（校验版本、查 npm、需要时发布）。
+
+几处不能省：
+
+- npmjs.com 的 Trusted Publisher 里 Owner / Repository / Workflow filename 必须与实际一致
+  （`codersgl` / `mailuo` / `release.yml`；含 `.yml`、区分大小写）。
+- **Allowed actions 必须勾上 `npm publish`**：2026-09-03 之后新建的配置默认只允许
+  `npm stage publish`（发到暂存区等人工 2FA 批准），只留它的话首次发布会被拒。
+- 这些字段 npm 在保存时不校验，填错只会在发布那一刻报错。典型报错是 `Unable to authenticate`
+  （ENEEDAUTH）与社区里常见的 `Access token expired or revoked`，遇到先逐字核对上面的三项。
+- 只支持 GitHub 托管的 runner；自托管 runner 用不了。
+- 勾了 pre-release 的 release 不会发布：`release: [published]` 对预发布同样触发，而这里的
+  publish 不带 `--tag`，直接发会让 RC 顶掉 `latest`。要发 `next` 之类的 dist-tag 得另开一步。
+- 手动 `npm publish` 仍然可用，但每次要在终端按一次安全密钥（见 `docs/decisions.md` D69）。
+
 ## 生产运行
 
 ```sh

@@ -23,6 +23,7 @@ import { test } from 'node:test';
 import { fileURLToPath } from 'node:url';
 
 import {
+  UPDATE_CHECK_TIMEOUT_MS,
   browserHost,
   defaultDbPath,
   fetchLatestVersion,
@@ -37,6 +38,7 @@ import {
   probePort,
   reportUpdate,
   resolveConfig,
+  updateCheckTimeout,
 } from './mailuo.mjs';
 
 const BIN_PATH = fileURLToPath(new URL('./mailuo.mjs', import.meta.url));
@@ -370,12 +372,25 @@ test('fetchLatestVersion：registry 卡住时到点就放弃，不抛异常', as
     timeoutMs: 100,
   });
   assert.equal(latest, null);
-  assert.ok(Date.now() - started < 1000, '应在上限附近就返回，而不是把默认的 1.5 秒耗完');
+  // 上界只断「没有把默认的 1.5 秒耗完」，不拿 100ms 去量机器有多快：取值留 14 倍余量，
+  // 忙机器上慢一点也不会红，而把传入的 timeoutMs 忽略掉（退回默认值）仍然会被抓住。
+  assert.ok(
+    Date.now() - started < UPDATE_CHECK_TIMEOUT_MS - 100,
+    '应在上限附近就返回，而不是把默认的 1.5 秒耗完',
+  );
 });
 
-test('fetchLatestVersion：默认超时是 1.5 秒量级', async (t) => {
-  // 不传 timeoutMs，验证的就是 UPDATE_CHECK_TIMEOUT_MS 这个默认值本身——README 向用户
-  // 承诺了「1.5 秒」，改大它要有人拦。
+test('fetchLatestVersion：默认超时就是 UPDATE_CHECK_TIMEOUT_MS', async (t) => {
+  // README 向用户承诺「超时 1.5 秒」，这个承诺落在常量上，所以直接断言常量本身：确定性，
+  // 与机器忙不忙无关。
+  assert.equal(UPDATE_CHECK_TIMEOUT_MS, 1500, 'README 承诺的默认超时是 1.5 秒，改它要同步改 README');
+  // 默认值怎么被用上也是确定性断言：显式传入优先，没传才落回常量。
+  // 这一对断言顶掉了原来靠墙上时钟反推默认值的做法——那个既会因机器忙而假红，又测不出
+  // 「默认值被改大」（见 D71）。
+  assert.equal(updateCheckTimeout(), UPDATE_CHECK_TIMEOUT_MS);
+  assert.equal(updateCheckTimeout(100), 100);
+
+  // 只接受连接、永不回应，模拟 registry 无响应。
   const registry = await startRegistry(() => {});
   t.after(() => registry.close());
 
@@ -387,8 +402,11 @@ test('fetchLatestVersion：默认超时是 1.5 秒量级', async (t) => {
   });
   const elapsed = Date.now() - started;
   assert.equal(latest, null);
-  assert.ok(elapsed >= 1400, `应在默认超时附近返回，实际只等了 ${elapsed}ms`);
-  assert.ok(elapsed < 3000, `默认超时应是 1.5 秒量级，实际等了 ${elapsed}ms`);
+  // 这段墙上时钟只回答一个问题：超时真的被用在了这次请求上（没传超时时请求确实在默认值附近
+  // 放弃）。只断下界——setTimeout 不会提前触发，所以下界是确定的；不断上界，因为「机器能在
+  // 1.5 秒内把事件循环让出来」不是本用例要保证的事，原来那条 `elapsed < 3000` 正是这么在忙
+  // 机器上假红的（实测等了 4775ms，见 D70 的已知抖动、D71）。
+  assert.ok(elapsed >= UPDATE_CHECK_TIMEOUT_MS - 100, `应在默认超时附近返回，实际只等了 ${elapsed}ms`);
 });
 
 test('fetchLatestVersion：带路径的私有 registry 保留路径前缀，包名按 URL 段编码', async (t) => {

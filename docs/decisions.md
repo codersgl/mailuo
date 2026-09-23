@@ -2369,6 +2369,9 @@ action 版本（2026-09 的当前 major）：`actions/checkout@v7`、`actions/se
 
 ### 已知抖动（本步发现，未修）
 
+**已在 D71 修掉**：那条 `elapsed < 3000` 的上界与相邻用例写死的 `1000` 都换成了对着导出常量
+`UPDATE_CHECK_TIMEOUT_MS` 的断言。下面保留当时的记录，避免把「当时为什么留着」改写掉。
+
 加 CI 之后第一次跑全量时 `bin` 挂了 1 条，单跑又全绿。为了定性，把 `node --test bin/*.test.mjs`
 连跑 3 次，复现 1 次：
 
@@ -2448,3 +2451,197 @@ D70 在后，除本文档末尾这一处外没有冲突（`package.json` 的包�
 所以 `Tasks` 里「添加`CI`和`ESLint`」的勾选留给你；本条实现后它就成立了。
 
 CI 只在 GitHub 上运行，本机没有 runner，所以 workflow 的真实执行结果要等这次推送后才有。
+
+## D71 第 33 步：Release 触发 npm 发布（Trusted Publishing / OIDC）（2026-09-24，分支 chore/release-oidc）
+
+这一步由用户的两个问题引起：「现在要不要建 GitHub Release」「希望 npm publish 跟随 release」。
+
+### 问题
+
+两件事分开看。
+
+1. **0.1.0 在 npm 上，仓库里却没有任何 tag**：`git ls-remote --tags origin` 为空。npm 上的 0.1.0 是
+   2026-09-24 手动发的（D69），来源是 `51e37d3`（merge D69）。它之后只有两个提交：`cd0e77c`
+   （merge D70，加 CI 与 ESLint）与 `2dcbe67`（只改 `docs/intend.md`），两个都不进 `files`——
+   包里只有 `bin/mailuo.mjs`、`apps/*/dist`、`apps/api/migrations`、`LICENSE`、`README.md`，
+   所以 tag 打在 `51e37d3` 比打在 HEAD 更贴近 tarball 的来源。
+2. **手动发布每次要人在场**：D69 实测账号是 WebAuthn 模式，非交互终端直接 `EOTP`，只有 TTY 里
+   才给出浏览器确认链接。而 token 这条路正在被拆掉（两个日期都来自 npm 官方 changelog，且官方
+   对生效时间用的是「预期」口径）：classic token 已于 **2025-12-09** 全部撤销；勾了 2FA bypass
+   的 granular token 预期从 **2026-08** 起不能做敏感的账号/包/组织管理操作，预期 **2027-01** 起
+   连直接发布都不能做，发布面只剩「staging + 人工 2FA 批准」。也就是说 token 路线是个有到期日的
+   东西，而官方给的迁移目标是 Trusted Publishing。现在换，代价是一步；等到 2027 年换，代价是
+   那时候必须在压力下换。
+
+### 做法
+
+**建 `v0.1.0` 补记 release，但 workflow 必须幂等。** 现在建：tag 与 npm 上的版本对上历史；0.1.0
+已经存在于 npm，所以这次不会重复发布。不假装有新内容：release notes 写明是手动发布的历史补记。
+也不为了触发自动化特意发 0.2.0——版本号该跟着实际改动走。
+
+**但补记 release 不能当作「release -> 发布」链路的验证**，这一点我第一版写错了。GitHub 的事件
+文档没有明文说 `release` 事件取哪一份 workflow 文件：`release` 一节的 `GITHUB_SHA` 写的是「tag
+所在提交的最后一个提交」，而同一页对许多其它事件都标了「workflow 文件必须存在于默认分支」这条
+注记，`release` 一节偏偏没有。两种行为下结果不同：
+
+- 取默认分支上的那份：补记 release 会跑起来（`guard` 绿、发布 job 跳过），顺带验证了链路。
+- 取 tag 所在提交上的那份：`v0.1.0` 指向的 `51e37d3` 上还没有这个文件，于是**什么都不会发生**。
+
+所以链路验证改走 `workflow_dispatch`（文件在默认分支上才会出现 Run workflow 按钮；dispatch 时
+可以选 ref 并填 `tag` 输入 `v0.1.0`）。它不依赖上面这个不确定性，效果一样：`guard` 校验 tag 与
+版本、查到 0.1.0 已存在、发布 job 跳过。补记 release 本身无论走哪条分支都不会重复发布。
+
+**认证用 Trusted Publishing（OIDC）**，仓库里不放任何 npm token。几处不能省的约束都写进了
+workflow 注释：
+
+- 需要 npm CLI >= 11.5.1、Node >= 22.14.0，而 Node 22 自带的是 npm 10.x，所以有一行
+  `npm install -g npm@^11.5.1`。钉在 11.x 而不是跟着 `latest`（npm 12 已 GA）：发布这条链路只在
+  npm 11 上验过，而 npm 12 改了安装脚本的默认行为——对本仓库没影响（依赖由 pnpm 装、且
+  better-sqlite3 13 把各平台预编译产物放在 tarball 的 `prebuilds/` 里，不依赖 install 脚本），
+  但没必要把发布门禁同时押到一个新 major 上。迁移 npm 12 是独立一小步。
+- 只支持 GitHub 托管的 runner，自托管 runner 用不了。
+- npmjs.com 上登记的 Owner / Repository / Workflow filename 必须与实际逐字一致（含 `.yml`、
+  区分大小写）；这些字段 npm 在保存时**不校验**，填错只会在发布那一刻报错。
+- **Allowed actions 必须勾上 `npm publish`**：按官方文档，2026-09-03 之后新建的 trusted publisher
+  配置默认只允许 `npm stage publish`（发到暂存区等人工 2FA 批准），只留它首次发布会被拒。这条
+  差一点就漏掉——说明里原本只写了前三个字段。
+- `id-token: write` 必须有，缺了它 npm 换不到短期凭证。
+- provenance 会核对构建来源与 `package.json` 的 `repository` 一致，所以 D68 补的 `repository`
+  字段是这条链路的硬前提，不是元数据装饰。另外 provenance 只在「public 仓库 + public 包」下生成，
+  本仓库两者都是 public；因此也**不写 `--provenance`**（它自动生成），显式写反而会在仓库转 private
+  时直接报错。
+
+其余选择：
+
+- `on.release.types: [published]` 加一个带 `tag` 输入的 `workflow_dispatch`：已发布的 release 在
+  GitHub 上无法再次触发 `published`，发布失败后要修好再发得有手动入口。
+- **两个 job：`guard` 先判「该不该发」，`npm-publish` 才跑门禁并发布。** 见下一节，这是审阅抓到的
+  一处真问题。
+- 门禁与 `ci.yml` 同序同串（`pnpm lint` / `typecheck` / `build` / `test`）。发布门禁不允许比 CI 松。
+- `npm publish --ignore-scripts`：`prepack` 会再构建一次，而那次构建没有任何用例碰过。发出去的
+  应当是上面 build 过、也测过的那一份产物。
+- 发布 job 不开依赖缓存：npm 官方给发布流程的示例写的是
+  `package-manager-cache: false  # never use caching in release builds`。代价是每次发版多几分钟装
+  依赖，换的是产物不掺上一轮的缓存状态。
+- 不写 `setup-node` 的 `registry-url`：`publishConfig.registry` 已钉官方源（D68），而 `registry-url`
+  会往 `.npmrc` 写一行 `_authToken=${NODE_AUTH_TOKEN}`，在 OIDC 流程里那是个空占位。**这是选择，
+  不是已知故障**：没有实测过它会不会干扰 OIDC。
+- 一个 job 里做完发布，不拆 reusable workflow：官方文档明确说 `workflow_call` 场景下校验的是调用方
+  的 workflow 名，会让 npm 端登记的名字对不上。
+- `concurrency` 用固定组且不取消进行中的一轮：同一时刻只允许一个版本在发。
+- 预发布整段跳过：`release: [published]` 对勾了 pre-release 的 release 同样触发，而 publish 不带
+  `--tag`，直接发会让 RC 顶掉 `latest`。不静默把 RC 当正式版发，是这一步的取舍；发 `next`
+  dist-tag 另开一步。
+
+### 为什么「该不该发」的检查必须排在门禁之前
+
+初版把幂等检查放在最后（装依赖 → 门禁 → 校验 tag → 查 npm → 发布），漏掉了一个具体事实：
+`v0.1.0` 要补记的那个提交 `51e37d3` 上**还没有 `lint` 脚本**（D70 才加的）。于是按计划建
+`v0.1.0` 的 release 时，第一步 `pnpm lint` 就会以 `Command "lint" not found` 退出——既到不了
+「跳过发布」的分支，也验证不到任何与发布有关的东西，而 D71 与 `docs/development.md` 当时都写着
+「会走跳过分支，无副作用」。
+
+改法是把它拆成两个 job，检查只用 `node` 与 `npm`、不依赖安装：
+
+- `guard`：checkout（`ref` 取 tag）→ setup-node → 校验 tag 与 `package.json` 版本一致 → `npm view`
+  查该版本是否已在 registry 上，把结果作为 job output。
+- `npm-publish`：`needs: guard`，`if: needs.guard.outputs.skip != 'true' && (!prerelease)`；
+  为真时才装依赖、跑门禁、发布。
+
+补记 release 的结果因此是：`guard` 绿、`npm-publish` 跳过（黄），不重复发布也不需要那个提交有
+`lint`。代价是发布时多一次 checkout 与 setup-node（约 10 秒），以及查询逻辑与发布逻辑分在两处。
+
+### 顺带修掉 D70 的已知抖动
+
+原来那条用例在「只连不答」的假 registry 上不传 `timeoutMs`，断言 `elapsed >= 1400` 且
+`elapsed < 3000`。下界是确定的（`setTimeout` 不会提前触发，默认 1500），上界却在断言「机器能在
+1.5 秒内把事件循环让出来」，忙碌时实测等了 4775ms。
+
+但「删掉上界」本身会留下一个缺口，审阅把它测出来了：默认超时**被改大**（例如签名默认值写成
+5000、常量不动）时 README 的承诺在行为层失守，而只剩 `assert.equal(常量, 1500)` 与下界的用例全绿
+——原来看似只是「量机器」的那条上界，其实顺带拦住了这个方向。所以改法不是单纯删掉上界，而是把
+「默认值怎么被用上」变成确定性断言：
+
+- 新增 `updateCheckTimeout(timeoutMs)`：显式传入优先，否则落回常量；`fetchLatestVersion` 不再用
+  签名默认值，改为 `AbortSignal.timeout(updateCheckTimeout(timeoutMs))`。
+- 用例断言 `updateCheckTimeout() === UPDATE_CHECK_TIMEOUT_MS` 与 `updateCheckTimeout(100) === 100`；
+  再加上 `assert.equal(UPDATE_CHECK_TIMEOUT_MS, 1500)`。于是「常量被改」「默认值被改成别的数」
+  两个方向都是确定性的红，与机器忙不忙无关。
+- 墙上时钟只剩一个职责：证明超时真的被用在了这次请求上（不传超时的请求确实在默认值附近放弃）。
+  只留下界 `elapsed >= UPDATE_CHECK_TIMEOUT_MS - 100`——`setTimeout` 不会提前触发，所以它是确定的。
+- 相邻那条（`timeoutMs: 100`）的上界从写死的 `1000` 改成 `UPDATE_CHECK_TIMEOUT_MS - 100`：它要
+  验的是「传入值被采纳，而不是耗完默认的 1.5 秒」，`1000` 这个数字没有出处、余量只有 10 倍；
+  改成相对常量后余量 14 倍，鉴别力不变。
+
+### 验证
+
+worktree `.worktrees/release-oidc`（依赖复用主仓 store：`pnpm install --frozen-lockfile
+--store-dir ../../.pnpm-store`）：
+
+- `pnpm lint`：0 error / 5 warning，与 D70 基线的 5 条 warning 同源；`pnpm typecheck`、`pnpm build`
+  通过。
+- `pnpm test`：bin 37 / api 273 / web 474 全绿，退出码 0。
+- 变异检验（改完立即还原，每个变异都只打中该打中的用例）：
+  - 常量 `1500 -> 1600`：只红「默认超时就是 UPDATE_CHECK_TIMEOUT_MS」，相邻那条仍绿。
+  - `updateCheckTimeout` 的返回值把常量换成 `5000`：只红同一条。这条就是审阅补上的方向——
+    初版改法（只剩常量断言 + 下界）在这里是全绿。
+  - `updateCheckTimeout` 忽略传入值、一律返回常量：红两条——「registry 卡住时到点就放弃」
+    （传入 100ms 被无视）与「默认超时就是 UPDATE_CHECK_TIMEOUT_MS」（里面的
+    `updateCheckTimeout(100) === 100` 不成立）。
+  - 调用处不走 seam、直接写 `AbortSignal.timeout(UPDATE_CHECK_TIMEOUT_MS)`：只红「registry 卡住时
+    到点就放弃」，说明墙上时钟的下界对「传入值没被采纳」这一类仍然是有效的。
+- 两条守卫按真实输入跑过（不是只读代码）：tag/版本校验用 `v0.1.0` 放行、`v0.2.0` 拒绝；
+  幂等守卫对着真实 registry 查 `@codersgl/mailuo@0.1.0` 得到 `0.1.0`（跳过发布），查 `@0.0.0`
+  得到 `E404`（走发布分支）。本机 `~/.npm` 在沙箱里是只读的，测的时候把 `--cache` 指到了仓库内
+  临时目录；CI 上没有这个问题。
+- `.github/workflows/release.yml` 本机没有 actionlint，只做了 YAML 解析（pyyaml）与逐条人工核对。
+  真实 runner 上的执行要等推送与建 release 后才有；`release -> npm` 的 OIDC 交换在 npmjs.com
+  配好 Trusted Publisher 之前不会被真正走通。
+
+### 审阅（子代理，只读）
+
+审阅在 worktree 上只读进行，结论**有 1 条阻断 + 5 条低**。阻断项是上面那节「为什么检查必须排在
+门禁之前」，它用一个我漏掉的事实（`git show 51e37d3:package.json` 里没有 `lint`）证明了 D71 与
+`docs/development.md` 当时的说法不成立；已按它推荐的做法拆成两个 job，并把两处文档改准。其余：
+
+1. **（中，已补）trusted publisher 的 Allowed actions 默认值**：2026-09-03 之后新建的配置默认只允许
+   `npm stage publish`。它从 npm 官方文档原文核对了这条（我复核了同一份文档：单发布者表单里
+   Allowed actions 是必填，多发布者表单的 Note 写明默认值）。已写进 workflow 注释与
+   `docs/development.md`。
+2. **（低，已采纳）发布 job 不该开依赖缓存**：官方示例写着 `never use caching in release builds`。
+   已去掉 `cache: pnpm` 并写明理由与代价。
+3. **（低，已修）「默认超时被改大」不再有覆盖**：见上一节末段与验证里新增的那条变异。它在我已经
+   改完初版之后仍独立复现了 32/32 全绿（`timeoutMs = 5000`），这条是真正有价值的发现。
+4. **（低，已改）`--provenance` 的前提**：官方文档明确 provenance 自动生成、且要求 public 仓库与
+   public 包。已删掉该 flag 并在注释与文档里写明前提。它同时指出：显式 flag 在仓库转 private 时会
+   从冗余变成报错，这一点已写进注释。
+5. **（低，已改）预发布的后果**：RC 会顶掉 `latest`。原计划是「不处理」，现在改成整段跳过，并把
+   「不静默把 RC 当正式版发」写成取舍。
+6. **（低，已改）措辞与边界**：`npm@^11.5.1` 是「在 11.x 内浮动」而不是「故意浮动」（容易被读成
+   跨 major）；OIDC 失败的典型报错按官方 troubleshooting 是 `Unable to authenticate`（ENEEDAUTH），
+   `Access token expired or revoked` 是社区里的另一种口径，两处已并列。
+
+审阅自己声明**未能验证**的（我接受这些边界）：真实 GitHub runner 上的执行（本机无 runner，只有
+pyyaml 解析与人工核对）；`inputs` 上下文在非 dispatch 事件下是否严格为 null（结论基于短路与缺属性
+求值为 null）；真实 OIDC 交换与 `npm publish`；`pnpm/action-setup@v6` 与 `actions/setup-node@v7`
+的 README 原文（沿用 `ci.yml` 先例）；`fetch-depth: 1` 对 provenance 有无影响；D71 里几条外部事实
+（npm 12 已 GA、classic token 撤销日期、granular token 的时间表、better-sqlite3 13 的 `prebuilds/`）
+——这几条我另做了核对：npm 官方 changelog 与 trusted publishing 文档原文都对得上。
+
+一条已知边界（审阅提的，未改）：tag/版本校验只保证「tag 名去一个前导 `v` 后等于该 tag 树里的
+`package.json.version`」，不保证 tag 是 main 的祖先，`0.2.0` 与 `v0.2.0` 两种前缀都接受。也就是说
+有写权限的人可以拿一个不在 main 上的提交发版。建 tag/release 本身就需要写权限，这条边界留着，
+但记在这里。
+
+### 没做的（可选复杂性）
+
+- **不引 semantic-release / changesets**：本步只要「release -> publish」，版本号仍由人写；
+  语义化版本工具是另一件事。
+- **不做发布后附 tarball、也不自动生成 release notes**。
+- **不在 workflow 里自动 bump 版本、不自动 commit 回仓库**：会让「发布了什么」取决于 Actions
+  的写权限。
+- **不做 `next` dist-tag**：预发布目前整段跳过（见上），要支持预发布得处理 dist-tag 与
+  「RC 不该顶 latest」的规则。
+- **不迁 pnpm/setup**：D70 的选择不变。
+- **不给 workflow 加 actionlint 门禁**：本机没有，CI 里加是独立一步。
+- **不改 `docs/intend.md` 里那条 Issue**：该文件只由用户改；本步修掉后那条 Issue 已过时。
