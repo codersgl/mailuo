@@ -50,8 +50,17 @@ export function BoardView({
 
   return (
     <>
-      {/* relative 是插入线的定位基准。 */}
-      <div ref={gridRef} className="relative grid min-w-[780px] grid-cols-3 items-start gap-3.5 px-4 pb-7">
+      {/*
+        relative 是插入线的定位基准。
+        h-full 是「列尾那片空白也能放」的前提：网格之前是内容高（实测 142px，而 main 是 575px），
+        `items-start` 只管列自身的对齐、不会把网格撑高，于是 Column 上的 self-stretch 无处可撑，
+        整列只有内容那么高。height:100% 让网格恒等于 main 的高度，内容超过一屏时由 main 滚动。
+
+        底部留白（pb-7）放在 Column 上而不是这里：padding 属于元素自己的盒子，能被
+        elementFromPoint 命中，父容器的 padding 不能。放在网格上的话，最后 28px 会成死区——
+        指针落在那里时 closest('[data-column-id]') 找不到列，插入线消失、松手不生效。
+      */}
+      <div ref={gridRef} className="relative grid h-full min-w-[780px] grid-cols-3 gap-3.5 px-4">
         {board.columns.map((column) => (
           <Column
             key={column.id}
