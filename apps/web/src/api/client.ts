@@ -1,4 +1,11 @@
-import type { Board, BreadcrumbItem, SearchResponse, TaskRecord, TreeTask } from './types';
+import type {
+  Board,
+  BreadcrumbItem,
+  LayerSchedule,
+  SearchResponse,
+  TaskRecord,
+  TreeTask,
+} from './types';
 
 /**
  * 后端错误统一是 `{ error: string }`（见 docs/spec.md），这里把它变成异常，
@@ -17,7 +24,7 @@ export class ApiError extends Error {
 
 /** 写请求的附加参数。只有需要写库时才传 method 与 body。 */
 interface WriteInit {
-  method: 'POST' | 'PATCH' | 'DELETE';
+  method: 'POST' | 'PATCH' | 'PUT' | 'DELETE';
   body?: unknown;
 }
 
@@ -196,4 +203,33 @@ export function deleteTask(id: string): Promise<void> {
   return request<unknown>(`/api/tasks/${encodeURIComponent(id)}`, { method: 'DELETE' }).then(
     () => undefined,
   );
+}
+
+/**
+ * 读某一层的依赖图与关键路径。
+ *
+ * 依赖编辑（抽屉里的「前置任务」）与后续的图可视化都用这一个接口：要拿到「这个任务当前
+ * 依赖谁」与「谁能加入而不成环」，需要的是整层的边，而不是单条任务的列表，所以不新增
+ * 单任务读接口。`includeArchived` 与其它读接口是同一个开关，但调用方通常固定传 true
+ * （理由见 hooks/useLayerSchedule.ts）。
+ */
+export function fetchLayerSchedule(
+  parentId: string | null,
+  includeArchived: boolean,
+): Promise<LayerSchedule> {
+  const path = parentId === null ? '/api/board/cpm' : `/api/board/${encodeURIComponent(parentId)}/cpm`;
+  return request<LayerSchedule>(withArchived(path, includeArchived));
+}
+
+/**
+ * 整体替换某个任务的前置依赖，空数组表示清空。
+ *
+ * 响应里的 `predecessorIds` 是服务端归一化后的结果（去重 + 按 id 升序）。前端不用它重画界面
+ * ——写成功后统一静默重取（与其它写接口同一个口径，见 docs/decisions.md D35）。
+ */
+export function setTaskDeps(id: string, predecessorIds: string[]): Promise<TaskRecord> {
+  return request<{ task: TaskRecord }>(`/api/tasks/${encodeURIComponent(id)}/deps`, {
+    method: 'PUT',
+    body: { predecessorIds },
+  }).then(readWrittenTask);
 }

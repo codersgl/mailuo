@@ -5,6 +5,7 @@ import {
   deleteTask,
   moveTask,
   setTaskArchived,
+  setTaskDeps,
   updateTaskFields,
 } from '../api/client';
 import type { CreateTaskInput, TaskFieldsPatch } from '../api/client';
@@ -23,6 +24,8 @@ export interface TaskActions {
   /** 移动任务（拖拽落定）。`position` 的口径见 domain/board.ts 的 positionForDrop。 */
   move: (id: string, input: { columnId: string; position: number }) => Promise<WriteResult>;
   setArchived: (id: string, archived: boolean) => Promise<WriteResult>;
+  /** 整体替换前置依赖（空数组表示清空）。集合没变时调用方不该发这次请求。 */
+  setDeps: (id: string, predecessorIds: string[]) => Promise<WriteResult>;
   remove: (id: string) => Promise<DeleteResult>;
 }
 
@@ -57,6 +60,8 @@ export function useTaskActions(refreshAll: () => void): TaskActions {
       move: (id: string, input: { columnId: string; position: number }) =>
         run(() => moveTask(id, input)),
       setArchived: (id: string, archived: boolean) => run(() => setTaskArchived(id, archived)),
+      setDeps: (id: string, predecessorIds: string[]) =>
+        run(() => setTaskDeps(id, predecessorIds)),
       remove: async (id: string): Promise<DeleteResult> => {
         try {
           await deleteTask(id);

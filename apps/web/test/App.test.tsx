@@ -58,11 +58,19 @@ function createFakeApi(
     deleteError?: string;
     /** 非空时所有看板读请求都回这个错误（模拟当前这层看板被别处删掉）。 */
     boardError?: string;
+    /** 非空时所有依赖图读请求都回这个错误（模拟 cpm 接口失败）。 */
+    scheduleError?: string;
+    /** 注入一次依赖写入失败。状态码要跟真后端一致（环 409、已归档 400），文案照真后端写。 */
+    depsError?: { status: number; message: string };
+    /** 初始依赖边，`[前置 id, 后继 id]`。 */
+    deps?: Array<[string, string]>;
   } = {},
 ) {
   const tasks = initial.map((item) => ({ ...item }));
   const calls: RecordedCall[] = [];
   let sequence = 0;
+  /** 依赖边。假后端只维护这个集合，不做 CPM 计算（关键路径的数学由 apps/api 的用例负责）。 */
+  const edges: Array<[string, string]> = options.deps?.map((edge) => [...edge]) ?? [];
   /**
    * 「静默重取」是否要挂起看板读请求。写完之后把看板 GET 卡住，才能观察到这段窗口里界面
    * 长什么样（旧卡片还在、没有「加载中」）。返回放行函数。
@@ -74,6 +82,16 @@ function createFakeApi(
     return () => {
       holdingBoardReads = false;
       for (const release of boardWaiters.splice(0)) release();
+    };
+  }
+  /** 同上，挂起的是依赖图（cpm）读请求，用来观察「图还在路上」时的抽屉。 */
+  let holdingScheduleReads = false;
+  const scheduleWaiters: Array<() => void> = [];
+  function holdScheduleReads(): () => void {
+    holdingScheduleReads = true;
+    return () => {
+      holdingScheduleReads = false;
+      for (const release of scheduleWaiters.splice(0)) release();
     };
   }
 
@@ -103,6 +121,42 @@ function createFakeApi(
           .sort((a, b) => a.orders - b.orders)
           .map(toBoardTask),
       })),
+    };
+  }
+
+  /**
+   * 依赖图。只还原前端真正消费的部分：节点身份（id / title / columnId / archivedAt）与边。
+   * CPM 算出的时间参数这里一律给 0 / false——关键路径的数学由 apps/api 的用例保证，
+   * 前端到第 14 步为止只读 nodes 与 edges（见 apps/web/src/hooks/useLayerSchedule.ts）。
+   */
+  function scheduleFor(parentId: string | null, includeArchived: boolean) {
+    const layer = visible(includeArchived).filter((item) => item.parentId === parentId);
+    const ids = new Set(layer.map((item) => item.id));
+    return {
+      parentId,
+      projectDuration: 0,
+      nodes: COLUMNS.flatMap((column) =>
+        layer
+          .filter((item) => item.columnId === column.id)
+          .sort((a, b) => a.orders - b.orders)
+          .map((item) => ({
+            id: item.id,
+            title: item.title,
+            columnId: item.columnId,
+            durationMinutes: item.durationMinutes,
+            archivedAt: item.archivedAt,
+            earliestStart: 0,
+            earliestFinish: 0,
+            latestStart: 0,
+            latestFinish: 0,
+            slack: 0,
+            critical: false,
+          })),
+      ),
+      // 与真后端一致：两端都要落在这一层、且按「显示已归档」可见，否则这条边不返回。
+      edges: edges
+        .filter(([predecessorId, successorId]) => ids.has(predecessorId) && ids.has(successorId))
+        .map(([predecessorId, successorId]) => ({ predecessorId, successorId, critical: false })),
     };
   }
 
@@ -153,6 +207,21 @@ function createFakeApi(
     };
 
     if (method === 'GET' && path === '/api/board') return readBoard(null);
+    // 依赖图。`/api/board/cpm` 必须排在 `/api/board/:parentId` 之前——真后端也是这个注册顺序，
+    // 放反了的话 cpm 会被当成 parentId 去查任务，得到 404。
+    if (method === 'GET' && (path === '/api/board/cpm' || path.endsWith('/cpm'))) {
+      if (options.scheduleError !== undefined) return json({ error: options.scheduleError }, 404);
+      const parentId =
+        path === '/api/board/cpm' ? null : id('/api/board/').replace(/\/cpm$/, '');
+      if (parentId !== null && !tasks.some((item) => item.id === parentId)) {
+        return json({ error: '任务不存在' }, 404);
+      }
+      const payload = scheduleFor(parentId, includeArchived);
+      if (!holdingScheduleReads) return json(payload);
+      return new Promise<Response>((resolve) =>
+        scheduleWaiters.push(() => resolve(json(payload))),
+      );
+    }
     if (method === 'GET' && path === '/api/tree') return json({ tasks: tree(includeArchived) });
     if (method === 'GET' && path.startsWith('/api/board/')) {
       const parentId = id('/api/board/');
@@ -221,6 +290,65 @@ function createFakeApi(
       return json(toBoardTask(created), 201);
     }
 
+    /**
+     * 写前置依赖（整体替换）。按真后端的顺序与状态码还原：
+     * 入参形状（重复项 400）→ 任务存在 404 → 任务未归档 400 → 依赖自己 409 →
+     * 逐个前置（不存在 404 / 跨层 400 / 已归档 400）→ 成环 409。
+     * 文案照抄 apps/api/src/routes/tasks.ts，免得测试把一个不存在的文案当成契约。
+     *
+     * 刻意**没实现**的真行为（用到时先补这里，别让它悄悄给出不同结论）：
+     * - 「依赖集合没变就不写库、不刷 updated_at」；
+     * - cpm 在层内有环时抛 DependencyCycleError → 500（这里照常返回一张图）。
+     */
+    if (method === 'PUT' && path.endsWith('/deps')) {
+      if (options.depsError !== undefined) {
+        return json({ error: options.depsError.message }, options.depsError.status);
+      }
+      const requested = body.predecessorIds as string[];
+      if (new Set(requested).size !== requested.length) {
+        return json({ error: '前置任务不能重复' }, 400);
+      }
+      const target = id('/api/tasks/').replace(/\/deps$/, '');
+      const item = tasks.find((candidate) => candidate.id === target);
+      if (!item) return json({ error: '任务不存在' }, 404);
+      if (item.archivedAt !== null) return json({ error: '任务已归档' }, 400);
+      // 真后端在逐个检查之前先对整份列表查一次自己：所以 [不存在, 自己] 这条组合回 409 而不是 404。
+      if (requested.includes(target)) return json({ error: '依赖形成环: ' + target }, 409);
+      for (const predecessorId of requested) {
+        const predecessor = tasks.find((candidate) => candidate.id === predecessorId);
+        if (!predecessor) return json({ error: `前置任务不存在: ${predecessorId}` }, 404);
+        if (predecessor.parentId !== item.parentId) {
+          return json({ error: `前置任务与目标任务不同层: ${predecessorId}` }, 400);
+        }
+        if (predecessor.archivedAt !== null) {
+          return json({ error: `前置任务已归档: ${predecessorId}` }, 400);
+        }
+      }
+
+      // 环判定：顺着 successor 方向从 target 走到的任务，都不能再加成本任务的前置。
+      const reachable = new Set<string>();
+      const stack = edges
+        .filter(([predecessorId]) => predecessorId === target)
+        .map(([, successorId]) => successorId);
+      while (stack.length > 0) {
+        const current = stack.pop() as string;
+        if (reachable.has(current)) continue;
+        reachable.add(current);
+        for (const [predecessorId, successorId] of edges) {
+          if (predecessorId === current) stack.push(successorId);
+        }
+      }
+      const cyclic = requested.find((predecessorId) => reachable.has(predecessorId));
+      if (cyclic !== undefined) return json({ error: `依赖形成环: ${cyclic}` }, 409);
+
+      for (let index = edges.length - 1; index >= 0; index -= 1) {
+        if (edges[index]?.[1] === target) edges.splice(index, 1);
+      }
+      for (const predecessorId of requested) edges.push([predecessorId, target]);
+      // 与真后端一致：响应里的 predecessorIds 去重后按 id 升序。
+      return json({ task: toBoardTask(item), predecessorIds: [...requested].sort() });
+    }
+
     if (method === 'PATCH' && path.endsWith('/archive')) {
       if (options.archiveError !== undefined) return json({ error: options.archiveError }, 400);
       const item = tasks.find((candidate) => candidate.id === id('/api/tasks/').replace(/\/archive$/, ''));
@@ -251,7 +379,7 @@ function createFakeApi(
     return json({ error: '任务不存在' }, 404);
   });
 
-  return { calls, tasks, holdBoardReads };
+  return { calls, tasks, holdBoardReads, holdScheduleReads };
 }
 
 const fixtures: FakeTask[] = [
@@ -503,6 +631,228 @@ describe('App 增删改', () => {
     expect(api.calls.find((call) => call.method === 'PATCH')?.body).toMatchObject({
       title: '支付对账 v3',
     });
+  });
+
+  it('前置任务：同层候选按列分组，自己不在其中，已归档的候选点不动', async () => {
+    createFakeApi(fixtures);
+    render(<App />);
+    await boardArea().findByText('支付对账');
+    await openEditor('支付对账');
+
+    // 根看板这一层里，除自己以外还有 a（进行中）与 z（待办，已归档）。
+    const candidate = dialog().getByRole('checkbox', { name: /重构登录/ }) as HTMLInputElement;
+    expect(candidate.checked).toBe(false);
+    expect(candidate.disabled).toBe(false);
+
+    const archived = dialog().getByRole('checkbox', { name: /旧版导出/ }) as HTMLInputElement;
+    expect(archived.disabled).toBe(true);
+    expect(dialog().getByText('已归档')).toBeTruthy();
+
+    expect(dialog().queryByRole('checkbox', { name: /支付对账/ })).toBeNull();
+    expect(dialog().getByText('待办')).toBeTruthy();
+    expect(dialog().getByText('进行中')).toBeTruthy();
+  });
+
+  it('前置任务：勾选后保存，PUT 带上新的集合', async () => {
+    const api = createFakeApi(fixtures);
+    render(<App />);
+    await boardArea().findByText('支付对账');
+    await openEditor('支付对账');
+
+    fireEvent.click(dialog().getByRole('checkbox', { name: /重构登录/ }));
+    expect(dialog().getByText('已选 1 项')).toBeTruthy();
+
+    fireEvent.click(dialog().getByRole('button', { name: '保存' }));
+    expect(await dialog().findByText('已保存')).toBeTruthy();
+
+    const put = api.calls.find((call) => call.method === 'PUT');
+    expect(put?.url).toBe('/api/tasks/b/deps');
+    expect(put?.body).toEqual({ predecessorIds: ['a'] });
+  });
+
+  it('前置任务的勾选是草稿：点取消不发 PUT，重新打开回到服务端集合', async () => {
+    const api = createFakeApi(fixtures);
+    render(<App />);
+    await boardArea().findByText('支付对账');
+    await openEditor('支付对账');
+
+    fireEvent.click(dialog().getByRole('checkbox', { name: /重构登录/ }));
+    fireEvent.click(dialog().getByRole('button', { name: '取消' }));
+
+    expect(api.calls.some((call) => call.method === 'PUT')).toBe(false);
+
+    await openEditor('支付对账');
+    expect(
+      (dialog().getByRole('checkbox', { name: /重构登录/ }) as HTMLInputElement).checked,
+    ).toBe(false);
+  });
+
+  it('只改标题时不会发依赖写入：集合没变就不碰它', async () => {
+    const api = createFakeApi(fixtures, { deps: [['a', 'b']] });
+    render(<App />);
+    await boardArea().findByText('支付对账');
+    await openEditor('支付对账');
+    // 服务端已有这条前置：草稿从它起步，勾选框是选中的。
+    expect(
+      (dialog().getByRole('checkbox', { name: /重构登录/ }) as HTMLInputElement).checked,
+    ).toBe(true);
+
+    fireEvent.change(dialog().getByDisplayValue('支付对账'), { target: { value: '支付对账 v2' } });
+    fireEvent.click(dialog().getByRole('button', { name: '保存' }));
+
+    expect(await dialog().findByText('已保存')).toBeTruthy();
+    expect(api.calls.some((call) => call.method === 'PUT')).toBe(false);
+  });
+
+  it('已归档的前置会被解除，而且在点保存之前就说明', async () => {
+    // 归档不清理依赖（见 D48 的已知缺口）：z 已归档，却仍挂在 b 的前置上。
+    const api = createFakeApi(fixtures, { deps: [['z', 'b']] });
+    render(<App />);
+    await boardArea().findByText('支付对账');
+    await openEditor('支付对账');
+
+    expect(dialog().getByText('有 1 个前置任务已归档，保存后这条依赖会被解除')).toBeTruthy();
+    expect(dialog().getByText('已选 0 项')).toBeTruthy();
+
+    fireEvent.click(dialog().getByRole('button', { name: '保存' }));
+    expect(await dialog().findByText('已保存')).toBeTruthy();
+    expect(api.calls.find((call) => call.method === 'PUT')?.body).toEqual({ predecessorIds: [] });
+  });
+
+  it('会形成环的候选在点之前就禁用，并写明原因', async () => {
+    // b 是 a 的前置，所以编辑 b 时 a 不能再加回来（那会绕成 b → a → b）。
+    createFakeApi(fixtures, { deps: [['b', 'a']] });
+    render(<App />);
+    await boardArea().findByText('支付对账');
+    await openEditor('支付对账');
+
+    expect(
+      (dialog().getByRole('checkbox', { name: /重构登录/ }) as HTMLInputElement).disabled,
+    ).toBe(true);
+    expect(dialog().getByText('会形成环：它已经依赖本任务')).toBeTruthy();
+  });
+
+  it('字段成功、依赖失败时，文案说清是哪一半没保存', async () => {
+    // 注入真后端那种拒绝：文案与状态码都照 routes/tasks.ts 写。
+    const api = createFakeApi(fixtures, {
+      depsError: { status: 409, message: '依赖形成环: a' },
+    });
+    render(<App />);
+    await boardArea().findByText('支付对账');
+    await openEditor('支付对账');
+
+    fireEvent.change(dialog().getByDisplayValue('支付对账'), { target: { value: '支付对账 v2' } });
+    fireEvent.click(dialog().getByRole('checkbox', { name: /重构登录/ }));
+    fireEvent.click(dialog().getByRole('button', { name: '保存' }));
+
+    expect(
+      await dialog().findByText('标题、描述、工期已保存；依赖未保存：依赖形成环: a'),
+    ).toBeTruthy();
+    // 字段确实已经落库：卡片上是新标题，而不是「整次保存都失败」的假象。
+    expect(await boardArea().findByText('支付对账 v2')).toBeTruthy();
+    expect(api.calls.find((call) => call.method === 'PATCH')?.body).toMatchObject({
+      title: '支付对账 v2',
+    });
+  });
+
+  it('草稿建立后前置被归档：保存不再带着它去撞 400，而是把它解除', async () => {
+    // 审阅抓到的阻断项：草稿里那一项变成「已勾选 + 点不动」时，PUT 会被整份拒绝，
+    // 而用户在抽屉里没有任何办法去掉它。
+    const api = createFakeApi(fixtures, { deps: [['a', 'b']] });
+    render(<App />);
+    await boardArea().findByText('支付对账');
+    await openEditor('支付对账');
+
+    // 制造一份非 null 的草稿：取消再勾上，草稿就固定下来了（此后跟着服务端走的那份不再更新）。
+    fireEvent.click(dialog().getByRole('checkbox', { name: /重构登录/ }));
+    fireEvent.click(dialog().getByRole('checkbox', { name: /重构登录/ }));
+    expect(dialog().getByText('已选 1 项')).toBeTruthy();
+
+    // 抽屉开着时从卡片菜单归档 a。遮罩只挡指针、不挡程序化点击，而这条路径在键盘上也走得到
+    // （Tab 绕回看板 + 回车），所以它不是测试里才有的操作。
+    await openCardMenu('重构登录');
+    fireEvent.click(boardArea().getByRole('button', { name: '归档' }));
+
+    // 图重取后那一项变成不可选；界面上它不该再显示成已勾选，保存也不该带它。
+    expect(await dialog().findByText('有 1 个前置任务已归档，保存后这条依赖会被解除')).toBeTruthy();
+    expect(dialog().getByText('已选 0 项')).toBeTruthy();
+    const archivedRow = dialog().getByRole('checkbox', { name: /重构登录/ }) as HTMLInputElement;
+    expect(archivedRow.disabled).toBe(true);
+    expect(archivedRow.checked).toBe(false);
+
+    fireEvent.click(dialog().getByRole('button', { name: '保存' }));
+    expect(await dialog().findByText('已保存')).toBeTruthy();
+    const puts = api.calls.filter((call) => call.method === 'PUT');
+    expect(puts[puts.length - 1]?.body).toEqual({ predecessorIds: [] });
+  });
+
+  it('保存依赖后依赖图会重取，不会拿着旧图去禁用候选', async () => {
+    const api = createFakeApi(fixtures);
+    render(<App />);
+    await boardArea().findByText('支付对账');
+    await openEditor('支付对账');
+
+    const cpmReads = () =>
+      api.calls.filter((call) => call.method === 'GET' && call.url.includes('/cpm')).length;
+    const before = cpmReads();
+
+    fireEvent.click(dialog().getByRole('checkbox', { name: /重构登录/ }));
+    fireEvent.click(dialog().getByRole('button', { name: '保存' }));
+    expect(await dialog().findByText('已保存')).toBeTruthy();
+
+    await waitFor(() => expect(cpmReads()).toBeGreaterThan(before));
+  });
+
+  it('依赖图读失败后点「重试」会重新请求', async () => {
+    const api = createFakeApi(fixtures, { scheduleError: '任务不存在' });
+    render(<App />);
+    await boardArea().findByText('支付对账');
+    await openEditor('支付对账');
+    await dialog().findByText(/前置任务加载失败/);
+
+    const cpmReads = () =>
+      api.calls.filter((call) => call.method === 'GET' && call.url.includes('/cpm')).length;
+    const before = cpmReads();
+
+    fireEvent.click(dialog().getByRole('button', { name: '重试' }));
+
+    await waitFor(() => expect(cpmReads()).toBeGreaterThan(before));
+  });
+
+  it('依赖图还在路上时保存字段：不发 PUT，也不会拿空草稿清空依赖', async () => {
+    const api = createFakeApi(fixtures, { deps: [['a', 'b']] });
+    // 从页面加载就卡住 cpm：抽屉打开时图仍在路上。
+    const release = api.holdScheduleReads();
+    render(<App />);
+    await boardArea().findByText('支付对账');
+    await openEditor('支付对账');
+
+    expect(await dialog().findByText('前置任务：加载中…')).toBeTruthy();
+    expect(dialog().queryByRole('checkbox')).toBeNull();
+
+    fireEvent.change(dialog().getByDisplayValue('支付对账'), { target: { value: '支付对账 v2' } });
+    fireEvent.click(dialog().getByRole('button', { name: '保存' }));
+
+    expect(await dialog().findByText('已保存')).toBeTruthy();
+    expect(api.calls.some((call) => call.method === 'PUT')).toBe(false);
+    release();
+  });
+
+  it('依赖图读失败不挡字段编辑：区块给出重试，保存也不动依赖', async () => {
+    const api = createFakeApi(fixtures, { scheduleError: '任务不存在' });
+    render(<App />);
+    await boardArea().findByText('支付对账');
+    await openEditor('支付对账');
+
+    expect(await dialog().findByText(/前置任务加载失败：任务不存在/)).toBeTruthy();
+    // 拿不到服务端前置时不画候选：一个空的草稿照发出去等于清空已有依赖。
+    expect(dialog().queryByRole('checkbox')).toBeNull();
+
+    fireEvent.change(dialog().getByDisplayValue('支付对账'), { target: { value: '支付对账 v2' } });
+    fireEvent.click(dialog().getByRole('button', { name: '保存' }));
+
+    expect(await dialog().findByText('已保存')).toBeTruthy();
+    expect(api.calls.some((call) => call.method === 'PUT')).toBe(false);
   });
 
   it('写后是静默重取：新数据路上时旧卡片留在原地，不闪「加载中」', async () => {

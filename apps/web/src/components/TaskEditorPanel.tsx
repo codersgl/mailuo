@@ -1,5 +1,6 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import type { FormEvent } from 'react';
+import { buildCandidateGroups, readDependencyEditing, sameDependencySet } from '../domain/layerDeps';
 import { cx } from '../lib/cx';
 import {
   MAX_DURATION_MINUTES,
@@ -10,8 +11,10 @@ import {
 } from '../lib/format';
 import type { DurationParts } from '../lib/format';
 import type { TaskFieldsPatch } from '../api/client';
-import type { BoardTask } from '../api/types';
+import type { BoardTask, ColumnRecord, LayerSchedule } from '../api/types';
+import type { AsyncState } from '../hooks/useAsync';
 import type { WriteResult } from '../hooks/useTaskActions';
+import { DependencySection } from './DependencySection';
 
 const PRIMARY_BUTTON =
   'h-[26px] rounded-[5px] bg-accent px-2.5 text-[12px] text-on-fill hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-45';
@@ -27,7 +30,7 @@ const QUICK_BUTTON =
 const DURATION_INVALID_HINT = `工期必须是 0 到 ${MAX_DURATION_MINUTES / MINUTES_PER_DAY} 天之间的整数`;
 
 /**
- * 任务详情抽屉（定版原型 B）。**只做字段编辑**：标题、描述、工期。
+ * 任务详情抽屉（定版原型 B）。做字段编辑：标题、描述、工期，以及前置任务。
  * 归档与删除在卡片的「⋯」菜单里（用户的判断：破坏性与状态类操作不该和「改字段」同处一屏）。
  *
  * 面板打开的是当前看板里某张卡片对应的任务，也就是当前看板所在任务的子任务；删除落在卡片菜单上
@@ -36,15 +39,34 @@ const DURATION_INVALID_HINT = `工期必须是 0 到 ${MAX_DURATION_MINUTES / MI
  *
  * 组件内保存着表单的草稿副本，靠父组件的 `key={task.id}` 在换任务时整体重置，
  * 不需要用一个 effect 去同步 props（保存成功后的归一化是显式回写，见 handleSave）。
+ *
+ * 依赖（第 14 步）与字段共用底部的「保存」，但它们是两次写：依赖只有变了才发 PUT；
+ * 字段那次成功、依赖那次失败时，错误文案必须说清是哪一半（见 handleSave）。
  */
+/** 抽屉里「前置任务」区块要用到的东西。字段编辑与依赖编辑共用底部的「保存」。 */
+export interface DependencyEditor {
+  /**
+   * 整层依赖图（`GET /api/board[/:parentId]/cpm`）。还没到位时区块只显示状态，
+   * 而且**不会**提交依赖：一份没读到服务端前置的草稿照发出去，等于把已有依赖清空。
+   */
+  schedule: AsyncState<LayerSchedule>;
+  onRetry: () => void;
+  /** 这一层的列，只用来查列名；候选任务本身来自依赖图的节点。 */
+  columns: readonly ColumnRecord[];
+  /** 只在依赖集合真的变了（或要清理已归档的前置）时才被调用。 */
+  onSave: (predecessorIds: string[]) => Promise<WriteResult>;
+}
+
 export function TaskEditorPanel({
   task,
   onClose,
   onSave,
+  dependency,
 }: {
   task: BoardTask;
   onClose: () => void;
   onSave: (patch: TaskFieldsPatch) => Promise<WriteResult>;
+  dependency: DependencyEditor;
 }) {
   const [title, setTitle] = useState(task.title);
   const [description, setDescription] = useState(task.description);
@@ -53,6 +75,25 @@ export function TaskEditorPanel({
   const [error, setError] = useState<string | null>(null);
   const [saved, setSaved] = useState(false);
   const panelRef = useRef<HTMLElement>(null);
+
+  const schedule = dependency.schedule;
+  /**
+   * 依赖的集合口径（谁是当前前置、谁不能选）。`null` 表示图还没到位，此时依赖区块只显示状态。
+   * 用 useMemo：图读回来之后它才可能变，输入标题引起的每轮重渲染不必重算可达集合。
+   */
+  const editingState = useMemo(
+    () =>
+      schedule.status === 'ready'
+        ? readDependencyEditing(task.id, schedule.data.edges, schedule.data.nodes)
+        : null,
+    [schedule, task.id],
+  );
+  /**
+   * 依赖草稿。`null` 表示「跟着服务端走」，用户第一次勾选才产生一份草稿。
+   * 候选列表只在图到位后才画得出来，所以不存在「拿空草稿起步」的时机。
+   */
+  const [draftDeps, setDraftDeps] = useState<string[] | null>(null);
+  const selectedDeps = draftDeps ?? editingState?.selectedIds ?? [];
 
   // 打开就把焦点收进抽屉：否则焦点留在遮罩后面的「⋯」按钮上，Tab 要先走完整块看板才轮到表单。
   // 这里只保证「Tab 从抽屉内部开始」，不做完整的焦点陷阱——顶栏在遮罩之外仍然可点，
@@ -85,6 +126,62 @@ export function TaskEditorPanel({
     setDuration((current) => ({ ...current, [part]: value }));
   }
 
+  /** 勾选或取消一项前置。草稿第一次改动时从服务端的前置集合起步。 */
+  function toggleDependency(taskId: string, selected: boolean) {
+    markEdited();
+    setDraftDeps((current) => {
+      const base = current ?? editingState?.selectedIds ?? [];
+      return selected ? [...base, taskId] : base.filter((id) => id !== taskId);
+    });
+  }
+
+  /**
+   * 草稿里**能提交**的那些。
+   *
+   * 草稿建立之后图还会变：别的入口把某个前置归档了、或者关系变动让某一项变成环上的一环。
+   * 这两种 id 后端都是整份拒绝（400 / 409），把它们留在提交里会让这个任务的保存**永远失败**，
+   * 而界面上那一行是「已勾选 + 点不动」——用户在抽屉里没法把它去掉（审阅抓到的阻断项）。
+   * 所以按禁用原因剔掉：归档那条正好落进「保存时解除失效依赖」的既有语义。
+   */
+  const savableDeps =
+    editingState === null
+      ? selectedDeps
+      : selectedDeps.filter((id) => !editingState.blockedReasonById.has(id));
+
+  /**
+   * 这次保存要不要连依赖一起提交。
+   *
+   * 两个来源都算「变了」：可提交的草稿与服务端的前置集合不同；以及存在已归档的前置——它们不能
+   * 写回服务端（PUT 会整份拒绝），草稿里本就不含它们，于是这次保存顺带把失效的那条依赖解除。
+   */
+  const depsNeedSave =
+    editingState !== null &&
+    (editingState.archivedPredecessorIds.length > 0 ||
+      !sameDependencySet(savableDeps, editingState.selectedIds));
+
+  /** 候选列表。图没到位（editingState 为 null）时是空的，区块那时也不画。 */
+  const candidateGroups =
+    schedule.status === 'ready' && editingState !== null
+      ? buildCandidateGroups(
+          schedule.data.nodes,
+          dependency.columns,
+          task.id,
+          editingState.blockedReasonById,
+          savableDeps,
+        )
+      : [];
+
+  /**
+   * 第二次写：依赖。返回错误文案，null 表示成功或本来不需要写。
+   * 字段那一次已经落库了，所以这里失败不能只说「保存失败」——用户会以为什么都没存上、
+   * 再点一次，而实际上标题已经改掉了。依赖草稿特意留着，改完可以直接重试。
+   */
+  async function saveDependencies(): Promise<string | null> {
+    if (!depsNeedSave) return null;
+    const result = await dependency.onSave([...savableDeps]);
+    return result.ok ? null : `标题、描述、工期已保存；依赖未保存：${result.message}`;
+  }
+
   async function handleSave() {
     if (durationInput.kind === 'invalid' || !canSave) return;
 
@@ -96,8 +193,8 @@ export function TaskEditorPanel({
       // 三段全空表示改回「未估工期」（见 docs/decisions.md D32）。
       durationMinutes: durationInput.kind === 'unset' ? null : durationInput.value,
     });
-    setBusy(false);
     if (!result.ok) {
+      setBusy(false);
       setError(result.message);
       return;
     }
@@ -106,6 +203,15 @@ export function TaskEditorPanel({
     setTitle(result.task.title);
     setDescription(result.task.description);
     setDuration(splitDuration(result.task.durationMinutes));
+
+    // busy 一直保持到两次写都结束：中途放开会让用户改到一份已经发出去的草稿，
+    // 界面显示成已改、实际没提交（见 DependencySection 的 busy 说明）。
+    const depsFailure = await saveDependencies();
+    setBusy(false);
+    if (depsFailure !== null) {
+      setError(depsFailure);
+      return;
+    }
     setSaved(true);
   }
 
@@ -243,6 +349,33 @@ export function TaskEditorPanel({
               </div>
               <p className="mt-1 text-[11px] text-ink-3">1 天 = 480 分钟（8 小时工作制）</p>
             </fieldset>
+
+            {/*
+              依赖区块。加载中与失败只影响这一块：上面的字段照样能改、能保存，依赖那一次写会被跳过
+              （depsNeedSave 在 editingState 为 null 时恒为 false），不会拿一份没读到的草稿去覆盖服务端。
+            */}
+            <div className="mt-3">
+              {schedule.status === 'loading' && (
+                <p className="text-[11.5px] text-ink-3">前置任务：加载中…</p>
+              )}
+              {schedule.status === 'failed' && (
+                <p className="text-[11.5px] text-danger">
+                  前置任务加载失败：{schedule.message}
+                  <button type="button" onClick={dependency.onRetry} className="ml-1.5 underline">
+                    重试
+                  </button>
+                </p>
+              )}
+              {editingState !== null && (
+                <DependencySection
+                  groups={candidateGroups}
+                  selectedCount={savableDeps.length}
+                  archivedPredecessorCount={editingState.archivedPredecessorIds.length}
+                  busy={busy}
+                  onToggle={toggleDependency}
+                />
+              )}
+            </div>
 
             {/* 保存与失败都只改这一小块文字，用 aria-live 让读屏也听得到。 */}
             <div aria-live="polite">

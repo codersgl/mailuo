@@ -34,6 +34,18 @@ export function formatDuration(durationMinutes: number | null): string {
 }
 
 /**
+ * 工期文案的短形式：`1 天 4 小时` / `未估` / `瞬时`。
+ *
+ * 依赖候选行的右侧只有几十像素，`formatDuration` 那种「工期 」前缀在这里会挤掉标题。
+ * 两种形式共用下面同一套换算，不会出现「卡片说 1 天 4 小时、候选行说 5 小时」的不一致。
+ */
+export function formatDurationShort(durationMinutes: number | null): string {
+  if (durationMinutes === null) return '未估';
+  if (durationMinutes <= 0) return '瞬时';
+  return groupMinutes(durationMinutes);
+}
+
+/**
  * 工期是否已估。0 也算已估：它表示瞬时任务，而不是「还没填」。
  * 注意契约外的负数也会返回 true（它同样不是 null），与 D32 的三态有一处偏差——
  * 但接口 schema 不允许负数，界面上也不会因此显示错的东西。
