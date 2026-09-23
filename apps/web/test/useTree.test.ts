@@ -3,7 +3,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { useTree } from '../src/hooks/useTree';
 import type { TreeTask } from '../src/api/types';
 
-/** 文件树是否带归档由后端的查询参数决定，所以这里断言的是真实的请求 URL，而不是本地过滤结果。 */
+/** 任务树是否带归档由后端的查询参数决定，所以这里断言的是真实的请求 URL，而不是本地过滤结果。 */
 
 let requested: string[] = [];
 

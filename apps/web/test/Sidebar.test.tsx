@@ -5,7 +5,7 @@ import { Sidebar } from '../src/components/Sidebar';
 import type { TreeTask } from '../src/api/types';
 
 /**
- * 文件树的行为：层级与徽标、点名字导航、三角只折叠、归档样式与开关、
+ * 任务树的行为：层级与徽标、点名字导航、三角只折叠、归档样式与开关、
  * 「当前看板被折叠在祖先里时自动展开」、写操作后的静默重取、以及本地偏好坏掉时的兜底。
  *
  * 开关本身由 BoardPage 持有（看板列也认它），所以这里只测「受控显示 + 回调」，
@@ -169,7 +169,7 @@ describe('Sidebar', () => {
     rerender(<Sidebar {...props} refreshToken={1} />);
     await waitFor(() => expect(resolvers).toHaveLength(2));
 
-    // 第二次请求还在飞：树不能被清成加载态，否则写一次标题文件树就会闪一下。
+    // 第二次请求还在飞：树不能被清成加载态，否则改一次标题、任务树就会闪一下。
     expect(screen.queryByText('加载中…')).toBeNull();
     expect(screen.getByText('重构登录')).toBeTruthy();
 
@@ -271,11 +271,11 @@ describe('Sidebar', () => {
   describe('面板收起', () => {
     /**
      * 面板本体。`aside` 在 ARIA 里是 complementary 角色，`getByLabelText` 只认表单控件，
-     * 所以用角色 + 名字取。名字固定是「文件树」，不随收起状态变。
+     * 所以用角色 + 名字取。名字固定是「任务树」，不随收起状态变。
      */
-    const panel = () => screen.getByRole('complementary', { name: '文件树' });
+    const panel = () => screen.getByRole('complementary', { name: '任务树' });
     /** 收起按钮（展开与收起共用同一个，名字随状态变）。 */
-    const toggle = () => screen.getByRole('button', { name: /(收起|展开)文件树/ });
+    const toggle = () => screen.getByRole('button', { name: /(收起|展开)任务树/ });
     /**
      * 树在不在无障碍树里。不用 `closest('[hidden]')` 这种结构判断，而是问测试库
      * 「还能不能按角色拿到树里的按钮」——这正是读屏与 Tab 顺序关心的问题。

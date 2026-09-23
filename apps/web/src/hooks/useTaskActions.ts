@@ -36,7 +36,7 @@ export interface TaskActions {
  * 卡片的「⋯」菜单），各自要把错误显示在自己的位置上，用一个共享的 error state 会串台
  * （面板的错误冒到新建行上）。
  *
- * 成功后统一调用 `refreshAll()` 静默重取看板、文件树与面包屑，而不是拿写响应里的
+ * 成功后统一调用 `refreshAll()` 静默重取看板、任务树与面包屑，而不是拿写响应里的
  * `columnTasks` 做整列替换（见 docs/decisions.md D35）。
  */
 export function useTaskActions(refreshAll: () => void): TaskActions {

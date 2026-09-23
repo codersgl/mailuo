@@ -46,7 +46,7 @@ export interface Board {
 }
 
 /**
- * 文件树里的一个节点（`GET /api/tree`）。只有建树需要的字段：描述、工期、
+ * 任务树里的一个节点（`GET /api/tree`）。只有建树需要的字段：描述、工期、
  * 子任务计数都在点进它的看板后由看板接口给出；树上的进度徽标是用这份列表就地算的
  * （见 lib/tree.ts 的 countChildren）。
  */

@@ -104,7 +104,7 @@ export function TaskCard({
       data-task-id={task.id}
       className={cx(
         'relative rounded-[5px] border bg-surface hover:border-accent-border',
-        // 归档卡片用虚线边框，和文件树里的归档节点同一套语言。
+        // 归档卡片用虚线边框，和任务树里的归档节点同一套语言。
         archived ? 'border-dashed border-line-strong' : 'border-line',
         // 拖动中的卡片留在原位当占位：内容淡下去，位置不动，免得列里突然空一格。
         dragging && 'opacity-40',

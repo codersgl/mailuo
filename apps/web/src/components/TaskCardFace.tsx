@@ -55,7 +55,7 @@ export function TaskCardFace({ task, archived }: { task: BoardTask; archived: bo
         >
           {formatDuration(task.durationMinutes)}
         </span>
-        {/* 归档标记跟在工期后面（与文件树一样靠右），不挤占标题那一行和右上角的「⋯」。 */}
+        {/* 归档标记跟在工期后面（与任务树一样靠右），不挤占标题那一行和右上角的「⋯」。 */}
         {archived && (
           <span className="flex-none rounded-[4px] border border-dashed border-line-strong px-1 text-[10px] italic leading-[14px] text-ink-3">
             归档

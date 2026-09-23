@@ -4,7 +4,7 @@ import { App } from '../src/App';
 import type { Board, BoardTask, TreeTask } from '../src/api/types';
 
 /**
- * 端到端过一遍：URL → 哪一层看板 → 面包屑与文件树选中态 → 点卡片进下一层，
+ * 端到端过一遍：URL → 哪一层看板 → 面包屑与任务树选中态 → 点卡片进下一层，
  * 以及本步新增的增删改链路（新建、保存、归档、删除，写后整页静默重取）。
  *
  * 这里放了一个最小的假后端：任务放在内存数组里，写接口真的改它，读接口从它算。
@@ -389,7 +389,7 @@ const fixtures: FakeTask[] = [
   task({ id: 'z', title: '旧版导出', archivedAt: '2026-09-22T00:00:00.000Z' }),
 ];
 
-/** 看板区是 main；文件树在 aside 里，同名任务（面包屑、树、卡片、抽屉）用 within 区分。 */
+/** 看板区是 main；任务树在 aside 里，同名任务（面包屑、树、卡片、抽屉）用 within 区分。 */
 function boardArea() {
   return within(document.querySelector('main')!);
 }
@@ -437,7 +437,7 @@ describe('App 导航', () => {
     // 根看板：面包屑只有「根看板」一段，且是当前位置。
     expect(breadcrumbNav().getByText('根看板').getAttribute('aria-current')).toBe('page');
     expect(await boardArea().findByText('支付对账')).toBeTruthy();
-    // 文件树同时加载出来（同名任务在卡片与树里各有一份，所以按 aside 取）。
+    // 任务树同时加载出来（同名任务在卡片与树里各有一份，所以按 aside 取）。
     const tree = within(document.querySelector('aside')!);
     expect(await tree.findByText('重构登录')).toBeTruthy();
 
@@ -501,7 +501,7 @@ describe('App 增删改', () => {
 
     // 一次没有位移的按下：真实浏览器里这就是「点卡片进子看板」，不产生拖拽。
     // 回归用例：这条路径以前会把「指针还按着」的标记留在原地，之后每次写操作都不再刷新看板，
-    // 于是新建出来的任务只出现在文件树里（树走的是另一条刷新路径），看板一直停在旧数据上。
+    // 于是新建出来的任务只出现在任务树里（树走的是另一条刷新路径），看板一直停在旧数据上。
     fireEvent.pointerDown(card, { button: 0, clientX: 100, clientY: 100 });
     fireEvent.pointerUp(document, { clientX: 100, clientY: 100 });
     fireEvent.click(card);
@@ -595,7 +595,7 @@ describe('App 增删改', () => {
     expect(boardCalls()).toBe(afterFlush);
   });
 
-  it('新建任务：Enter 提交后卡片出现，文件树也重取一次', async () => {
+  it('新建任务：Enter 提交后卡片出现，任务树也重取一次', async () => {
     const api = createFakeApi(fixtures);
     render(<App />);
     await boardArea().findByText('支付对账');

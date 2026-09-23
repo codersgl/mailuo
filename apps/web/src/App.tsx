@@ -44,9 +44,9 @@ export function App() {
 }
 
 /**
- * 一个看板页：顶栏 + 左侧文件树 + 右侧看板 + 任务详情抽屉。
+ * 一个看板页：顶栏 + 左侧任务树 + 右侧看板 + 任务详情抽屉。
  *
- * 这一层是「页面数据」的唯一持有者：看板、文件树（数据在 Sidebar 内部取，靠 refreshToken 触发）、
+ * 这一层是「页面数据」的唯一持有者：看板、任务树（数据在 Sidebar 内部取，靠 refreshToken 触发）、
  * 面包屑都在这里被安排重取，写操作因此只有一个刷新入口。
  */
 function BoardPage({
@@ -56,12 +56,12 @@ function BoardPage({
   boardId: string | null;
   onNavigate: (boardId: string | null) => void;
 }) {
-  // 「显示已归档」总开关：看板列与文件树都认它。只存前端，不落库（见 docs/spec.md 的「归档」）。
+  // 「显示已归档」总开关：看板列与任务树都认它。只存前端，不落库（见 docs/spec.md 的「归档」）。
   const [showArchived, setShowArchived] = usePersistentState(SHOW_ARCHIVED_KEY, false, isBoolean);
   /**
    * 主区正在看哪一种视图：看板列，还是这一层的依赖图（第三批）。
-   * 只存在前端且不落盘：它是「这一次在看什么」，不是一项偏好（与文件树的折叠偏好不同）。
-   * 换一层看板时不重置——在依赖图里顺着文件树往下看，是正常用法。
+   * 只存在前端且不落盘：它是「这一次在看什么」，不是一项偏好（与任务树的折叠偏好不同）。
+   * 换一层看板时不重置——在依赖图里顺着任务树往下看，是正常用法。
    */
   const [view, setView] = useState<ViewMode>('board');
   const board = useBoard(boardId, showArchived);
@@ -128,15 +128,15 @@ function BoardPage({
   const refreshAll = useCallback(() => {
     // 拖拽期间不要重取看板：后台 GET 回来的那一份是拖拽前的顺序，会把正在拖的卡片打回原位。
     // 但这次重取只是被推迟，不是被丢掉：写操作已经落到服务端了，丢掉的话看板会一直停在旧数据上
-    // （点过卡片再新建任务时就是这样，界面只剩文件树是新的）。补的时机在下面的 effect。
+    // （点过卡片再新建任务时就是这样，界面只剩任务树是新的）。补的时机在下面的 effect。
     if (pointerActiveRef.current) deferredBoardRefreshRef.current = true;
     else refreshBoard();
     refreshBreadcrumb();
     // 依赖图也跟着重取：工期、归档、增删任务都会改变关键路径，抽屉里的候选与禁用原因也要跟上。
     refreshSchedule();
     setTreeRefreshToken((token) => token + 1);
-    // 搜索态下写操作也会让结果里的东西过期：文件树拖动会改层级路径，归档会改「已归档」标记。
-    // 这种情况下唯一的写入口就是文件树，看板本身被结果页盖着。
+    // 搜索态下写操作也会让结果里的东西过期：任务树拖动会改层级路径，归档会改「已归档」标记。
+    // 这种情况下唯一的写入口就是任务树，看板本身被结果页盖着。
     if (searching) search.retry();
   }, [refreshBoard, refreshBreadcrumb, refreshSchedule, searching, search.retry]);
 

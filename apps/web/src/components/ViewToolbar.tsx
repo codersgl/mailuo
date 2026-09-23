@@ -28,10 +28,10 @@ export function ViewToolbar({
 }) {
   return (
     /*
-     * overflow-x-auto：窄屏（375px）下左侧文件树占 252px，主区只剩 123px，依赖图那一排
+     * overflow-x-auto：窄屏（375px）下左侧任务树占 252px，主区只剩 123px，依赖图那一排
      * 「图例 + 缩放 + 适应窗口」放不下。这里选择横向滚动而不是裁掉：看板在同样的宽度下也是
      * 横向滚动（网格 min-w-[780px]），用户已经熟悉这个手势，而裁掉会让缩放按钮彻底够不着。
-     * 收起文件树（D46）后宽度足够，正常情况下不会出现滚动条。
+     * 收起任务树（D46）后宽度足够，正常情况下不会出现滚动条。
      */
     <div className="flex h-[42px] flex-none items-center gap-2.5 overflow-x-auto border-b border-line bg-surface px-4">
       {/* role=group + aria-pressed 而不是 tablist：这里没有 tabpanel 与「选中即切换面板」的语义，

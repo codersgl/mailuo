@@ -4,7 +4,7 @@ import { useAsync } from '../src/hooks/useAsync';
 import { ApiError } from '../src/api/client';
 
 /**
- * useAsync 是三处读取（看板 / 文件树 / 面包屑）共用的底座，
+ * useAsync 是三处读取（看板 / 任务树 / 面包屑）共用的底座，
  * 这里只测用真实接口路径测不到的两点：非 ApiError 的兜底文案、deps 变化时的竞态。
  * 三种状态、重试、卸载的行为在 useBoard.test.ts 里用真实调用方覆盖。
  */

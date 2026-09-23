@@ -10,7 +10,7 @@ import { splitByKeyword } from '../lib/highlight';
 import { ErrorNote, LoadingNote } from './StatusNote';
 
 /**
- * 搜索结果页：有搜索词时整块替换主区（定版原型 C），左侧文件树不动。
+ * 搜索结果页：有搜索词时整块替换主区（定版原型 C），左侧任务树不动。
  *
  * 行上的键盘选中态只由 `selectedIndex` 决定，焦点留在顶栏的搜索框里——
  * 所以这一块没有自己的键盘处理，按键都在 BoardPage 上（见那里的 handleSearchKeyDown）。
@@ -163,7 +163,7 @@ function ResultRow({
         )}
       >
         {selected && (
-          // 与文件树的选中态同一套语言：accent-weak 底 + 左侧强调色竖条。
+          // 与任务树的选中态同一套语言：accent-weak 底 + 左侧强调色竖条。
           <span
             className="absolute bottom-[5px] left-0 top-[5px] w-0.5 rounded-[1px] bg-accent"
             aria-hidden="true"
