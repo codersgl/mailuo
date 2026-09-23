@@ -76,6 +76,16 @@ test('package.json 可以被发布：去掉 private，并显式声明 ESM', () =
     'https://registry.npmjs.org',
     'publishConfig.registry 要钉在官方源，否则本机的镜像默认值会让 npm publish 打错地方',
   );
+  // scoped 包的默认访问级别是 restricted：不写 public，发布出去的包只有自己（和授权的人）装得到，
+  // 而 npm 只在发布时提示一句「需要 --access public」。这是 D69 改用 `@codersgl/mailuo` 之后
+  // 新出现的一条失败模式，所以跟着包名一起钉住。
+  if (String(packageJson.name).startsWith('@')) {
+    assert.equal(
+      packageJson.publishConfig?.access,
+      'public',
+      'scoped 包默认 restricted，publishConfig.access 要写 public，否则别人装不到这个包',
+    );
+  }
 });
 
 test('bin 指向一个存在的文件', () => {

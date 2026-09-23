@@ -42,11 +42,11 @@
 
 需要 Node 22 或更高版本。
 
-包发布到 npm 后，可以不安装直接运行，也可以装到全局：
+包发布到 npm 后，可以不安装直接运行，也可以装到全局（scoped 包名，装完命令仍是 `mailuo`）：
 
 ```sh
-npx mailuo                  # 起服务并自动打开浏览器
-npm i -g mailuo && mailuo   # 或者装到全局
+npx @codersgl/mailuo                  # 起服务并自动打开浏览器
+npm i -g @codersgl/mailuo && mailuo   # 或者装到全局
 ```
 
 服务默认监听 `http://127.0.0.1:3001`，并自动打开浏览器。
