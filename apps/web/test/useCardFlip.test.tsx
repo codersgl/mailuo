@@ -1,5 +1,5 @@
 import { cleanup, render } from '@testing-library/react';
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it } from 'vitest';
 import { CARD_ATTR } from '../src/hooks/useCardDrag';
 import { useCardFlip } from '../src/hooks/useCardFlip';
 import type { Board } from '../src/api/types';
@@ -26,7 +26,6 @@ interface FakeCard {
 /** 造一个带卡片与列的容器，并接管 element 上的 getBoundingClientRect 与 animate。 */
 function setup(cards: Array<{ id: string; columnId: string; top: number }>) {
   const container = document.createElement('div');
-  const animations: string[] = [];
   const calls: string[] = [];
   const byId = new Map<string, FakeCard>();
 

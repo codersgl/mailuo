@@ -1,0 +1,53 @@
+# 持续集成：每次推送到 main 与每个 PR 上跑同一套本地命令（lint / typecheck / test / build）。
+# 门槛与本地 `pnpm <命令>` 完全一致，不在 CI 里另搞一套。
+
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+# 只读权限：这个工作流不写回仓库，拿到多余权限只会扩大行动面。
+permissions:
+  contents: read
+
+# 同一个分支连续推送时取消上一轮，省 runner 也避免两轮同时跑测试（bin/ 里的进程级
+# 用例真的会监听端口，机器内并发会互相干扰）。
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  verify:
+    name: lint / typecheck / test / build
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+
+      # pnpm 必须先装：下面 setup-node 的 `cache: pnpm` 要调用它算 store 路径。
+      # 版本不写死在这里，由 package.json 的 packageManager 字段决定（pnpm@11.22.0）。
+      # 注意：action-setup 的 README 现在建议 pnpm 11+ 改用后继的 pnpm/setup（它 2026-09-20
+      # 才发 v3.0.0）。这里选 v6 是因为它仍在发版（v6.1.0 支持 pnpm 12）且被广泛使用；
+      # 迁到 pnpm/setup 是独立的一小步，理由与边界见 docs/decisions.md D70。
+      - uses: pnpm/action-setup@v6
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: pnpm
+
+      # --frozen-lockfile：lockfile 与 package.json 不一致时直接失败，不在 CI 里偷偷改依赖。
+      - run: pnpm install --frozen-lockfile
+
+      - run: pnpm lint
+
+      - run: pnpm typecheck
+
+      # 顺序不能反：bin/mailuo.test.mjs 里几条进程级用例会真的启动服务，要读
+      # apps/api/dist 与 apps/web/dist。先 build 再 test，本地 `pnpm test` 同样如此。
+      - run: pnpm build
+
+      - run: pnpm test

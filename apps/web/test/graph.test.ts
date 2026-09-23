@@ -2,7 +2,6 @@ import { describe, expect, it } from 'vitest';
 import {
   CANVAS_PADDING,
   LAYER_GAP,
-  FIT_PADDING,
   MAX_ZOOM,
   MIN_ZOOM,
   NODE_HEIGHT,

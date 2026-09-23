@@ -1,7 +1,7 @@
 import { cleanup, fireEvent, render, screen, within } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { DependencyGraph } from '../src/components/DependencyGraph';
-import type { ColumnRecord, LayerSchedule, ScheduleEdge, ScheduleNode } from '../src/api/types';
+import type { ColumnRecord, LayerSchedule, ScheduleNode } from '../src/api/types';
 
 /**
  * 依赖图视图。jsdom 不做布局（getBoundingClientRect 全是 0），所以这里测的是**结构**：

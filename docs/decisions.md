@@ -2240,3 +2240,195 @@ pnpm 的依赖状态检查要求重装）、`pnpm build` 与全量测试：bin 3
 
 **顺带确认**：主仓 `docs/intend.md` 那份改动是用户自己的（需求重组），本步没动它；
 `Tasks` 一节里的「发布npm包」现在可以勾上了。
+## D70 第 32 步：ESLint 门禁与 GitHub Actions CI（2026-09-24，分支 chore/ci-eslint）
+
+需求（`docs/intend.md`）：「添加 CI 和 ESLint」。审计报告 D7 也点过这一条：仓库没有
+lint 脚本、没有 CI，AGENTS.md 的「尽可能保持较低的圈复杂度」当时只靠人工。
+
+### 问题一：typescript-eslint 跑不了 TypeScript 7（这条决定了方案形状）
+
+本仓库的 `apps/api` 与 `apps/web` 都用 `typescript@^7.0.2`（Go 原生编译器，`tsc --version`
+输出 `Version 7.0.2`）。这个版本的 `typescript` 包没有旧编译器 API（`ts.createProgram`、
+`ts.TypeChecker`），导出表只剩 `./package.json`、一个只导出版本号的 `.` 与 `./unstable/*`。
+而 typescript-eslint 8.70.1（当前 latest）的 peer 声明是 `typescript: ">=4.8.4 <6.1.0"`，
+装上 TS 7 后 import 阶段就抛错。在一个只装了 TS 7 + eslint 10 + typescript-eslint 8.70.1 的
+探针目录里实测（本步落地后仓库根是 TS 6，这条命令已不再复现这个错）：
+
+```
+$ npx eslint sample.ts
+typescript-eslint does not support TS 7.0.
+Please see https://devblogs.microsoft.com/typescript/announcing-typescript-7-0/#running-side-by-side-with-typescript-6.0
+Error: typescript-eslint does not support TS 7.0.
+```
+
+官方给的路就是「side-by-side 用 TS 6 API」。做法：
+
+- 根 `devDependencies` 加 `typescript@^6.0.3`，**只服务 ESLint**；
+- `apps/*` 各自的 `typescript@^7.0.2` 一行没动，`pnpm typecheck` 与 `pnpm build` 仍走 TS 7。
+
+实测解析确实两边各拿各的：
+
+```
+node -e "require.resolve('typescript',{paths:[require.resolve('typescript-eslint')]})"
+  -> …/node_modules/.pnpm/typescript@6.0.3/node_modules/typescript/lib/typescript.js
+apps/api/node_modules/.bin/tsc --version  -> Version 7.0.2
+```
+
+代价：仓库里同时存在两个 TypeScript 大版本，根目录直接敲 `npx tsc` 拿到的是 6 而不是 7。
+这是已知代价，不是疏忽。等 typescript-eslint 支持 TS 7.1+（upstream
+[issue #10940](https://github.com/typescript-eslint/typescript-eslint/issues/10940)）后，删掉根上的
+TypeScript 6 即可，其余不用动。
+
+**没采用的两条路**：`ts7-eslint`（第三方实验包，把 typescript-eslint 的几层重建在
+`typescript/unstable/*` 上——CI 门禁不该押在一个 0.2.0 的实验包上）；以及给 lint 单独降级整个
+仓库的 TypeScript（会让构建与检查用到不同版本，比多一个 devDependency 更糟）。
+
+### 问题二：React Hooks 的规则集要挑，不能用 preset
+
+`eslint-plugin-react-hooks` 7 的 `recommended` / `recommended-latest` 现在把 React Compiler
+那一组规则也算进去了。直接套 preset 会命中本仓库 7 条诊断、4 个文件，全部是**有意为之**的写法：
+
+- `react-hooks/refs`：`usePointerDrag` / `useTreeDrag` / `App` 在 render 期间写 latest-ref
+  （`callbacks.current = options`）。这是 D61 抽取指针脚手架时定的写法，正确性由用例钉住。
+- `react-hooks/set-state-in-effect`：`useSearch` 空关键词时同步重置、`App` 换层时收起抽屉与
+  新建行。
+
+把它们改成编译器友好的写法是独立的一步，会牵动 D58/D61 已经验收过的行为，不该和「加门禁」
+混在一起。所以只取经典两条：`rules-of-hooks` 为 error、`exhaustive-deps` 为 warn。现存 5 条
+`exhaustive-deps` warning 里 4 条是有意省略依赖、或规则无法静态判断的地方（`useAsync` 的 deps
+展开、`useCardDrag` 只依赖 `drag.begin`、`App` 依赖对象 `search` 而列的是 `search.retry`）；
+剩下 `Sidebar.tsx:73` 那条是规则**确实能静态判断**的 `useMemo` 建议，属于独立的一处性能收敛，
+不在这步的范围里。四条都保留为 warning 而不是逐个 `eslint-disable`。
+
+### 规则范围
+
+`eslint.config.mjs`（扁平配置）刻意保守：不引入格式化与风格规则，机器改写会制造与本次改动
+无关的 diff。规则来自 `js.configs.recommended` + `tseslint.configs.recommended`（后者不含
+core 的 recommended，所以两份都要），再按目录分环境：
+
+- `apps/api`、`bin`、`scripts`（含 `.mts`）用 node globals；这份配置自己也归进这一档，否则
+  在 `eslint.config.mjs` 里写 `console`/`process` 会被 core 的 `no-undef` 误报。`apps/web/src`
+  用 browser globals 并挂 react-hooks 与 react-refresh 插件。
+- `apps/web/test` 也挂 react-hooks 两条规则：测试里用 `renderHook` 直接跑 hook，值得同样守住。
+- 未使用的参数放行 `^_` 前缀（替身函数的 `(_frames, _options)`），未使用的变量与导入不放行。
+- 测试里只把 `@typescript-eslint/no-explicit-any` 关掉。非空断言曾写过一个 off——那是空操作，
+  `tseslint.configs.recommended` 本来就没开这条规则（它在 `strict` 里），已删除。
+- `complexity` 只对**产品代码**（`apps/*/src`、`bin`、`scripts`）设为 error 30。测试替身不设限：
+  `App.test.tsx` 里那个假后端路由函数的复杂度是 73，对它设限只会逼出无意义的拆分。
+- 阈值 30 的依据是实测的当前分布：产品代码最高 TreeNodeRow 26，其次 Sidebar 23、layoutGraph 21、
+  TaskEditorPanel 19、`parseArgs` 18、BoardPage 16。所以它是一条**回归门禁**——挡住再造一个比
+  TreeNodeRow 更复杂的热点，不是要求现在就把审计列的老热点拆掉（那是审计第 8 步）。
+
+忽略：`**/dist/**`、`**/node_modules/**`、`**/coverage/**`、`.worktrees/**`、`.tmp-*/**`、
+`.pnpm-store/**`、`apps/web/public/**`。
+
+### lint 第一次跑出来的真实问题（已修）
+
+- 七处未使用的导入/变量，分布在六个文件，全是死代码：`apps/api/test/cpm.test.ts` 的 `type App`，
+  `apps/web/test` 的 `DependencyGraph.test.tsx` `ScheduleEdge`、`graph.test.ts` `FIT_PADDING`、
+  `storage.test.ts` `renderHook`、`useCardFlip.test.tsx` `vi` 与 `animations`、`useRoute.test.ts`
+  `waitFor`。删除即可，没有行为改动。
+- `apps/web/src/api/client.ts` 的 `let text = ''`：`no-useless-assignment` 指出这个初值永远不会
+  被读到（try 里必然赋值，catch 里直接抛）。改成 `let text: string;`，顺带让「漏赋值」在编译期
+  就能暴露。
+
+### CI（`.github/workflows/ci.yml`）
+
+触发：push 到 main、每个 PR、手动 `workflow_dispatch`。权限只给 `contents: read`；同一 ref 的
+上一轮用 `concurrency` 取消（`bin/` 的进程级用例真的会监听端口，机器内并发会互相干扰）。
+
+步骤顺序是 install → lint → typecheck → build → test，**build 必须在 test 之前**：
+`bin/mailuo.test.mjs` 里几条进程级用例会真的启动服务、要读 `apps/api/dist` 与 `apps/web/dist`
+（D69 记过新 worktree 没构建时 `node --test bin/*.test.mjs` 会红 3 条）。本地 `pnpm test`
+本来也是「先 build 再 test」，CI 只是照抄。
+
+action 版本（2026-09 的当前 major）：`actions/checkout@v7`、`actions/setup-node@v7`
+（`cache: pnpm`，Node 22）、`pnpm/action-setup@v6`（不写死版本，由 `package.json` 的
+`packageManager: pnpm@11.22.0` 决定，v6 源码会读这个字段）。pnpm 有后继 `pnpm/setup`，且
+`pnpm/action-setup` 的 README 现在**明确建议 pnpm 11+ 用它**；这里仍选 v6 是因为它 2026-09-05
+还在发版（v6.1.0 支持 pnpm 12），而 `pnpm/setup` v3.0.0 是 2026-09-20 才发的。门禁选稳的那条，
+迁移到 `pnpm/setup` 留作独立一小步；这条建议已写进 workflow 注释，不是漏看。
+
+### 验证
+
+- `pnpm lint`：0 error / 5 warning，退出码 0；覆盖 151 个文件。
+- 变异检验（备份文件还原，没用 `git checkout`）：在 `App.tsx` 插一个未使用变量 →
+  `@typescript-eslint/no-unused-vars` 红、退出码 1；把复杂度阈值临时收到 25 →
+  `Function 'TreeNodeRow' has a complexity of 26` 红。两处还原后全量 lint 回到 0 error。
+- `pnpm install --frozen-lockfile` 通过（lockfile 与 package.json 同步）。
+- `pnpm typecheck` 通过：`apps/api` 与 `apps/web` 仍由各自的 TypeScript 7 检查。
+- `pnpm build` 通过；`pnpm test` 的 bin 37 / api 273 / web 474 与 D67 验收时记录的基线相同——
+  本步没加用例，改动只有死代码删除。**但最后几次全量里 bin 偶发挂 1 条**，见下面的「已知抖动」。
+- 工作流本身用 `actionlint` v1.7.12 跑过（退出码 0，无告警）。**GitHub Actions 没在本机跑过**
+  （本地没有 runner），真实的 runner 结果要等推送到 GitHub 后看；作为替代，把整个
+  install → lint → typecheck → build → test 序列在一份不含 `node_modules` 的新副本上跑过一遍
+  （见下一条）。
+- 全新副本（`tar` 拷贝源码、无 `node_modules`、无 `.git`）上按 CI 顺序跑
+  `pnpm install --frozen-lockfile` → `pnpm lint` → `pnpm typecheck` → `pnpm build` → `pnpm test`
+  全部退出码 0（含 better-sqlite3 的原生重建），这是本机能给出的最接近真实 runner 的替代。
+
+### 已知抖动（本步发现，未修）
+
+加 CI 之后第一次跑全量时 `bin` 挂了 1 条，单跑又全绿。为了定性，把 `node --test bin/*.test.mjs`
+连跑 3 次，复现 1 次：
+
+```
+not ok 16 - fetchLatestVersion：默认超时是 1.5 秒量级
+  error: '默认超时应是 1.5 秒量级，实际等了 4775ms'
+```
+
+原因在测试自己：`startRegistry(() => {})` 起一个永不回包的服务器，再对墙上时钟断言
+`elapsed < 3000`（`bin/mailuo.test.mjs:391`）。这条断言要同时满足「默认超时是 1.5 秒」与
+「机器不能在 1.5 秒内把事件循环拖到 3 秒」，后者在忙机器上不成立——它想测默认值，却把机器
+负载也一并测了。**与本步改动无关**：bin 套件没被本步碰过，同一份代码在前面几次全量里是绿的。
+
+没在这步改它：上限 3000ms 是对着 README 里「1.5 秒」那句承诺写的，放宽它等于悄悄改契约；
+换成直接断言导出的 `UPDATE_CHECK_TIMEOUT_MS` 是独立一步，应与审计报告 E4（用例对时序依赖）
+一起处理。**代价要写明：CI 会带着这条抖动上线**，bin 套件在忙的 runner 上可能偶发红一次，
+重跑即绿。这是本步留下的最实在的一条债。
+
+### 审阅（子代理，只读）与修复
+
+审阅在 worktree 上只读进行，结论**无阻断**：它独立复核了双 TypeScript 解析、`eslint .` 的
+151 个文件覆盖面、react-hooks preset 的规则清单、四个 action 的当前 major 与 `packageManager`
+自动读取、fresh-copy 全序列、`npm pack --dry-run` 无 `node_modules`/`typescript`/`eslint` 泄漏、
+以及 D70 里每一个数字（复杂度分布、测试计数、peer 范围）。它报的问题都落在配置准确性与上游
+建议上，逐条处理：
+
+1. **（中）`pnpm/action-setup@v6` 的 README 现在建议 pnpm 11+ 改用后继的 `pnpm/setup`**，而本仓库
+   钉的是 pnpm 11.22.0。它的 v6 源码确实显式处理 pnpm 11，所以是支持面/文档风险而不是已知故障。
+   本步仍选 v6（它 2026-09-05 还在发版、`pnpm/setup` 的 v3.0.0 才 4 天），把「README 的这条建议」
+   写进 workflow 注释与上文，迁移留作独立一小步。**没有**直接换上 `pnpm/setup@v3`：那会把新门禁
+   押在一个三个月内连发了 v1/v2/v3 三个 major、v3.0.0 才发布 4 天的 action 上。
+2. **（中）测试块里 `@typescript-eslint/no-non-null-assertion: 'off'` 是空操作**：该规则不在
+   `recommended` 里（在 `strict` 里），关掉它没有任何效果，反而让人以为源码里这条是开着的。
+   已删除，并写明它是空操作。
+3. **（低）`eslint.config.mjs` 与 `scripts/png-stats.d.mts` 不匹配任何 `files` 块，拿到 0 个
+   globals**：前者带着 core 的 `no-undef`，在那里写 `console` 会误报。已把这份配置加进 node 档，
+   并把 `bin`/`scripts` 的 glob 放宽到 `{mjs,mts}`。
+4. **（低）`apps/web/test` 没有 hooks 规则**：测试用 `renderHook` 直接跑 hook。实测把两条规则挂到
+   测试块后 0 命中，已挂上，作为防回归。
+5. **（低）「5 条 warning 全是有意省略」不准确**：`Sidebar.tsx:73` 是规则确实能静态判断的
+   `useMemo` 建议，已从上文的「有意为之」里拆出来。
+6. **（低）「六处未使用」与列出的 7 个标识符对不上**：已改成「七处、六个文件」。
+7. **（低）「TS 7 只有 `./unstable/*` 导出」不精确**：导出表还有 `./package.json` 与只导版本号的
+   `.`，已改准。
+
+审阅自己声明**未能验证**的：真实 GitHub runner 上的执行（用 actionlint 加 fresh-copy 序列替代）、
+D70 里那条 `npx eslint sample.ts` 的原始报错（落地后根上已是 TS 6，已在正文注明这是探针目录的
+实测）、以及基线 8efc42d 的测试计数（已改成引用 D67 记录的基线而不是断言重新测过）。
+
+### 没做的（可选复杂性）
+
+- 不加 Prettier 与风格规则：格式化会改写大量无关行，且项目现有风格稳定。
+- 不开类型感知（type-checked）规则集：要接 tsconfig 项目并承担变慢与误报，收益
+  （`no-floating-promises` 之类）值得另开一步单独评估。
+- 不把复杂度阈值收到能驱动重构的水平、不动审计列出的老热点。
+- 不加 `lint-staged` / pre-commit hook：门禁在 CI 与 `pnpm lint` 两处足够。
+- 不碰 npm 发布：`docs/intend.md` 的另一条 Task 已由 D69 完成（`@codersgl/mailuo` 0.1.0 已上
+  npm，2026-09-24），本步只加门禁。
+
+**编号备案**：本分支从 main（8efc42d，末尾是 D68）切出时 `chore/scoped-name`（D69）还在飞，
+所以取了 **D70**。写完后 D69 先合入主干（`51e37d3`），本分支已 rebase 到新的 main：D69 在前、
+D70 在后，除本文档末尾这一处外没有冲突（`package.json` 的包名与本文的 devDependencies 落在
+不同行，`docs/development.md` 改的是不同小节，都是自动合并）。

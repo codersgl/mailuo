@@ -1,4 +1,3 @@
-import { renderHook } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { readStored, removeStored, writeStored } from '../src/lib/storage';
 

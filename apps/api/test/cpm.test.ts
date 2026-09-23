@@ -10,8 +10,6 @@ import {
   type CpmBody,
 } from './helpers.js';
 
-type App = ReturnType<typeof createApp>;
-
 function addDep(db: Db, predecessorId: string, successorId: string) {
   db.prepare('INSERT INTO task_deps (predecessor_id, successor_id) VALUES (?, ?)').run(
     predecessorId,
