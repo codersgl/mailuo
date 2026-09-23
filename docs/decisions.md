@@ -1769,3 +1769,16 @@ stdout 的 `error` 处理，值得单独一小步，这里只记录。
 - 不加 `--no-update-check` 命令行开关：环境变量足够，避免再扩一套参数解析。
 - 不缓存检查结果、不做「每隔 N 天再查」：本机工具每次启动一个请求可以接受，不想等就关掉。
 - 不提示预发布版本。
+
+**合并后收尾（2026-09-23，用户验收并合并 b7e952d 之后）**：本步没动 `apps/`，`bin/` 也不进
+`apps/*/dist`，所以没有需要重建的产物（D55 之后每次合并要跑一次 `pnpm build`，是因为前端产物
+不入版本库；主仓的 `apps/api/dist` 与 `apps/web/dist` 仍是 D64 合并后构建的那份）。合并后在主仓
+跑了一遍完整测试：bin 32、api 273、web 474，全绿。worktree `.worktrees/feat-update-notice` 与
+分支 `feat/update-notice` 已删除，验收脚本 `.tmp-verify/` 与审阅的 `.tmp-review/` 随之清掉。
+
+**编号冲突备案**：本步合并时发现并行的 `docs/readme` worktree（分支 `docs/readme`，基于
+3bab260）也写了 `## D65 第 28 步：README 改为面向使用者`。本步先合入主干，所以 D65 归「启动时
+提示新版本」；`docs/readme` 那一条合入时要改成 D66。两份都改了 `README.md`（它整篇改写、本步只
+加了两行环境变量与一段版本提示说明）与 `docs/decisions.md` 末尾，合并时会有冲突，按「README 用
+它的新结构、把版本提示的三处（`MAILUO_REGISTRY` / `MAILUO_NO_UPDATE_CHECK` 两行与那段说明）补
+进去，决策编号改成 D66」处理。
