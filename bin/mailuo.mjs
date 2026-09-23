@@ -54,8 +54,11 @@ const PORT_PROBE_TIMEOUT_MS = 300;
 
 /**
  * 查新版本的超时。版本提示是附加信息，registry 慢或不通时宁可没有它，也不能让用户等。
+ *
+ * 导出只为让用例直接断言这个值：README 向用户承诺「超时 1.5 秒」，而拿墙上时钟去反推这个
+ * 默认值（`elapsed < 3000`）会把机器负载一起测进来，在忙的 runner 上假红（见 D70 与 D71）。
  */
-const UPDATE_CHECK_TIMEOUT_MS = 1500;
+export const UPDATE_CHECK_TIMEOUT_MS = 1500;
 
 /** 等端口真正开始监听的轮询参数：每 100ms 探一次，最多 10 秒。 */
 const READY_POLL_INTERVAL_MS = 100;
@@ -324,6 +327,17 @@ export function isNewerVersion(latest, current) {
 }
 
 /**
+ * 查新版本实际使用的超时：显式传入优先，否则落回默认值。
+ *
+ * 这一行单独抽出来是为了让「默认值有没有被用上」可被确定性断言。直接用签名默认值也能跑，但
+ * 那样只能靠墙上时钟去反推默认值在不在——在忙机器上会假红（D70 的已知抖动、D71 的修法），
+ * 而且挡不住「默认值被悄悄改大」。这里 `??` 一次，用例直接断言两种输入。
+ */
+export function updateCheckTimeout(timeoutMs) {
+  return timeoutMs ?? UPDATE_CHECK_TIMEOUT_MS;
+}
+
+/**
  * 查 registry 上该包的 `latest`，只有确实比 `currentVersion` 新时才返回它，否则返回 null。
  *
  * 这个函数**不抛异常**：网络不通、超时、包还没发布（404）、响应不是 JSON、版本号格式不认识，
@@ -336,12 +350,12 @@ export function isNewerVersion(latest, current) {
  *   `registry` 末尾有没有 `/` 都行；带路径的私有 registry（如 Artifactory 的 `/api/npm/npm/`）
  *   靠相对拼接保留路径段，不会被当成根路径截掉。
  */
-export async function fetchLatestVersion({ registry, name, currentVersion, timeoutMs = UPDATE_CHECK_TIMEOUT_MS }) {
+export async function fetchLatestVersion({ registry, name, currentVersion, timeoutMs }) {
   try {
     const base = registry.endsWith('/') ? registry : `${registry}/`;
     const url = new URL(`${encodeURIComponent(name)}/latest`, base);
     const response = await fetch(url, {
-      signal: AbortSignal.timeout(timeoutMs),
+      signal: AbortSignal.timeout(updateCheckTimeout(timeoutMs)),
       headers: { accept: 'application/json' },
     });
     if (!response.ok) {

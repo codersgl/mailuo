@@ -1,0 +1,146 @@
+# 发布：在 GitHub 上建 Release（或手动 dispatch）后自动发 npm。
+#
+# 认证走 npm Trusted Publishing（OIDC），仓库里不需要任何 npm secret，也不会有长期 token。
+# 这正是本仓库要它的理由：D69 记录过账号是 WebAuthn 模式，本地 `npm publish` 在非交互终端
+# 直接 EOTP，只有在 TTY 里才给出浏览器确认链接——手动发布每次都要人在场按一下。OIDC 让 CI
+# 与 registry 直接换短期凭证，人不用在场，同时自动生成 provenance。
+#
+# 前提（在 npmjs.com 上配，不在这个文件里；官方文档见 https://docs.npmjs.com/trusted-publishers/）：
+#   Package -> Settings -> Trusted Publisher 选 GitHub Actions，填 Owner=codersgl、
+#   Repository=mailuo、Workflow filename=release.yml（含扩展名、区分大小写，必须与本文件名
+#   逐字一致）。Environment 留空（填了的话本文件要声明同名 `environment:`）。
+#   Allowed actions 必须勾上 `npm publish`：2026-09-03 之后新建的配置默认只允许
+#   `npm stage publish`（= 发到暂存区等人工 2FA 批准），只留它的话首次发布会被拒。
+#   npm 在保存时**不校验**这些字段，填错只会在发布那一刻以 ENEEDAUTH 之类的错误暴露。
+#
+# 预发布：`release: [published]` 对勾了 pre-release 的 release 同样触发，而这里的 publish 不带
+# `--tag`，直接发会让 RC 顶掉 `latest`（用户 `npm i -g` 就装到 RC）。所以预发布整段跳过，
+# 要发 `next` 之类的 dist-tag 是独立一步。
+
+name: Release
+
+on:
+  # 只由「发布 release」这个动作触发：push tag 不算，先有 release，再动 registry。
+  release:
+    types: [published]
+  # 发布失败、修好之后重跑用：已发布的 release 在 GitHub 上无法再次触发同一事件。
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 与 Release 对应的 tag（例如 v0.1.0）
+        required: true
+
+# 默认只读，发布 job 里单独给 id-token。
+permissions:
+  contents: read
+
+# 串行发布且不取消进行中的一轮：同一时刻只允许一个版本在发。
+concurrency:
+  group: npm-publish
+  cancel-in-progress: false
+
+jobs:
+  # 先查这个版本是不是已经发过，已发布就让整个发布 job 跳过。
+  #
+  # 位置很关键：这一步放在装依赖与门禁**之前**，只用 node 与 npm。历史 tag 上的
+  # `package.json` 可能是旧的一套脚本——补记用的 v0.1.0 就没有 `lint`（D70 才加的），
+  # 把门禁放在前面会让补记 release 红在 `pnpm lint` 上，既到不了跳过分支，也没验证到任何
+  # 与发布有关的东西。
+  guard:
+    name: 校验 tag 与 npm 上是否已有该版本
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    outputs:
+      skip: ${{ steps.check.outputs.exists }}
+    env:
+      # release 事件用 tag 名；手动重跑用输入。
+      RELEASE_TAG: ${{ github.event.release.tag_name || inputs.tag }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.release.tag_name || inputs.tag }}
+          fetch-depth: 1
+
+      # 显式指定 Node，不依赖 runner 镜像里预装的那个：这一步只用到 node 与 npm。
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+
+      - name: 校验 tag 与 package.json 的版本一致
+        run: |
+          set -eu
+          version="${RELEASE_TAG#v}"
+          manifest="$(node -p "require('./package.json').version")"
+          if [ "$version" != "$manifest" ]; then
+            echo "tag ${RELEASE_TAG} 与 package.json 的 ${manifest} 不一致，拒绝发布" >&2
+            exit 1
+          fi
+
+      - name: 查该版本是否已经在 npm 上
+        id: check
+        run: |
+          set -eu
+          name="$(node -p "require('./package.json').name")"
+          version="$(node -p "require('./package.json').version")"
+          # 显式指定官方源：开发机的 registry 可能是镜像（本仓库开发机就是 npmmirror）。
+          if npm view "${name}@${version}" version --registry=https://registry.npmjs.org >/dev/null 2>&1; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+            echo "npm 上已有 ${name}@${version}，本次不发布。历史补记的 release 走到这里。"
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+          fi
+
+  npm-publish:
+    name: 校验并发 npm
+    needs: guard
+    # 已有版本整段跳过；预发布不在这里发（见文件头注释）。
+    if: >-
+      needs.guard.outputs.skip != 'true' &&
+      (github.event_name == 'workflow_dispatch' || !github.event.release.prerelease)
+    # Trusted Publishing 只支持 GitHub 托管的 runner，自托管 runner 用不了。
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      id-token: write # OIDC 必需：缺了它 npm 换不到短期凭证
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.release.tag_name || inputs.tag }}
+          # provenance 会核对「构建这个包的仓库」与 package.json 的 repository 一致。
+          # 顺带说：provenance 只在「public 仓库 + public 包」下生成，本仓库两者都是 public。
+          fetch-depth: 1
+
+      - uses: pnpm/action-setup@v6
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          # 故意不开依赖缓存：npm 官方给发布流程的示例写的是
+          # `package-manager-cache: false  # never use caching in release builds`。
+          # 代价是每次发版多几分钟装依赖，换的是发布产物不掺上一轮的缓存状态。
+          #
+          # 也不写 registry-url：publishConfig.registry 已钉官方源（D68），而 registry-url
+          # 会往 .npmrc 写一行 `_authToken=${NODE_AUTH_TOKEN}`，在 OIDC 流程里那是个空占位。
+
+      # Trusted Publishing 要求 npm >= 11.5.1、Node >= 22.14.0，而 Node 22 自带的是 npm 10.x。
+      # 钉在 11.x：这条链路只在 npm 11 上验过，而 npm 12 已 GA 且改了安装脚本的默认行为
+      # （对用 pnpm 装的依赖没有影响，但没必要把发布门禁同时押到新 major 上）。
+      - run: npm install -g npm@^11.5.1 && npm --version
+
+      - run: pnpm install --frozen-lockfile
+
+      # 与 CI 同序、同一串门槛：发布的门禁不允许比 CI 松。
+      - run: pnpm lint
+      - run: pnpm typecheck
+      # 顺序不能反：bin/mailuo.test.mjs 的进程级用例要读构建产物（`files` 里的
+      # apps/api/dist 与 apps/web/dist 也是这么来的）。
+      - run: pnpm build
+      - run: pnpm test
+
+      # --ignore-scripts：prepack 会再构建一次，而那次构建没有任何用例碰过；发出去的应当是
+      # 上面 build 过、也测过的那一份产物。
+      # 不写 --provenance：Trusted Publishing 下 provenance 自动生成，显式写它反而会在仓库
+      # 转成 private 时（那时 provenance 不支持）直接报错。
+      - name: 发布到 npm
+        run: npm publish --ignore-scripts
