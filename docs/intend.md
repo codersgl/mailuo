@@ -11,10 +11,19 @@
 - [x] 品牌设计项目图标等
 - [x] 改为命令行工具：`npm i -g @codersgl/mailuo` 或 `npx @codersgl/mailuo`，起本地服务并自动打开浏览器，优先支持 Windows
 - [x] 支持启动时提示新版本：查 npm registry 的 latest，给一行升级命令
-- [ ] 发布npm包
 - [x] 使用AGPL-3.0开源协议
-- [ ] 修改`README.md`只包含使用方法和功能介绍
-- [ ] 优化`README.md`的排版，风格借鉴高星开源项目
-- [ ] 发布到Github
+- [x] 修改`README.md`只包含使用方法和功能介绍
+- [x] 优化`README.md`的排版，风格借鉴高星开源项目
+
+## Tasks
+- [x] 发布npm包
+- [x] 发布到Github
+- [x] 添加`CI`和`ESLint`
 
 ## Issues
+
+- `bin/mailuo.test.mjs` 里「默认超时是 1.5 秒量级」用墙上时钟断言 `elapsed < 3000`，机器忙时会偶发失败（实测复现 1/3，等了 4775ms），CI 会因此偶发红。它想守住的是「默认超时 1.5 秒」这个对用户的承诺，却把机器负载也一并测了；修的方向是直接断言导出的 `UPDATE_CHECK_TIMEOUT_MS`，而不是放宽上限。背景见 `docs/decisions.md` D70 的「已知抖动」。
+
+## Docs
+
+- [ ] 整理文档，提高文档的质量和可维护性
