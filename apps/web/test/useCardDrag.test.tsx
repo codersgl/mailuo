@@ -1,4 +1,4 @@
-import { cleanup, fireEvent, render, screen } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { useCardDrag } from '../src/hooks/useCardDrag';
 import type { DropSlot } from '../src/domain/board';
@@ -113,16 +113,47 @@ describe('useCardDrag', () => {
     expect(events.drop).toEqual([slot]);
   });
 
-  it('拖拽中的 pointerup 不会让随后的 click 进入子看板', () => {
+  it('拖拽中的 pointerup 不会让随后的 click 进入子看板', async () => {
     const { events, card } = setup();
 
     pointerDown(card);
     fireEvent.pointerMove(document, { clientX: 130, clientY: 100 });
     fireEvent.pointerUp(document, { clientX: 130, clientY: 100 });
+    // **必须等一个真实的任务边界**：浏览器的顺序是 pointerup → 微任务 → click，
+    // 同一个 JS 任务里连着 fireEvent 会把微任务挤到 click 之后，于是「用微任务清标记」
+    // 那种错误实现也能通过（审阅发现的假通过用例）。
+    await act(async () => {});
     fireEvent.click(card);
 
     expect(events.drop).toHaveLength(1);
     expect(events.open).toEqual([false]);
+  });
+
+  it('拖拽结束后过一段时间（超过抑制窗口）的点击仍然有效', async () => {
+    const { events, card } = setup();
+
+    pointerDown(card);
+    fireEvent.pointerMove(document, { clientX: 130, clientY: 100 });
+    fireEvent.pointerUp(document, { clientX: 130, clientY: 100 });
+
+    // 抑制窗口是 300ms，这里等到它过期。
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 350));
+    });
+    fireEvent.click(card);
+
+    expect(events.open).toEqual([true]);
+  });
+
+  it('指针被浏览器接管（pointercancel）按取消处理，不把落点提交出去', () => {
+    const { events, card } = setup();
+
+    pointerDown(card);
+    fireEvent.pointerMove(document, { clientX: 130, clientY: 100 });
+    fireEvent.pointerCancel(document);
+
+    expect(events.cancel).toEqual([true]);
+    expect(events.drop).toEqual([]);
   });
 
   it('Esc 取消：走 onCancel，不落定', () => {

@@ -66,8 +66,12 @@ function BoardPage({
 
   const { refresh: refreshBoard } = board;
   const { refresh: refreshBreadcrumb } = breadcrumb;
+  /** 有指针正按在卡片上（不管是待定的点击还是拖拽中）。用它给静默重取让路。 */
+  const pointerActiveRef = useRef(false);
   const refreshAll = useCallback(() => {
-    refreshBoard();
+    // 拖拽期间不要重取看板：后台 GET 回来的那一份是拖拽前的顺序，会把正在拖的卡片打回原位。
+    // 松手后本来就会再重取一次，所以跳过这一次不会丢更新。面包屑与文件树不受影响。
+    if (!pointerActiveRef.current) refreshBoard();
     refreshBreadcrumb();
     setTreeRefreshToken((token) => token + 1);
   }, [refreshBoard, refreshBreadcrumb]);
@@ -88,8 +92,12 @@ function BoardPage({
    */
   const boardRef = useRef<Board | null>(null);
   boardRef.current = board.state.status === 'ready' ? board.state.data : null;
-  /** 按下时的看板，用来回滚与换算落点。非空表示一次拖拽还没结束。 */
-  const dragStartRef = useRef<Board | null>(null);
+  /**
+   * 按下时的看板，用来回滚与换算落点。非空表示一次拖拽还没结束。
+   * `layerId` 是按下时这一层的 parentId：拖拽期间看板对象会因乐观重排不停换新，
+   * 所以判断「还是不是同一层」要比较这个，而不是比较对象身份。
+   */
+  const dragStartRef = useRef<{ board: Board; layerId: string | null } | null>(null);
   /** 被拖的任务 id。落点只描述「哪一列哪张卡片之前」，换算 position 还得知道是谁在动。 */
   const dragTaskRef = useRef<string | null>(null);
   /**
@@ -103,15 +111,21 @@ function BoardPage({
     onStart: (taskId) => {
       const current = boardRef.current;
       if (current === null) return;
-      dragStartRef.current = current;
+      dragStartRef.current = { board: current, layerId: current.parentId };
       dragTaskRef.current = taskId;
     },
     onPreview: (slot) => {
+      /**
+       * 只在「还停在按下时那一层」时重排。拖拽中若换了一层看板（点面包屑、后退）或切换了
+       * 「显示已归档」，拿旧层的快照去改新数据会把别的层的卡片搬进来（审阅发现的边界）。
+       * 注意不能比较看板对象身份：乐观重排每改一次就换一个新对象，那会把正常路径也挡掉。
+       */
+      const start = dragStartRef.current;
+      if (start === null || boardRef.current?.parentId !== start.layerId) return;
       setDragSlot(slot);
       // 指针在列外：撤销预览，回到刚按下时的样子。
       if (slot === null) {
-        const restore = dragStartRef.current;
-        if (restore !== null) board.mutate(() => restore);
+        board.mutate(() => start.board);
         return;
       }
       board.mutate((data) => {
@@ -121,25 +135,39 @@ function BoardPage({
       });
     },
     onDrop: (slot) => {
-      const restore = dragStartRef.current;
+      const start = dragStartRef.current;
       const taskId = dragTaskRef.current;
+      const sameLayer = boardRef.current?.parentId === start?.layerId;
       dragStartRef.current = null;
       setDragSlot(null);
-      // 落在列外或状态不全：撤销预览（正常情况下指针移出列时已经撤过一次，这里是兜底）。
-      if (slot === null || restore === null || taskId === null) {
-        if (restore !== null) board.mutate(() => restore);
+      // 落在列外、层被换掉、或状态不全：撤销预览（正常情况下指针移出列时已经撤过一次，这里是兜底）。
+      if (slot === null || start === null || taskId === null || !sameLayer) {
+        if (start !== null && sameLayer) board.mutate(() => start.board);
         return;
       }
-      const move = dropToMove(restore, taskId, slot);
+      const move = dropToMove(start.board, taskId, slot);
       void commitMove(taskId, move.columnId, move.position);
     },
     onCancel: () => {
-      const restore = dragStartRef.current;
+      const start = dragStartRef.current;
+      const sameLayer = boardRef.current?.parentId === start?.layerId;
       dragStartRef.current = null;
       setDragSlot(null);
-      if (restore !== null) board.mutate(() => restore);
+      if (start !== null && sameLayer) board.mutate(() => start.board);
     },
   });
+
+  /**
+   * 一次拖拽结束了（或压根没开始，按下就松手）就把标记放下。
+   *
+   * 为什么要有这条兜底：`pointerActiveRef` 正常由 onDrop / onCancel 清掉，但如果 `pointerup`
+   * 根本没派发到 document（指针在窗口外松开、窗口失焦被系统接管），那两个回调都不会来，
+   * 标记会一直为真，之后所有写操作都不再刷新看板。把「没有拖拽在跑」与标记挂钩，
+   * 无论哪条路径结束都能恢复。
+   */
+  useEffect(() => {
+    if (drag.draggingTaskId === null) pointerActiveRef.current = false;
+  }, [drag.draggingTaskId]);
 
   async function commitMove(taskId: string, columnId: string, position: number) {
     setActionError(null);
@@ -241,7 +269,11 @@ function BoardPage({
               onEditTask={setEditing}
               onSetArchived={setTaskArchived}
               onDeleteTask={deleteTask}
-              onDragStart={drag.begin}
+              onDragStart={(task, event) => {
+                // 按下就上标记：待定的点击期间也不该让静默重取换掉看板（那会重置这次拖拽）。
+                // begin 返回 false 表示这一次按下不会产生拖拽，标记不能留着自己不放。
+                if (drag.begin(task, event)) pointerActiveRef.current = true;
+              }}
               create={create}
             />
           )}

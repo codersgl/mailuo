@@ -124,6 +124,10 @@ export interface TreeDrop {
 /**
  * 把「拖动的节点 + 指针悬停的行 + 指针在行的上半还是下半」换算成落点。
  * 返回 null 表示这里不能放：拖到自己或自己的后代下会成环，后端也会用 400 拒绝。
+ *
+ * 下半区一律是「与目标同级、排在它后面」——包括目标是顶层节点时（新父级为 null）。
+ * 早期版本让顶层节点的下半区退化成「成为它的子节点」，于是「把 B 拖到 A 下面」会变成
+ * 「把 B 拖进 A 里面」，与界面上画的插入线不是一回事（用例 `useTreeDrag` 抓到的）。
  */
 export function resolveTreeDrop(
   tasks: TreeTask[],
@@ -137,8 +141,7 @@ export function resolveTreeDrop(
   // 目标不在树里说明数据已经过期，宁可这一下落空，也不要凭 id 猜一个父级。
   if (target === undefined) return null;
 
-  // 目标本身是顶层节点时，下半区也只能挂到它的父级（也就是根）下——树的顶层没有「兄弟」可插。
-  if (over.lowerHalf && target.parentId !== null) {
+  if (over.lowerHalf) {
     return { parentId: target.parentId, afterTaskId: target.id };
   }
   return { parentId: target.id, afterTaskId: null };

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import type { PointerEvent as ReactPointerEvent } from 'react';
 import type { Board, BoardTask } from '../api/types';
 import type { DropSlot } from '../domain/board';
@@ -45,7 +45,7 @@ export function BoardView({
   create: NewTaskControls;
 }) {
   const gridRef = useRef<HTMLDivElement>(null);
-  useBoardCardFlip(gridRef, draggingTaskId !== null);
+  useBoardCardFlip(gridRef, draggingTaskId !== null, board);
 
   return (
     <>
@@ -122,7 +122,7 @@ function DropLine({
   }, [slot, gridRef]);
 
   // 用 layout effect：拖拽中每一轮重渲染都要在绘制前量好，否则插入线会先画在旧位置再跳一下。
-  useEffect(() => {
+  useLayoutEffect(() => {
     measure();
   }, [measure, board]);
 
@@ -158,7 +158,11 @@ function DropLine({
  * - 量尺寸前先清掉自己上一轮留下的 transform，否则量到的是被平移过的位置，位移会越算越偏。
  * - transition 不能马上清掉，否则这一帧就等于没有过渡；留到下一轮渲染再清。
  */
-function useBoardCardFlip(containerRef: React.RefObject<HTMLElement | null>, enabled: boolean) {
+function useBoardCardFlip(
+  containerRef: React.RefObject<HTMLElement | null>,
+  enabled: boolean,
+  board: Board,
+) {
   const previous = useRef<Map<string, DOMRect> | null>(null);
 
   useEffect(() => {
@@ -205,5 +209,7 @@ function useBoardCardFlip(containerRef: React.RefObject<HTMLElement | null>, ena
     }
 
     previous.current = rects;
-  }, [containerRef, enabled]);
+    // board 必须在依赖里：拖拽期间每次乐观重排都会换一个 board 对象，effect 才重跑得起来。
+    // 少了它，enabled 只从 false 变到 true 一次，让位动画根本不会执行（审阅发现的缺陷）。
+  }, [containerRef, enabled, board]);
 }

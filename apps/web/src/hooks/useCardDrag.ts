@@ -39,8 +39,11 @@ export interface CardDragControls {
   /** 当前被拖的任务 id；空闲时为 null。 */
   draggingTaskId: string | null;
   preview: CardDragPreview | null;
-  /** 绑到卡片主体与「⋯」按钮上的 onPointerDown。 */
-  begin: (task: BoardTask, event: ReactPointerEvent<HTMLElement>) => void;
+  /**
+   * 绑到卡片主体与「⋯」按钮上的 onPointerDown。返回 true 表示这一次按下进入了拖拽候选
+   * （调用方据此知道后面一定会有 onDrop / onCancel，可以放心地置上自己的状态）。
+   */
+  begin: (task: BoardTask, event: ReactPointerEvent<HTMLElement>) => boolean;
   /**
    * 卡片主体自己的 onClick 要先问这里。拖拽结束的那一次 pointerup 之后浏览器仍会补一个
    * click，不拦的话「拖完一张卡片」会顺手进入它的子看板。阈值内的位移不受影响，照旧是点击。
@@ -50,6 +53,13 @@ export interface CardDragControls {
 
 /** 超过这个距离才算拖拽，之内的位移仍然算点击（进入子看板）。 */
 const DRAG_THRESHOLD_PX = 4;
+
+/**
+ * 拖拽结束后多久内的 click 算「拖拽的尾巴」，要吞掉。
+ * 浏览器紧跟着 pointerup 派发 click，几十毫秒足够；窗口取大一点不影响正常点击——
+ * begin() 会把窗口清零，也就是说下一次按下之后的点击永远不受影响。
+ */
+const CLICK_SUPPRESS_MS = 300;
 
 /** 卡片与列在 DOM 上的标记，命中测试靠它们。 */
 export const CARD_ATTR = 'data-task-id';
@@ -63,16 +73,18 @@ export const COLUMN_ATTR = 'data-column-id';
  * 拖拽中的克隆卡片有 pointer-events: none，所以它不会挡住命中。
  */
 export function resolveDropSlot(clientX: number, clientY: number): DropSlot | null {
-  // jsdom 里 document.elementFromPoint 是未实现的（属性存在但调用抛错），
+  // jsdom 里根本没有 document.elementFromPoint（`typeof` 是 undefined，不是「调用抛错」），
   // 真实浏览器不会有这个问题；这里退化成「不在任何列上」，让拖拽安静地不生效。
-  const hit = typeof document.elementFromPoint === 'function'
-    ? document.elementFromPoint(clientX, clientY)
-    : null;
+  const hit =
+    typeof document.elementFromPoint === 'function'
+      ? document.elementFromPoint(clientX, clientY)
+      : null;
   const column = hit?.closest(`[${COLUMN_ATTR}]`);
-  const columnId = column?.getAttribute(COLUMN_ATTR);
-  if (columnId === null || columnId === undefined) return null;
+  if (column === null || column === undefined) return null;
+  const columnId = column.getAttribute(COLUMN_ATTR);
+  if (columnId === null) return null;
 
-  const cards = [...column!.querySelectorAll<HTMLElement>(`[${CARD_ATTR}]`)];
+  const cards = [...column.querySelectorAll<HTMLElement>(`[${CARD_ATTR}]`)];
   for (const card of cards) {
     const rect = card.getBoundingClientRect();
     // 指针在该卡片上半区就插到它前面；下半区继续往下比。
@@ -129,20 +141,19 @@ export function useCardDrag(options: {
   // 监听器的装卸函数。用 ref 存：stop 与 begin 都要用，而它们的依赖数组必须保持稳定。
   const listenersRef = useRef<{ attach: () => void; detach: () => void } | null>(null);
   /**
-   * 刚拖完的那一次点击要吞掉。用微任务清标记：pointerup 之后浏览器才派发 click，
-   * 两者在同一个任务链上，`queueMicrotask` 一定晚于 click。
+   * 刚拖完的那一次点击要吞掉。**不能用微任务清标记**：真实浏览器的顺序是
+   * pointerdown → pointermove → pointerup → 微任务 → click，微任务比 click 还早
+   * （实测，见 docs/decisions.md D42 的更正），标记会在 click 之前就被清掉。
+   * 改成按时间判：拖拽结束后的一个很短的窗口内的点击算拖拽的尾巴。
    */
-  const suppressOpenRef = useRef(false);
+  const suppressUntilRef = useRef(0);
 
   const stop = useCallback(() => {
     const drag = dragRef.current;
     dragRef.current = null;
     listenersRef.current?.detach();
     if (drag?.active === true) {
-      suppressOpenRef.current = true;
-      queueMicrotask(() => {
-        suppressOpenRef.current = false;
-      });
+      suppressUntilRef.current = Date.now() + CLICK_SUPPRESS_MS;
     }
     setDraggingTaskId(null);
     setPreview(null);
@@ -195,6 +206,16 @@ export function useCardDrag(options: {
     callbacks.current.onDrop(drag.slot);
   }, [stop]);
 
+  /**
+   * 指针被浏览器接管（触摸滚动、系统手势）时走这里：按**取消**处理，不把落点提交给后端。
+   * 原来接在 handlePointerUp 上，等于「中途被抢走也照落点写一次」，与文档说的不一致。
+   */
+  const handlePointerCancel = useCallback(() => {
+    const drag = stop();
+    if (drag === null || !drag.active) return;
+    callbacks.current.onCancel();
+  }, [stop]);
+
   const handleKeyDown = useCallback(
     (event: KeyboardEvent) => {
       if (event.key !== 'Escape') return;
@@ -212,13 +233,13 @@ export function useCardDrag(options: {
     const attach = () => {
       document.addEventListener('pointermove', handlePointerMove);
       document.addEventListener('pointerup', handlePointerUp);
-      document.addEventListener('pointercancel', handlePointerUp);
+      document.addEventListener('pointercancel', handlePointerCancel);
       document.addEventListener('keydown', handleKeyDown);
     };
     const detach = () => {
       document.removeEventListener('pointermove', handlePointerMove);
       document.removeEventListener('pointerup', handlePointerUp);
-      document.removeEventListener('pointercancel', handlePointerUp);
+      document.removeEventListener('pointercancel', handlePointerCancel);
       document.removeEventListener('keydown', handleKeyDown);
     };
     listenersRef.current = { attach, detach };
@@ -230,14 +251,14 @@ export function useCardDrag(options: {
         callbacks.current.onCancel();
       }
     };
-  }, [handlePointerMove, handlePointerUp, handleKeyDown]);
+  }, [handlePointerMove, handlePointerUp, handlePointerCancel, handleKeyDown]);
 
-  const begin = useCallback((task: BoardTask, event: ReactPointerEvent<HTMLElement>) => {
+  const begin = useCallback((task: BoardTask, event: ReactPointerEvent<HTMLElement>): boolean => {
     // 只认鼠标主键：右键和中键有自己的系统菜单与行为。
-    if (event.button !== 0) return;
+    if (event.button !== 0) return false;
     // 已归档的卡片不能改（后端对归档任务的 PATCH 一律拒绝，见 D16），干脆不给拖。
-    if (task.archivedAt !== null) return;
-    if (dragRef.current !== null) return;
+    if (task.archivedAt !== null) return false;
+    if (dragRef.current !== null) return false;
 
     const rect = event.currentTarget.getBoundingClientRect();
     dragRef.current = {
@@ -252,6 +273,7 @@ export function useCardDrag(options: {
       slot: null,
     };
     listenersRef.current?.attach();
+    return true;
   }, []);
 
   return {
@@ -259,8 +281,9 @@ export function useCardDrag(options: {
     preview,
     begin,
     canOpen: () => {
-      if (!suppressOpenRef.current) return true;
-      suppressOpenRef.current = false;
+      // 窗口过期就作废，免得一个很久之后的点击被上一次拖拽误吞。
+      if (Date.now() >= suppressUntilRef.current) return true;
+      suppressUntilRef.current = 0;
       return false;
     },
   };

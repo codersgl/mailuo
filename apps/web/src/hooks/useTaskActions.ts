@@ -1,7 +1,6 @@
 import { useCallback, useMemo } from 'react';
 import {
   ApiError,
-  changeTaskParent,
   createTask,
   deleteTask,
   moveTask,
@@ -23,11 +22,6 @@ export interface TaskActions {
   update: (id: string, patch: TaskFieldsPatch) => Promise<WriteResult>;
   /** 移动任务（拖拽落定）。`position` 的口径见 domain/board.ts 的 positionForDrop。 */
   move: (id: string, input: { columnId: string; position: number }) => Promise<WriteResult>;
-  /** 改父级（文件树拖拽落定）。 */
-  changeParent: (
-    id: string,
-    input: { parentId: string | null; columnId: string },
-  ) => Promise<WriteResult>;
   setArchived: (id: string, archived: boolean) => Promise<WriteResult>;
   remove: (id: string) => Promise<DeleteResult>;
 }
@@ -62,8 +56,6 @@ export function useTaskActions(refreshAll: () => void): TaskActions {
       update: (id: string, patch: TaskFieldsPatch) => run(() => updateTaskFields(id, patch)),
       move: (id: string, input: { columnId: string; position: number }) =>
         run(() => moveTask(id, input)),
-      changeParent: (id: string, input: { parentId: string | null; columnId: string }) =>
-        run(() => changeTaskParent(id, input)),
       setArchived: (id: string, archived: boolean) => run(() => setTaskArchived(id, archived)),
       remove: async (id: string): Promise<DeleteResult> => {
         try {

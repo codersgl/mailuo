@@ -3,7 +3,6 @@ import { DONE_COLUMN_ID, DOING_COLUMN_ID } from '../domain/columns';
 import { cx } from '../lib/cx';
 import { countChildren } from '../lib/tree';
 import type { TreeNode } from '../lib/tree';
-import { TREE_ROW_ATTR } from '../hooks/useTreeDrag';
 import type { TreeDragState } from '../hooks/useTreeDrag';
 
 interface TreeNodeRowProps {
@@ -16,7 +15,7 @@ interface TreeNodeRowProps {
   onDragStart: (taskId: string, event: ReactPointerEvent<HTMLElement>) => void;
   /** 拖拽状态；null 表示当前没有在拖。 */
   drag: TreeDragState | null;
-  /** 这一层在树里的深度，从 0 开始。测试与调试用它断言层级真的变了。 */
+  /** 这一层在树里的深度，从 0 开始，渲染成 data-tree-depth 供调试与验收脚本使用。 */
   depth: number;
 }
 
@@ -53,16 +52,18 @@ export function TreeNodeRow({
   return (
     <li>
       <div
-        {...{ [TREE_ROW_ATTR]: task.id }}
+        data-tree-row={task.id}
         data-tree-depth={depth}
-        data-tree-parent={task.parentId ?? ''}
         className={cx(
           'relative flex h-[26px] cursor-grab items-center gap-1.5 rounded-[5px] py-0 pl-2 pr-2',
-          selected ? 'bg-accent-weak font-semibold text-accent' : 'text-ink-2 hover:bg-track',
-          // 归档节点不只靠变灰：虚线边框 + 斜体「归档」标记，和普通节点一眼可分。
-          // 选中时让位：text-ink-3 与 text-accent 同时命中同一个元素时，生成 CSS 里 ink-3 在后，
-          // 会把选中态的文字颜色吃掉（只剩背景色）。「归档」标记本身不受影响，仍然显示。
-          archived && !selected && 'border border-dashed border-line-strong text-ink-3',
+          // 三种文字颜色互斥地写成三条完整分支，不做「条件类叠加」：cx 只拼字符串、不去重，
+          // 同一属性出现两次时谁生效由生成样式表的源序决定（见 docs/decisions.md D39）。
+          selected
+            ? 'bg-accent-weak font-semibold text-accent'
+            : archived
+              ? // 归档节点不只靠变灰：虚线边框 + 斜体「归档」标记，和普通节点一眼可分。
+                'border border-dashed border-line-strong text-ink-3 hover:bg-track'
+              : 'text-ink-2 hover:bg-track',
           // 拖动中的节点变淡；候补父级整行高亮（底色同选中态，靠左边的强调色竖条区分）。
           dragging && 'opacity-40',
           isDropParent && 'bg-accent-weak',

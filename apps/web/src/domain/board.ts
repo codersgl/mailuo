@@ -1,13 +1,24 @@
-import type { Board, BoardColumn, BoardTask } from '../api/types';
+import type { Board, BoardTask } from '../api/types';
 
 /**
- * 看板的本地重排。拖拽结束到服务端确认之间有几十毫秒，这段窗口里界面必须立刻反映用户的操作，
+ * 同一 (parent_id, column_id) 内 orders 的编号间隔，必须与后端一致
+ * （apps/api/src/domain/orders.ts）：前端乐观重排照后端的算法重新编号，两边才会算出同一个顺序。
+ */
+const ORDERS_STEP = 1000;
+
+/**
+ * 看板的本地重排。拖拽落定到服务端确认之间有几十毫秒，这段窗口里界面必须立刻反映用户的操作，
  * 否则卡片会先弹回原位再跳到新位置。重排逻辑只在这一处，组件不自己拼数组。
  *
- * 与后端 `moveTask`（apps/api/src/repositories/tasks.ts）的口径一致：
- * - `position` 是目标列里的 0 基插入下标，按「先把任务移出再插入」计算，超出长度按末尾处理。
- * - 已归档任务不参与重排（后端保留它们的 orders，见 docs/decisions.md D20），
- *   所以这里让归档卡片留在原位、不计算它们的位置，其余卡片的下标才是 position 的取值域。
+ * 与后端 `moveTask`（apps/api/src/repositories/tasks.ts）的口径必须逐条对齐——它们不是
+ * 「差不多」，而是同一套算法的两份实现：
+ * - `position` 是目标列里 0 基的插入下标，按「先把任务移出再插入」计算，超出长度按末尾处理。
+ * - 只重排**未归档**卡片，编号 1000、2000、……；归档卡片保留自己的 orders（见 D20）。
+ * - 编号与「原 orders」相同的任务不写。这条最容易被漏掉：归档卡片的 orders 没被重写时，
+ *   它可能落在重新编号后的未归档卡片**中间**，漏掉这条就会算出另一个顺序（见 reorderColumn）。
+ *
+ * 预览与落库顺序不一致的代价是肉眼可见的：松手后的静默重取会把卡片挪到别处，看起来像
+ * 「拖了没反应」或「卡片自己跳了一下」。这个缺陷在审阅里被发现（见 docs/decisions.md D42）。
  */
 
 /**
@@ -20,40 +31,78 @@ export interface DropSlot {
   beforeTaskId: string | null;
 }
 
-/** 在某一列里按未归档卡片数落位。`position` 的取值域由 `moveTaskInBoard` 的文档说明。 */
+/**
+ * 一次移动。`position` 的口径见文件头的说明：目标列未归档卡片里的 0 基插入下标，
+ * 按「先把任务移出再插入」计算。
+ */
 export interface TaskMove {
   taskId: string;
   columnId: string;
   position: number;
 }
 
-/**
- * 把一张卡片移到目标列的 `position` 处，返回新的看板。
- *
- * 目标列与源列相同时，`position` 的口径是「移除这张卡片之后的列表里的插入下标」，
- * 与后端一致。例：`[a, b, c]` 里的 `a` 移到 `c` 之后，移除 a 得 `[b, c]`，插入下标是 2。
- */
+/** 把一张卡片移到目标列的 `position` 处，返回新的看板。 */
 export function moveTaskInBoard(board: Board, move: TaskMove): Board {
   const moving = findTask(board, move.taskId);
   if (moving === undefined) return board;
 
   const columns = board.columns.map((column) => {
-    // 先从所有列里摘掉它：目标列就是源列时，这一步同时完成了「移除」。
-    const tasks = column.tasks.filter((task) => task.id !== move.taskId);
-    if (column.id !== move.columnId) return { ...column, tasks };
-    return { ...column, tasks: insertAt(tasks, { ...moving, columnId: move.columnId }, move.position) };
+    if (column.id !== move.columnId) {
+      return { ...column, tasks: column.tasks.filter((task) => task.id !== move.taskId) };
+    }
+    return { ...column, tasks: reorderColumn(column.tasks, move, moving) };
   });
 
   return { ...board, columns };
 }
 
-/** 该任务同一列里的未归档卡片（不含自己），按当前显示顺序。 */
-export function columnPeers(board: Board, taskId: string): BoardTask[] {
-  for (const column of board.columns) {
-    if (!column.tasks.some((task) => task.id === taskId)) continue;
-    return column.tasks.filter((task) => task.id !== taskId && task.archivedAt === null);
-  }
-  return [];
+/**
+ * 重排一列：把被移动的卡片插到未归档序列的 `position` 处，重新编号，再按新 orders 排序。
+ *
+ * 两个细节都是照后端抄的，少一个就会与落库结果分叉：
+ * - 归档卡片参与最后的排序但不参与编号，所以它们可能被挤到别的位置——这正是后端的输出。
+ * - 新编号与原值相同的任务保持原样（后端 `moveTask` 里的 `previous.orders === orders` 早退）。
+ *   例：未归档 [B@1000, A@2000, C@3000] 加归档 X@9000，把 C 留在列尾时谁都不该被重写，
+ *   X 仍在最后；若一律按新下标重写，C 变 2000、A 变 1000……X 反而被挤到前面。
+ */
+function reorderColumn(tasks: BoardTask[], move: TaskMove, moving: BoardTask): BoardTask[] {
+  const unarchived = tasks
+    .filter((task) => task.id !== move.taskId && task.archivedAt === null)
+    .sort((left, right) => left.orders - right.orders);
+  const insertAt = Math.min(Math.max(move.position, 0), unarchived.length);
+  const ordered = [
+    ...unarchived.slice(0, insertAt),
+    { ...moving, columnId: move.columnId },
+    ...unarchived.slice(insertAt),
+  ];
+
+  const nextOrders = new Map<string, number>();
+  ordered.forEach((task, index) => nextOrders.set(task.id, (index + 1) * ORDERS_STEP));
+
+  const archived = tasks.filter((task) => task.id !== move.taskId && task.archivedAt !== null);
+  return [...ordered, ...archived]
+    .map((task) => {
+      const orders = nextOrders.get(task.id);
+      const columnId = task.id === move.taskId ? move.columnId : task.columnId;
+      if (orders === undefined) return task;
+      if (orders === task.orders && columnId === task.columnId) return task;
+      return { ...task, orders, columnId };
+    })
+    .sort(compareOrders);
+}
+
+/**
+ * 与后端同序：先按 orders；同值再按 created_at 升序。
+ *
+ * 同值不是理论情况：归档卡片保留原 orders，未归档重新编号是 1000、2000、……，两者会撞上
+ * （例：把一张卡片拖到列尾，它拿到的 3000 可能与某张归档卡片相同）。后端那条 SQL 的
+ * `ORDER BY t.column_id, t.orders` 没有次级键，同值时的次序由扫描顺序（= rowid 升序 = 插入顺序）
+ * 决定，created_at 是前端能拿到的最接近的对应物。真出现两者都相同的数据时，次序由后端定，
+ * 下一次重取会纠正——这种极端情况不值得再往后端加次级排序键。
+ */
+function compareOrders(left: BoardTask, right: BoardTask): number {
+  if (left.orders !== right.orders) return left.orders - right.orders;
+  return left.createdAt < right.createdAt ? -1 : left.createdAt > right.createdAt ? 1 : 0;
 }
 
 /**
@@ -80,11 +129,6 @@ export function positionForDrop(board: Board, taskId: string, slot: DropSlot): n
   return rendered.filter((task) => task.id !== taskId && task.archivedAt === null).length;
 }
 
-/** 卡片当前所在列。找不到任务时返回 undefined。 */
-export function columnOf(board: Board, taskId: string): BoardColumn | undefined {
-  return board.columns.find((column) => column.tasks.some((task) => task.id === taskId));
-}
-
 /**
  * 落点 → 后端入参。换算必须在**按下时的看板**上做：乐观重排之后那张卡片已经在新位置，
  * 拿它去数卡片会得到另一个下标，两者相差的可能正是这一次拖动。
@@ -103,29 +147,4 @@ function findTask(board: Board, taskId: string): BoardTask | undefined {
     if (task !== undefined) return task;
   }
   return undefined;
-}
-
-/**
- * 按未归档卡片计数插入。`position` 是未归档卡片里的下标；
- * 归档卡片留在它们原来的相对位置上，不因为一次拖动而改变次序。
- */
-function insertAt(tasks: BoardTask[], task: BoardTask, position: number): BoardTask[] {
-  if (task.archivedAt !== null) {
-    // 归档卡片不参与重排：插回它原来的相对位置即可（源列 == 目标列时等于没动）。
-    return [...tasks, task].sort((left, right) => left.orders - right.orders);
-  }
-
-  const result: BoardTask[] = [];
-  let unarchived = 0;
-  let inserted = false;
-  for (const candidate of tasks) {
-    if (!inserted && candidate.archivedAt === null && unarchived === position) {
-      result.push(task);
-      inserted = true;
-    }
-    if (candidate.archivedAt === null) unarchived += 1;
-    result.push(candidate);
-  }
-  if (!inserted) result.push(task);
-  return result;
 }

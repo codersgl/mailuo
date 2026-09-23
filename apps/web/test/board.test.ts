@@ -1,14 +1,20 @@
 import { describe, expect, it } from 'vitest';
-import {
-  columnOf,
-  columnPeers,
-  moveTaskInBoard,
-  positionForDrop,
-} from '../src/domain/board';
+import { moveTaskInBoard, positionForDrop } from '../src/domain/board';
 import type { Board, BoardColumn, BoardTask } from '../src/api/types';
 
-/** 只给测试用到的字段赋值：重排只看 id / columnId / archivedAt / orders。 */
-function task(id: string, columnId: string, options: { archived?: boolean; orders?: number } = {}): BoardTask {
+/** 让每个 fixture 的 createdAt 严格递增，见 task() 里的说明。 */
+let createdAtSequence = 0;
+
+/**
+ * 只给测试用到的字段赋值：重排看 id / columnId / archivedAt / orders，
+ * 归档卡片与未归档卡片 orders 撞上时还要看 createdAt（对应后端的 rowid 顺序），所以逐个递增。
+ */
+function task(
+  id: string,
+  columnId: string,
+  options: { archived?: boolean; orders?: number; createdAt?: string } = {},
+): BoardTask {
+  createdAtSequence += 1;
   return {
     id,
     parentId: null,
@@ -17,7 +23,9 @@ function task(id: string, columnId: string, options: { archived?: boolean; order
     description: '',
     durationMinutes: null,
     orders: options.orders ?? 1000,
-    createdAt: '2026-09-22T00:00:00.000Z',
+    // 用毫秒偏移保证严格递增：同值时排序会退化成不稳定比较。
+    createdAt:
+      options.createdAt ?? new Date(Date.UTC(2026, 8, 22, 0, 0, 0, createdAtSequence)).toISOString(),
     updatedAt: '2026-09-22T00:00:00.000Z',
     archivedAt: options.archived === true ? '2026-09-22T00:00:00.000Z' : null,
     childTotal: 0,
@@ -87,11 +95,12 @@ describe('moveTaskInBoard', () => {
     expect(ids(after, 'done')).toEqual(['a']);
   });
 
-  it('归档卡片不算进 position 的取值域，且留在原来的相对位置', () => {
-    // 列里渲染顺序是 a（归档）→ b → c。把 c 插到「b 之前」是未归档列表 [b] 的下标 0，
-    // 结果应当是 a（归档）→ c → b：归档卡片没有被拖到别处，也没有挡住插入。
+  it('归档卡片不算进 position 的取值域：把 c 插到 b 之前，归档的 a 仍排在它前面', () => {
+    // 列里渲染顺序 a（归档@1000）→ b → c。把 c 插到「b 之前」= 未归档列表 [b] 的下标 0。
+    // 后端只重写位置真变了的任务：a 仍是 1000，c 被编到 1000、b 到 2000。
+    // c 与 a 同为 1000，同值时按 created_at（= 后端的 rowid 顺序），a 更早，所以 a 在前。
     const before = board({
-      todo: [task('a', 'todo', { archived: true }), task('b', 'todo'), task('c', 'todo')],
+      todo: [task('a', 'todo', { archived: true, orders: 1000 }), task('b', 'todo', { orders: 2000 }), task('c', 'todo', { orders: 3000 })],
     });
 
     const after = moveTaskInBoard(before, { taskId: 'c', columnId: 'todo', position: 0 });
@@ -99,20 +108,46 @@ describe('moveTaskInBoard', () => {
     expect(ids(after, 'todo')).toEqual(['a', 'c', 'b']);
   });
 
+  it('归档卡片可能因为重编号被挤到别处，预览与后端一致（后端实测：B A X C）', () => {
+    // 输入 B@1000 A@2000 X(归档)@3000 C@4000，把 C 拖到列尾（未归档下标 2）。
+    // C 拿到 3000，与归档的 X 撞值，而 X 不参与重排 —— 于是 X 与 C 的相对次序由同值规则决定。
+    // 这条与下一条是审阅里发现「预览顺序 ≠ 落库顺序」的那组用例（见 docs/decisions.md D42）。
+    const before = board({
+      todo: [
+        task('B', 'todo', { orders: 1000 }),
+        task('A', 'todo', { orders: 2000 }),
+        task('X', 'todo', { orders: 3000, archived: true }),
+        task('C', 'todo', { orders: 4000 }),
+      ],
+    });
+
+    const after = moveTaskInBoard(before, { taskId: 'C', columnId: 'todo', position: 2 });
+
+    expect(ids(after, 'todo')).toEqual(['B', 'A', 'X', 'C']);
+  });
+
+  it('位置没变的任务不被重新编号：归档卡片因此留在列尾（后端实测：B A C X）', () => {
+    // 输入 B@1000 A@2000 C@3000 X(归档)@9000，把 C 拖到列尾 —— 它的新编号仍是 3000，
+    // 后端与前端都不重写任何人，X 留在最后。若一律按新下标重写，A 会变 1000、C 变 2000，
+    // X@9000 反而被挤到 C 前面，预览就与落库结果分叉了。
+    const before = board({
+      todo: [
+        task('B', 'todo', { orders: 1000 }),
+        task('A', 'todo', { orders: 2000 }),
+        task('C', 'todo', { orders: 3000 }),
+        task('X', 'todo', { orders: 9000, archived: true }),
+      ],
+    });
+
+    const after = moveTaskInBoard(before, { taskId: 'C', columnId: 'todo', position: 2 });
+
+    expect(ids(after, 'todo')).toEqual(['B', 'A', 'C', 'X']);
+  });
+
   it('任务不在看板里时原样返回，不产生新对象', () => {
     const before = board({ todo: [task('a', 'todo')] });
 
     expect(moveTaskInBoard(before, { taskId: 'nope', columnId: 'todo', position: 0 })).toBe(before);
-  });
-});
-
-describe('columnPeers', () => {
-  it('返回同列未归档卡片，且不含自己', () => {
-    const current = board({
-      todo: [task('a', 'todo'), task('b', 'todo', { archived: true }), task('c', 'todo')],
-    });
-
-    expect(columnPeers(current, 'c').map((t) => t.id)).toEqual(['a']);
   });
 });
 
@@ -140,14 +175,5 @@ describe('positionForDrop', () => {
 
     // 拖到归档卡片 a 之前（渲染顺序第一格），a 前面没有未归档卡片，所以是 0。
     expect(positionForDrop(withArchived, 'c', { columnId: 'todo', beforeTaskId: 'a' })).toBe(0);
-  });
-});
-
-describe('columnOf', () => {
-  it('返回任务所在的列；任务不在看板里返回 undefined', () => {
-    const current = board({ todo: [task('a', 'todo')], done: [task('b', 'done')] });
-
-    expect(columnOf(current, 'b')?.id).toBe('done');
-    expect(columnOf(current, 'nope')).toBeUndefined();
   });
 });

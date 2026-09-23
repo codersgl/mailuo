@@ -159,10 +159,10 @@ describe('resolveTreeDrop', () => {
     });
   });
 
-  it('顶层节点的下半区只能挂到根下（顶层没有兄弟可插）', () => {
+  it('顶层节点的下半区也是「与它同级排在它后面」（新父级为 null）', () => {
     expect(resolveTreeDrop(tasks, 'a1', { id: 'b', lowerHalf: true })).toEqual({
-      parentId: 'b',
-      afterTaskId: null,
+      parentId: null,
+      afterTaskId: 'b',
     });
   });
 

@@ -14,12 +14,13 @@ import type { TreeDrop } from '../lib/tree';
  */
 
 /** 树拖动的落点提示。`drop.parentId` 为空表示这一次什么都不放。 */
+/**
+ * 树拖动的落点提示。`drop` 为 null 表示指针不在任何一行上（或者那里不能放），界面上什么都不画。
+ * 行高亮与插入线都从 `drop` 推出来，所以这里不再单独记「悬停在那一行」。
+ */
 export interface TreeDragState {
   /** 正在拖的节点 id。 */
   draggingId: string;
-  /** 候补父级所在的行 id。 */
-  overId: string | null;
-  /** 落点；null 表示当前位置不能放。 */
   drop: TreeDrop | null;
 }
 
@@ -34,8 +35,11 @@ export interface TreeDragControls {
   canOpen: () => boolean;
 }
 
-/** 超过这个距离才算拖拽，之内的位移仍然算点击（选中/进入那一层看板）。 */
+/** 超过这个距离才算拖拽，之内的位移仍然算点击（进入那一层看板）。 */
 const DRAG_THRESHOLD_PX = 4;
+
+/** 拖拽结束后多久内的 click 算「拖拽的尾巴」。取值理由见 useCardDrag 里的同名常量。 */
+const CLICK_SUPPRESS_MS = 300;
 
 /** 树行上的标记，命中测试靠它。 */
 export const TREE_ROW_ATTR = 'data-tree-row';
@@ -66,21 +70,21 @@ export function useTreeDrag(options: {
     startY: number;
     active: boolean;
     drop: TreeDrop | null;
-    overId: string | null;
   } | null>(null);
   const listenersRef = useRef<{ attach: () => void; detach: () => void } | null>(null);
-  /** 刚拖完的那一次点击要吞掉。微任务清标记：它一定晚于同一次 pointerup 补发的 click。 */
-  const suppressOpenRef = useRef(false);
+  /**
+   * 刚拖完的那一次点击要吞掉。**不能用微任务清标记**：真实浏览器的顺序是
+   * pointerup → 微任务 → click，微任务比 click 还早（见 docs/decisions.md D42 的更正），
+   * 所以按时间给一个很短的窗口，窗口内的点击算拖拽的尾巴。
+   */
+  const suppressUntilRef = useRef(0);
 
   const stop = useCallback(() => {
     const drag = dragRef.current;
     dragRef.current = null;
     listenersRef.current?.detach();
     if (drag?.active === true) {
-      suppressOpenRef.current = true;
-      queueMicrotask(() => {
-        suppressOpenRef.current = false;
-      });
+      suppressUntilRef.current = Date.now() + CLICK_SUPPRESS_MS;
     }
     setState(null);
     return drag;
@@ -91,24 +95,23 @@ export function useTreeDrag(options: {
    * 指针落在树外时返回「什么都不放」。
    */
   const resolve = useCallback(
-    (clientX: number, clientY: number): { overId: string | null; drop: TreeDrop | null } => {
+    (clientX: number, clientY: number): TreeDrop | null => {
       const drag = dragRef.current;
-      if (drag === null) return { overId: null, drop: null };
+      if (drag === null) return null;
+      // jsdom 里没有 document.elementFromPoint，退化成「不在任何一行上」（同 useCardDrag）。
+      if (typeof document.elementFromPoint !== 'function') return null;
 
       const hit = document.elementFromPoint(clientX, clientY);
       const row = hit?.closest<HTMLElement>(`[${TREE_ROW_ATTR}]`);
-      if (row === null || row === undefined) return { overId: null, drop: null };
+      if (row === null || row === undefined) return null;
       const overId = row.getAttribute(TREE_ROW_ATTR);
-      if (overId === null) return { overId: null, drop: null };
+      if (overId === null) return null;
 
       const rect = row.getBoundingClientRect();
       const lowerHalf = clientY > rect.top + rect.height / 2;
       // 行里可能嵌着子节点，指针压到子行上时 elementFromPoint 命中的是子行——这正是想要的：
       // 子行同样是候补父级，而 closest 只会返回最靠里的那一行。
-      return {
-        overId,
-        drop: resolveTreeDrop(tasksRef.current, drag.taskId, { id: overId, lowerHalf }),
-      };
+      return resolveTreeDrop(tasksRef.current, drag.taskId, { id: overId, lowerHalf });
     },
     [],
   );
@@ -128,9 +131,8 @@ export function useTreeDrag(options: {
 
       event.preventDefault();
       const next = resolve(event.clientX, event.clientY);
-      drag.overId = next.overId;
-      drag.drop = next.drop;
-      setState({ draggingId: drag.taskId, overId: next.overId, drop: next.drop });
+      drag.drop = next;
+      setState({ draggingId: drag.taskId, drop: next });
     },
     [resolve],
   );
@@ -139,6 +141,13 @@ export function useTreeDrag(options: {
     const drag = stop();
     if (drag === null || !drag.active) return;
     callbacks.current.onDrop(drag.taskId, drag.drop);
+  }, [stop]);
+
+  /** 指针被浏览器接管（触摸滚动、系统手势）时按取消处理，不把落点提交出去。 */
+  const handlePointerCancel = useCallback(() => {
+    const drag = stop();
+    if (drag === null || !drag.active) return;
+    callbacks.current.onCancel();
   }, [stop]);
 
   const handleKeyDown = useCallback(
@@ -156,13 +165,13 @@ export function useTreeDrag(options: {
     const attach = () => {
       document.addEventListener('pointermove', handlePointerMove);
       document.addEventListener('pointerup', handlePointerUp);
-      document.addEventListener('pointercancel', handlePointerUp);
+      document.addEventListener('pointercancel', handlePointerCancel);
       document.addEventListener('keydown', handleKeyDown);
     };
     const detach = () => {
       document.removeEventListener('pointermove', handlePointerMove);
       document.removeEventListener('pointerup', handlePointerUp);
-      document.removeEventListener('pointercancel', handlePointerUp);
+      document.removeEventListener('pointercancel', handlePointerCancel);
       document.removeEventListener('keydown', handleKeyDown);
     };
     listenersRef.current = { attach, detach };
@@ -170,18 +179,19 @@ export function useTreeDrag(options: {
       detach();
       dragRef.current = null;
     };
-  }, [handlePointerMove, handlePointerUp, handleKeyDown]);
+  }, [handlePointerMove, handlePointerUp, handlePointerCancel, handleKeyDown]);
 
   const begin = useCallback((taskId: string, event: ReactPointerEvent<HTMLElement>) => {
     if (event.button !== 0) return;
     if (dragRef.current !== null) return;
+    // 上一次拖拽留下的抑制窗口不该影响这一次按下之后的正常点击。
+    suppressUntilRef.current = 0;
     dragRef.current = {
       taskId,
       startX: event.clientX,
       startY: event.clientY,
       active: false,
       drop: null,
-      overId: null,
     };
     listenersRef.current?.attach();
   }, []);
@@ -190,8 +200,9 @@ export function useTreeDrag(options: {
     state,
     begin,
     canOpen: () => {
-      if (!suppressOpenRef.current) return true;
-      suppressOpenRef.current = false;
+      // 窗口过期就作废，免得一个很久之后的点击被上一次拖拽误吞。
+      if (Date.now() >= suppressUntilRef.current) return true;
+      suppressUntilRef.current = 0;
       return false;
     },
   };

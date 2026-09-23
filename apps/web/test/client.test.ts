@@ -1,9 +1,11 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   ApiError,
+  changeTaskParent,
   createTask,
   deleteTask,
   fetchBoard,
+  moveTask,
   setTaskArchived,
   updateTaskFields,
 } from '../src/api/client';
@@ -152,6 +154,32 @@ describe('写接口', () => {
     // durationMinutes 传 null 表示改回未估工期，序列化时不能被丢掉。
     expect(calls[0]?.init?.body).toBe(JSON.stringify({ title: '改过的', durationMinutes: null }));
     expect(task.title).toBe('改过的');
+  });
+
+  it('moveTask 用 PATCH 提交 { columnId, position }', async () => {
+    const calls = stubFetch(() =>
+      jsonResponse(200, { task: taskRecord({ columnId: 'doing' }), columnTasks: [] }),
+    );
+
+    const task = await moveTask('t1', { columnId: 'doing', position: 2 });
+
+    expect(calls[0]?.url).toBe('/api/tasks/t1');
+    expect(calls[0]?.init?.method).toBe('PATCH');
+    expect(calls[0]?.init?.body).toBe(JSON.stringify({ columnId: 'doing', position: 2 }));
+    expect(task.columnId).toBe('doing');
+  });
+
+  it('changeTaskParent 用 PATCH 打 parent 子路径，parentId 可以是 null', async () => {
+    const calls = stubFetch(() =>
+      jsonResponse(200, { task: taskRecord({ parentId: null }), columnTasks: [] }),
+    );
+
+    await changeTaskParent('t1', { parentId: null, columnId: 'todo' });
+
+    expect(calls[0]?.url).toBe('/api/tasks/t1/parent');
+    expect(calls[0]?.init?.method).toBe('PATCH');
+    // parentId: null 表示挂到根看板，不能因为「假值」被丢掉。
+    expect(calls[0]?.init?.body).toBe(JSON.stringify({ parentId: null, columnId: 'todo' }));
   });
 
   it('setTaskArchived 用 PATCH 打 archive 子路径', async () => {
