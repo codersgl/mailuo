@@ -1,13 +1,24 @@
 {
   "name": "mailuo",
   "version": "0.1.0",
-  "private": true,
+  "description": "本地运行的个人任务看板：任务即看板，层级不限，数据存在本机的一个 SQLite 文件里",
+  "keywords": [
+    "kanban",
+    "看板",
+    "task",
+    "todo",
+    "任务管理",
+    "sqlite",
+    "local-first",
+    "cli"
+  ],
   "license": "AGPL-3.0-only",
   "author": "codersgl",
   "packageManager": "pnpm@11.22.0",
   "engines": {
     "node": ">=22"
   },
+  "type": "module",
   "bin": {
     "mailuo": "bin/mailuo.mjs"
   },

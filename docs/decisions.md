@@ -1782,3 +1782,80 @@ stdout 的 `error` 处理，值得单独一小步，这里只记录。
 加了两行环境变量与一段版本提示说明）与 `docs/decisions.md` 末尾，合并时会有冲突，按「README 用
 它的新结构、把版本提示的三处（`MAILUO_REGISTRY` / `MAILUO_NO_UPDATE_CHECK` 两行与那段说明）补
 进去，决策编号改成 D66」处理。
+
+## D66 第 29 步：发布 npm 包前的打包就绪（2026-09-23）
+
+需求（`docs/intend.md`）：「发布npm包」。这一步只做到「`npm pack` 出来的 tarball 装到别处能跑」，
+真正的 `npm publish` 需要账号登录，留给用户（见下面「没做的」里的两条命令）。
+
+### 问题
+
+三件事在仓库里全都看不见，只有装到别处才会暴露：
+
+1. 根 `package.json` 是 `private: true`：`npm publish` 会在最后一步失败，而 `npm pack` 照常成功，
+   所以本地「我包都打出来了」并不能说明可发布。
+2. 服务端产物按哪种模块格式解析，取决于**装完之后**包根有没有 `type`。仓库里存在
+   `apps/api/package.json`（`"type": "module"`），而它不在 `files` 清单里、不进 tarball；于是
+   「本地能跑」不能推出「装完能跑」。
+3. 没有 `description` / `keywords`：发布出去在源上是一张没有一句话说明的卡片。
+
+第 2 条实测过，具体追踪（Node 22.23.1，本步的 worktree）：
+
+- tarball 里 `apps/api/package.json` 的个数是 0；包根是 `mailuo/package.json`。
+- 删掉 `type` 的变体：`HOME=... mailuo --no-open --port 3997` 仍然起得来，`API 监听` 正常打出。
+  原因是 Node 22.7 起默认打开**模块语法探测**：`.js` 按 CJS 解析失败后会被当成 ESM 再加载一次。
+- 同一个变体加 `NODE_OPTIONS=--no-experimental-detect-module`（等价于 22.0–22.6 用户的行为）：
+  `启动失败：Cannot require() ES Module .../apps/api/dist/index.js in a cycle`，退出码 1。
+- 所以 `type: "module"` 不是装饰：它把「能跑」从 Node 的探测行为里摘出来。`engines` 写的是
+  `>=22`，这四舍五入包含了没有探测的 22.x。
+
+### 做法
+
+- 根 `package.json`：去掉 `private`，加 `"type": "module"`、`description`、`keywords`（含中文）。
+- 不加 `repository` / `homepage` / `bugs`：GitHub 远端还不存在（`docs/intend.md` 的「发布到Github」
+  是另一步）。写一个猜的地址比留空更糟——它会出现在源的侧栏，且错误链接比没有链接更难发现。
+- 清单本身钉成用例：新增 `bin/package.test.mjs`（4 条，不构建、不联网），核对
+  `private`/`type`、`bin` 指向存在文件、`files` 覆盖服务端运行时要读的六个路径、以及
+  `apps/api/dist` 里的每个裸 import 都能在根 `dependencies` 里找到。最后一条针对的是 `bin/mailuo.mjs`
+  的注释已经写明的约束：服务端产物是**被包根加载**的，运行时依赖必须声明在根，而不是 `apps/api`
+  自己的 `dependencies` 里。
+- `prepack` 保持 `pnpm build` 不变：`npm pack` 与 `npm publish` 都会先构建，不会打出一份过期产物。
+
+### 验证
+
+装一遍真 tarball（`.tmp-verify/`，验收后已删；本机 `/root/.npm` 不可写，故给 npm 指定了一个仓内缓存目录）：
+
+```sh
+pnpm build && npm pack                       # 191.4 kB / 67 files
+npm install -g --prefix .tmp-verify/global ./mailuo-0.1.0.tgz
+HOME=$PWD/.tmp-verify/home .tmp-verify/global/bin/mailuo --version   # 0.1.0
+HOME=$PWD/.tmp-verify/home MAILUO_NO_UPDATE_CHECK=1 \
+  .tmp-verify/global/bin/mailuo --no-open --port 3998
+```
+
+- 起服务后 `curl /api/health` 是 200 `{"status":"ok"}`；`/` 返回页面 HTML（静态托管指向
+  `.../lib/node_modules/mailuo/apps/web/dist`）；`/api/board` 返回三列空看板。日志里
+  `已应用迁移: 001_init.sql, 002_minutes…` 说明迁移目录也在 tarball 里被找到了。
+- 不传 `--db` 时库落在 `$HOME/.mailuo/kanban.db`（本步用 `HOME` 指向临时目录复验），
+  与 D64 的口径一致。
+- 反向验证 `type`：见上面「问题」第 2 条的四行追踪。
+- 变异检验：把 `private` 改回 `true`、从 `files` 删 `apps/api/migrations/`、从 `dependencies` 删
+  `hono`，三条用例分别失败（`not ok`），改回后 4 条全绿。
+- 全量：`pnpm test` bin 36（基线 32 + 新增 4）、api 273、web 474 全绿；`pnpm typecheck` 通过。
+
+### 没做的（可选复杂性）
+
+- **不执行真正的发布**：本机 `npm whoami` 未登录，且 `~/.npmrc` 指向 `registry.npmmirror.com`
+  ——镜像是只读的，发布要
+  `npm login --registry https://registry.npmjs.org` 后
+  `npm publish --registry https://registry.npmjs.org`。
+- **不加 `publishConfig.registry`**：把官方源写死进包，将来想发到私有源还要再改回来；一条命令行
+  旗标就够。用户如果希望「敲 `npm publish` 就发对地方」，这是一处可以再来一小步的地方。
+- **不加 CI / 不加 `publish:check` 脚本**：一次性的装包烟测按项目惯例放 `.tmp-verify/` 里跑完即删，
+  留下的守卫是那 4 条不需要构建的清单用例。
+- **不动 README 的安装段**：并行的 `docs/readme` worktree 正在整篇改写 README，两边都改必然冲突。
+
+**编号冲突备案（承接 D65）**：本步先占用 D66，`docs/readme` 那条「README 改为面向使用者」顺延为
+**D67**。本步只改根 `package.json`、新增 `bin/package.test.mjs` 与这里；它（bcc12c0）改的是
+`README.md`、`docs/development.md` 与 `docs/decisions.md`，两边只在本文末尾相邻，合并按「它整篇
+改写 README、本步的清单用例保留、编号顺延」处理。若用户先验收 `docs/readme`，则两者编号对调。
