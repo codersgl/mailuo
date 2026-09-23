@@ -14,7 +14,7 @@ import type { BoardTask } from '../api/types';
 import type { WriteResult } from '../hooks/useTaskActions';
 
 const PRIMARY_BUTTON =
-  'h-[26px] rounded-[5px] bg-accent px-2.5 text-[12px] text-white hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-45';
+  'h-[26px] rounded-[5px] bg-accent px-2.5 text-[12px] text-on-fill hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-45';
 const SECONDARY_BUTTON =
   'h-[26px] rounded-[5px] border border-line bg-surface px-2.5 text-[12px] text-ink-2 hover:border-line-strong hover:bg-surface-2 hover:text-ink';
 const FIELD_LABEL = 'text-[11.5px] font-semibold text-ink-2';
@@ -122,7 +122,7 @@ export function TaskEditorPanel({
         type="button"
         aria-label="关闭任务详情"
         onClick={onClose}
-        className="absolute inset-0 bg-[rgba(29,33,38,0.28)]"
+        className="absolute inset-0 bg-scrim"
       />
 
       <aside
@@ -130,7 +130,7 @@ export function TaskEditorPanel({
         role="dialog"
         aria-label="任务详情"
         tabIndex={-1}
-        className="relative flex w-[360px] flex-none flex-col border-l border-line bg-surface shadow-[-8px_0_24px_rgba(29,33,38,0.08)] outline-none"
+        className="relative flex w-[360px] flex-none flex-col border-l border-line bg-surface shadow-panel outline-none"
       >
         <header className="flex h-[46px] flex-none items-center justify-between border-b border-line px-3.5">
           <h2 className="text-[12.5px] font-semibold">任务详情</h2>

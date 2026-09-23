@@ -1,8 +1,22 @@
 @import "tailwindcss";
 
 /*
+ * 规范要求 dark 用 class 策略（docs/spec.md 的「主题」）。Tailwind v4 没有 `darkMode: 'class'`
+ * 这个配置项，等价写法是 @custom-variant。
+ *
+ * 这一行不是「留着将来用」：删掉它，`dark:` 会静默退回 Tailwind 默认的
+ * `@media (prefers-color-scheme: dark)`。而这个界面允许用户手动覆盖系统偏好——
+ * 用户在深色系统下选了浅色，某个组件却仍按系统变深，是最坏的一种错。留着它，
+ * 这类写法根本就写不出来。
+ *
+ * 注意深色**不依赖** `dark:` 前缀：它靠下面覆盖同名令牌实现，组件一行都不用改。
+ */
+@custom-variant dark (&:where(.dark, .dark *));
+
+/*
  * 设计令牌来自定版原型 A（浅灰底 + 白卡片 + 细边框 + 单一低饱和蓝强调色）。
  * 名字直译原型里的 CSS 变量，方便以后对照；改配色只动这一处。
+ * 深色那一套在下面的 `.dark` 里覆盖同名变量。
  */
 @theme {
   --color-canvas: #f6f7f9;
@@ -19,12 +33,114 @@
   --color-track: #eceef1;
   /* 危险操作（删除）用色。原型 A 里只有这一处跳出灰蓝配色，单独记一个令牌而不是散在组件里。 */
   --color-danger: #b3261e;
+  /*
+   * 压在饱和填充色上的前景色：`bg-accent` 的主按钮与品牌标、`bg-danger` 的确认删除都用它。
+   * 浅色下两种填充都配白字（accent 4.70、danger 6.54）；深色下两者都被提亮，白字只剩 2.6–2.9:1，
+   * 所以都翻成近黑（6.12 / 5.98）。一个令牌服务两种填充，是因为现在没有需要分开的证据；
+   * 真要分开，就按原型 A 里那个名字拆成 `--color-on-accent` 与 `--color-on-danger`。
+   */
+  --color-on-fill: #ffffff;
+  /*
+   * 抽屉遮罩。浅色是半透明的深灰蓝；深色换纯黑（半透明深灰蓝会把画布「提亮」），
+   * 并加深到 0.5——深底上 0.28 的遮罩几乎压不出层次。
+   */
+  --color-scrim: rgba(29, 33, 38, 0.28);
   --font-sans:
     -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Hiragino Sans GB",
     "Microsoft YaHei", "Noto Sans CJK SC", sans-serif;
 }
 
+/*
+ * 三处阴影（卡片菜单、抽屉、拖拽克隆卡）。浅色阴影是深灰蓝，在深色底上等于没有，
+ * 深色需要更重的纯黑，所以阴影也必须随主题走。
+ *
+ * 这里刻意**不放进 @theme**：Tailwind v4 会把 `--shadow-*` 的「值」在构建时内联进
+ * `.shadow-*` 工具类，实测深色下 `.shadow-menu` 算出来仍是浅色那串 rgba(29,33,38,0.12)，
+ * 也就是 `.dark` 覆盖同名变量对工具类毫无影响。颜色不一样：`bg-surface` 生成的是
+ * `var(--color-surface)`，运行时会跟着主题变。
+ *
+ * 顺序有要求：浅色这一块必须在下面的 `.dark` **之前**。两条规则都未分层、权重同为 (0,1,0)，
+ * 后面那条赢；反过来的话，html 上的 `--shadow-*` 会取到浅色值，深色阴影静默失效
+ * （`--color-*` 没这个问题，它们在 layer theme 里，层外规则无条件优先）。
+ */
+:root {
+  --shadow-menu: 0 6px 16px rgba(29, 33, 38, 0.12);
+  --shadow-panel: -8px 0 24px rgba(29, 33, 38, 0.08);
+  --shadow-ghost: 0 10px 24px rgba(29, 33, 38, 0.22);
+}
+
+/*
+ * 深色令牌：与上面 @theme 同名覆盖。
+ *
+ * 值来自定版原型 A「忠实反相」——把浅色的明度关系整体翻转，色相与饱和度照旧。
+ * 所以深色下 surface/canvas 只差 1.09，分层**依旧靠边框**（和浅色同一套做法），
+ * line / line-strong 也就必须跟着翻，不能只翻背景。
+ *
+ * 选择器特意不加 @layer：Tailwind 把 @theme 塞进 theme 层，层外的规则天然排在层内之后，
+ * 于是这里既不需要 !important，也不必靠提高选择器权重取胜。
+ *
+ * 唯一没到 4.5:1 的是 ink-3/surface（4.17，用于 11px 的弱提示文字）。
+ * 浅色现版这一项是 2.98，所以深色是变好而不是变差；提亮它会牺牲与 ink-2 的层次差，故保持定版原值。
+ */
+.dark {
+  /* 让原生滚动条、表单控件、光标跟着变深，否则深色页面上会拖一条亮滚动条。 */
+  color-scheme: dark;
+
+  --color-canvas: #17191d;
+  --color-surface: #1e2126;
+  --color-surface-2: #23262c;
+  --color-line: #2e3238;
+  --color-line-strong: #3b4048;
+  --color-track: #2a2e35;
+  --color-accent: #7b95e8;
+  --color-accent-weak: #232c44;
+  --color-accent-border: #3a4670;
+  --color-ink: #e8eaee;
+  --color-ink-2: #a8afba;
+  --color-ink-3: #7b828e;
+  --color-danger: #ef6f66;
+
+  --color-on-fill: #17191d;
+  --color-scrim: rgba(0, 0, 0, 0.5);
+
+  --shadow-menu: 0 6px 16px rgba(0, 0, 0, 0.5);
+  --shadow-panel: -8px 0 24px rgba(0, 0, 0, 0.45);
+  --shadow-ghost: 0 10px 24px rgba(0, 0, 0, 0.6);
+}
+
+/*
+ * 三个阴影工具类跟着 `.dark` 放：它们读的就是上面那两组变量，紧挨着便于对照。
+ *
+ * 注意每个 @utility 里那串 box-shadow 不是抄错的样板：Tailwind 自己的 `shadow-*` 是往
+ * `--tw-shadow` 里写值，再由这一串把 inset / ring 拼成最终的 box-shadow，所以
+ * `ring-1` 与 `shadow-*` 能同时成立。图省事写成 `box-shadow: var(--shadow-menu)` 会**吃掉 ring**：
+ * 同一个元素上 `ring-1 ring-accent shadow-menu`，环会消失。今天没有哪个元素同时用阴影和环，
+ * 但让自定义阴影和内置 shadow-* 行为一致，比留一个只在特定组合下才现形的坑便宜。
+ */
+@utility shadow-menu {
+  --tw-shadow: var(--shadow-menu);
+  box-shadow: var(--tw-inset-shadow), var(--tw-inset-ring-shadow), var(--tw-ring-offset-shadow),
+    var(--tw-ring-shadow), var(--tw-shadow);
+}
+
+@utility shadow-panel {
+  --tw-shadow: var(--shadow-panel);
+  box-shadow: var(--tw-inset-shadow), var(--tw-inset-ring-shadow), var(--tw-ring-offset-shadow),
+    var(--tw-ring-shadow), var(--tw-shadow);
+}
+
+@utility shadow-ghost {
+  --tw-shadow: var(--shadow-ghost);
+  box-shadow: var(--tw-inset-shadow), var(--tw-inset-ring-shadow), var(--tw-ring-offset-shadow),
+    var(--tw-ring-shadow), var(--tw-shadow);
+}
+
 @layer base {
+  /* 没挂 .dark 时明确是浅色：不让浏览器按系统偏好去猜，否则浅色页面可能出现深色滚动条。 */
+  :root {
+    color-scheme: light;
+  }
+
   body {
     margin: 0;
     background: var(--color-canvas);

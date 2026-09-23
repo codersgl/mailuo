@@ -140,7 +140,7 @@ export function TaskCard({
         <div
           ref={menuRef}
           className={cx(
-            'absolute right-1 z-10 rounded-[5px] border border-line bg-surface py-1 shadow-[0_6px_16px_rgba(29,33,38,0.12)]',
+            'absolute right-1 z-10 rounded-[5px] border border-line bg-surface py-1 shadow-menu',
             // 向上翻时不写死偏移量，而是按自身高度整体上移：菜单高度随内容变（三项 / 确认态）。
             openUp ? 'top-6 -translate-y-full' : 'top-7',
             confirmingDelete ? 'w-[200px]' : 'w-[132px]',
@@ -157,7 +157,7 @@ export function TaskCard({
                     closeMenu();
                     onDelete(task);
                   }}
-                  className="h-[22px] rounded-[4px] bg-danger px-2 text-[11.5px] text-white hover:opacity-90"
+                  className="h-[22px] rounded-[4px] bg-danger px-2 text-[11.5px] text-on-fill hover:opacity-90"
                 >
                   确认
                 </button>

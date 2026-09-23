@@ -22,7 +22,7 @@ export function DragGhost({ preview }: { preview: CardDragPreview }) {
       }}
       aria-hidden="true"
     >
-      <div className="h-full rounded-[5px] border border-accent-border bg-surface px-[11px] py-[9px] shadow-[0_10px_24px_rgba(29,33,38,0.22)]">
+      <div className="h-full rounded-[5px] border border-accent-border bg-surface px-[11px] py-[9px] shadow-ghost">
         <TaskCardFace task={task} archived={false} />
       </div>
     </div>

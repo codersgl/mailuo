@@ -4,6 +4,33 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>看板</title>
+    <script>
+      /*
+       * 深色模式防闪烁：必须在样式生效之前就把 class 挂上（见 docs/decisions.md D43）。
+       * 放到 React 里定色不够——模块要等这个脚本之后的 bundle 下载并执行，
+       * 中间浏览器已经用浅色把画面画出来了，深色用户每次刷新都会先白一下。
+       *
+       * 判断逻辑与 src/lib/theme.ts 的 storedTheme / systemTheme 一致：本地偏好优先，
+       * 没选过才跟随系统。改这里要同步改那边，test/themeBoot.test.ts 会真的执行这段脚本核对。
+       */
+      (function () {
+        var saved = null;
+        try {
+          // 与其他前端偏好一样存 JSON，所以字符串是带引号的。
+          saved = JSON.parse(localStorage.getItem('kanban.theme') || 'null');
+        } catch (error) {
+          // 隐私模式或存储被禁用时 localStorage 可能直接抛异常，当作没存过。
+        }
+        if (saved !== 'light' && saved !== 'dark') {
+          saved =
+            typeof window.matchMedia === 'function' &&
+            window.matchMedia('(prefers-color-scheme: dark)').matches
+              ? 'dark'
+              : 'light';
+        }
+        if (saved === 'dark') document.documentElement.classList.add('dark');
+      })();
+    </script>
   </head>
   <body>
     <div id="root"></div>

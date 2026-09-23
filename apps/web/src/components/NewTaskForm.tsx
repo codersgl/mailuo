@@ -70,7 +70,7 @@ export function NewTaskForm({
         <button
           type="submit"
           disabled={saving || trimmed === ''}
-          className="h-[24px] rounded-[5px] bg-accent px-2 text-[12px] text-white hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-45"
+          className="h-[24px] rounded-[5px] bg-accent px-2 text-[12px] text-on-fill hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-45"
         >
           添加
         </button>

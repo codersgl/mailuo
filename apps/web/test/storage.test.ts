@@ -1,6 +1,6 @@
 import { renderHook } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { readStored, writeStored } from '../src/lib/storage';
+import { readStored, removeStored, writeStored } from '../src/lib/storage';
 
 /** localStorage 本身可能不可用（隐私模式、被禁用），两个方向的读写都不能把异常抛给组件。 */
 
@@ -54,5 +54,23 @@ describe('writeStored', () => {
     });
 
     expect(() => writeStored('kanban.k', ['a'])).not.toThrow();
+  });
+});
+
+describe('removeStored', () => {
+  it('删掉之后读回来就是 fallback', () => {
+    writeStored('kanban.k', ['a']);
+    removeStored('kanban.k');
+
+    expect(readStored('kanban.k', [], Array.isArray)).toEqual([]);
+    expect(window.localStorage.getItem('kanban.k')).toBeNull();
+  });
+
+  it('localStorage 抛异常时不往外传', () => {
+    vi.spyOn(Storage.prototype, 'removeItem').mockImplementation(() => {
+      throw new Error('storage disabled');
+    });
+
+    expect(() => removeStored('kanban.k')).not.toThrow();
   });
 });

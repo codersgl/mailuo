@@ -509,3 +509,49 @@ Zod 的 `.int()` 拒绝的是**不安全整数**，而所有大于 2^53 的值�
 
 **worktree 环境注意**：本机沙箱里 pnpm 默认 store（HOME 下）不可写，`pnpm install` 会以 `ERR_SQLITE_ERROR: unable to open database file` 失败；在 worktree 里用 `pnpm install --store-dir <仓库内的路径>` 即可，对应目录加进 `.gitignore`。与代码无关，只是这台机器的沙箱限制。
 
+## D43 第 10 步：深色模式靠覆盖令牌实现，顶栏放三态控件（2026-09-23，用户拍板）
+
+**问题**：第一批只剩深色模式。`docs/spec.md` 的「主题」只规定了机制——Tailwind 用 class 策略在 `html` 上切换 `dark` 类、偏好存 localStorage、首次访问跟随 `prefers-color-scheme`、手动切换后以本地偏好为准——配色本身要另选，而且它是全屏观感，必须让用户看着挑。
+
+**配色选型**：按前端规则先让子代理做了三版单文件可点原型（各自能实时深浅切换，并附一张 WCAG 对比度表）：A「忠实反相」把浅色的明度关系整体翻转、色相照旧；B「近黑高对比」画布近黑、层次靠表面亮度阶梯而不是边框；C「冷灰蓝 + 强调色随主题换色」。用户选 **A**，控件选 **三态**。
+
+**核心实现决定：组件类名一个都不改，靠 `.dark` 覆盖同名令牌。** 现在所有颜色都走 `@theme` 里的语义令牌（`bg-surface`、`text-ink-2`、`border-line-strong`…），所以深色只需要在 `.dark` 里重新声明 `--color-*`。Tailwind 对颜色生成的是 `var(--color-surface)` 这种运行时引用，实测深色下 `body` 背景是 `rgb(23,25,29)`（= `#17191d`）。替代方案是给每个组件加 `dark:` 前缀，那等于把「配色」这件事重新散回三十来处类名里，以后换配色要全文搜——这正是当初把颜色收进 `@theme`（D29）要避免的。
+
+`.dark` 覆盖块**故意不加 `@layer`**：Tailwind 把 `@theme` 产出的 `:root{--color-*}` 放进 `theme` 层，层外规则无条件排在层内规则之后，所以既不需要 `!important` 也不靠选择器权重取胜。
+
+规范说的 `darkMode: 'class'` 在 Tailwind v4 里没有这个配置项，等价物是 `@custom-variant dark (&:where(.dark, .dark *))`，已加上。当前没有任何 `dark:` 工具类用到它，但保留的理由不是「规范点名」而是：删掉它，`dark:` 会静默退回 Tailwind 默认的 `@media (prefers-color-scheme: dark)`。而这个界面允许用户手动覆盖系统偏好——用户在深色系统下选了浅色，某个组件却仍按系统变深，是最坏的一种错。留着它，这类写法根本写不出来。
+
+**阴影不能放 `@theme`（实测踩到的坑）**：三处阴影原先写死在组件里（`shadow-[0_6px_16px_rgba(29,33,38,0.12)]` 之类），深色下必须换更重的纯黑，否则「拖拽克隆卡」会在深色画布上顶出一圈比背景还亮的灰边。第一版把三个 `--shadow-*` 放进 `@theme`、在 `.dark` 里覆盖，看起来和颜色一个套路，但实测深色下 `.shadow-menu` 算出来仍是浅色那串 `rgba(29,33,38,0.12)`。原因：Tailwind 会把 `--shadow-*` 的**值**在构建时内联进 `.shadow-*` 工具类，而 `--color-*` 生成的是 `var(--color-*)`——前者只认构建时那一份，后者运行时会跟着主题变。所以阴影改成「`:root` / `.dark` 里普普通通的自定义属性 + `@utility shadow-menu/shadow-panel/shadow-ghost` 读 `var(...)`」，产物是 `.shadow-menu{box-shadow:var(--shadow-menu)}`。这个坑不实测很难发现：类型检查、单测、构建都不会报。
+
+**首屏定色必须内联在 `index.html`**：放到 React 里定色不够——模块要等 bundle 下载并执行，中间浏览器已经按浅色画过一帧，深色用户每次刷新都会先白一下。所以 `index.html` 的 `<head>` 里多了一段纯字符串脚本，在样式生效前读 localStorage / `matchMedia` 并把 `dark` 类挂上。代价是这段逻辑与 `src/lib/theme.ts` 重复了一份；重复是这一步唯一不能省的地方（内联脚本不能 import 模块），所以用 `test/themeBoot.test.ts` 把脚本从 `index.html` 里抽出来**真的执行一遍**来防漂移：用 `THEME_KEY` 写入、断言 `html` 上的类，key 或取值格式一变就红。验证防闪烁本身用的是 CDP：`Page.addScriptToEvaluateOnNewDocument` 里记下第一个 `requestAnimationFrame` 时 `html` 上有什么类，深色系统下拿到的是 `dark`，也就是首帧画出来就是深的。
+
+**三态的语义（`hooks/useTheme.ts`）**：`choice` 是用户选过的偏好，`null` 表示「跟随系统」；`theme = choice ?? system`。刻意不用 `usePersistentState`：那个 hook 挂载时就把初始值写回 localStorage，「没选过」这个状态于是永远消失，首次跟随系统只在第一次访问那一次成立。现在只在用户真的点过之后才写；点「跟随系统」是**删掉**这个键（`storage.ts` 新增 `removeStored`），而不是存一个字面量 `null`——后者会在 localStorage 里留一条 `"null"`，以后排查时看不出是「清空」还是「写坏了」。跟随系统期间还挂着 `matchMedia` 的 change 监听，用户在系统设置里切深浅时页面不刷新就跟着变；一旦选过就拆掉监听。单测把这几条都钉住了，其中「监听器数量」是「还在不在跟随」最直接的证据。
+
+**`text-white` 改成 `text-on-fill`（新增令牌）**：三个方案的对比度表都指向同一件事——`accent` 在深色下必须提亮才能当文字色用，可一提亮，`bg-accent` 上的白字就只剩 2.6–2.9:1。所以「填充色」和「填充色上的文字」拆成两个令牌：`--color-on-fill` 浅色是 `#ffffff`（和原来一模一样），深色是 `#17191d`。同样受影响的还有确认删除按钮（`bg-danger`）。一个令牌同时服务 accent 与 danger 两种填充，是刻意的：浅色两者都是白字、深色两者都用近黑，现在没有需要分开的证据，真需要时再拆。
+
+**这四处硬编码也一起收了**：`--color-scrim`（抽屉遮罩）、`--shadow-menu`、`--shadow-panel`、`--shadow-ghost`。深色下遮罩必须换纯黑（半透明深灰蓝会把画布「提亮」），实测深色下 `bg-scrim` 是 `rgba(0,0,0,0.5)`。
+
+**浅色侧没有动**：把 worktree（5174）与主干（5173）的同一批元素计算样式逐项对比，`body` 背景/字色、顶栏背景、卡片背景/边框、列标题字色全部一字不差，唯一不同的项是主干上不存在的主题控件本身（`#eef2fc` / `#4c6fce`，正是浅色的 accent-weak / accent）。截图对比也在同一轮做过。
+
+**已知不达标项，保持定版原值**：深色 `ink-3/surface` 是 4.17:1，低于 4.5（用于 11px 的弱提示文字）。浅色现版这一项是 2.98，所以深色是变好而不是变差；提到 4.77 要牺牲它与 `ink-2` 的层次差，属于配色改动而非本次范围，留待用户决定。
+
+**可选复杂性，这次没做**：给深色单独一套强调色（原型 C 的方向，代价是深浅两套品牌色）；按时间自动切换；`color-scheme` 之外的滚动条样式定制；认不出的地址那一页没有顶栏、因而没有主题控件（主题本身照常生效，`html` 上的类由内联脚本决定）。
+
+**验收方式**：jsdom 没有 `matchMedia`（实测 `typeof window.matchMedia === 'undefined'`），所以 `systemTheme()` 与监听都做了兜底、按浅色算；测试里用 `test/mediaStub.ts` 装一个可控的 `matchMedia`。真实浏览器行为用 headless Chrome + CDP 复核：浅色/深色/点按钮/刷新保持/交还系统五步的 `html` 类与计算颜色、首帧类、以及运行中切系统偏好；另外在深色下真的拖了一次卡片，确认克隆卡的阴影立得起来、插入线是 `rgb(123,149,232)`。这类脚本不入库，验收完即删（`prototypes/`）。
+
+**审阅发现（两条，都已修）**：
+
+- **交还给系统时用了过期的系统偏好**。追踪：`useTheme` 里 `system` 是一份 state，只在「跟随系统」期间挂 `matchMedia` 监听更新。系统深色 → 用户选浅色（监听被拆掉）→ 期间系统变成浅色（没有任何人在听，state 停在 `dark`）→ 用户点「跟随系统」，此时 `theme = choice ?? system` 取到的是那份陈旧的 `dark`，页面跳回深色，而系统明明是浅色。修法：`choose(null)` 时顺手 `setSystem(systemTheme())` 重读一次当前系统偏好。这条是审阅者用探针用例挖出来的，已收进 `useTheme.test.ts`（「不跟随期间系统变过，交还时按现在的系统来」）。它只在「不跟随期间系统恰好变过」时才现形，手工点很少碰到。
+- **缺一条守着核心设计的测试**。整个方案依赖「`@theme` 里的令牌在 `.dark` 里都有覆盖」，而漏一个的后果是静默的：该令牌在深色下保持浅色值，类型检查、其它单测、构建全都不报——阴影那次就是这么踩到的。新增 `themeTokens.test.ts` 直接读 `index.css`，断言两套 `--color-*` 集合相等、两套 `--shadow-*` 集合相等、且每个阴影令牌都有同名 `@utility` 在读它。并做了变异检验：删掉 `.dark` 里的一行令牌，这条测试立刻红。
+
+**审阅提出的其余调整（都采纳）**：`useTheme` 不再返回 `theme`（没有消费者，是死 API，生效与否由 html 上的类体现）；主题按钮补上与卡片「⋯」、列头「+」相同的 `focus-visible` 聚焦环（原先用的是 UA 默认环，同一个顶栏里两种焦点样式）；`themeBoot.test.ts` 定位内联脚本的正则从「第一个 `<script>`」改成必须命中 `prefers-color-scheme`，并补了「存了认不出的值 → 跟随系统」这条只有内联脚本才有的分支；三个 `@utility` 挪到 `.dark` 之后，紧挨着它们读的那两组变量。
+
+**这次改动自己踩到的第二个坑（浏览器验收抓到的）**：把 `@utility` 往下挪的同时，我把浅色阴影的 `:root` 也挪到了 `.dark` **之后**，深色阴影当场失效——`--color-*` 在 `layer theme` 里，层外的 `.dark` 无条件赢过它，所以顺序随便；但 `--shadow-*` 浅色那份是**未分层的 `:root`**，与 `.dark` 权重同为 (0,1,0)，于是后写的浅色赢了。现象是深色下菜单阴影仍取 `rgba(29,33,38,0.12)`，而 `themeTokens.test.ts` 只比对「两套令牌名字成对」，完全测不出来（它守的是漏写，不是解析顺序）。修法是把浅色 `:root` 放回 `.dark` 之前，并补一条断言把这个顺序钉住（`indexOf('--shadow-menu') < indexOf('.dark {')`）。教训写在这里：令牌成对 ≠ 生效，涉及未分层规则的顺序必须实测。
+
+**阴影工具类展开写 `box-shadow` 的原因**：审阅指出第一版 `@utility shadow-menu { box-shadow: var(--shadow-menu) }` 丢掉了与 `ring-*` 的组合能力（Tailwind 内置 `shadow-*` 是往 `--tw-shadow` 写值，再由一串 `var(--tw-inset-shadow), …var(--tw-ring-shadow), var(--tw-shadow)` 拼成最终值，所以环和阴影能共存；整体赋值会把环吃掉）。今天没有任何元素同时用阴影和环，但既然要自定义工具类，就让它和内置 `shadow-*` 行为一致。已实测：同一个元素上 `ring-1 ring-accent shadow-menu` 的环与阴影都在。
+
+**`--color-scrim` 的深色值没有原型依据**：定版原型 A 为了让用户看清配色，去掉了抽屉遮罩，因此没有这个令牌；我按「深色遮罩用纯黑并加重」的常规取了 `rgba(0,0,0,0.5)`（浅色仍是原来的 0.28）。这是本次的判断，不是原型 A 的值，需要调整直接改这一个数。
+
+**审阅认为可以不动的地方（同意，记录在此免得下次重开）**：三态控件继续用 `role="group"` + 三个 `aria-pressed` 按钮（省掉方向键处理，代价是读屏逐个报「切换按钮」）；`--color-on-fill` 一个令牌服务 `bg-accent` 与 `bg-danger`（浅色都配白、深色都配近黑，没有需要分开的证据）；`removeStored` 保留（写 `null` 会在 localStorage 留一条读不出意图的记录）；`mediaStub.ts` 放在 `test/` 下不叫 `.test.ts`（vitest 默认只收 `*.test.*`，typecheck 照样管）；`TopBar.test.tsx` 里用 `within(面包屑)` 收窄断言而不是排除法。
+
+
