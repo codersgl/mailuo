@@ -385,7 +385,7 @@ describe('GET /api/board/cpm', () => {
     const response = await api.request('/api/board/cpm');
 
     expect(response.status).toBe(500);
-    expect(await response.json()).toEqual({ error: 'internal server error' });
+    expect(await response.json()).toEqual({ error: '服务器内部错误' });
     expect(logged).toHaveBeenCalledOnce();
     logged.mockRestore();
   });

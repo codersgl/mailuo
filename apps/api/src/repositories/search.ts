@@ -3,7 +3,7 @@ import { SEARCH_LIMIT, toLikePattern } from '../domain/search.js';
 import type { ColumnRecord } from './columns.js';
 import { listColumns } from './columns.js';
 import type { BreadcrumbItem } from './tasks.js';
-import { TaskCycleError, readBreadcrumb } from './tasks.js';
+import { TaskCycleError, TaskParentMissingError, readBreadcrumb } from './tasks.js';
 
 /** 一条搜索结果。字段是按「结果列表怎么画」定的，不是任务记录的子集。 */
 export interface SearchResult {
@@ -106,9 +106,9 @@ function readPath(db: Db, taskId: string): BreadcrumbItem[] {
   try {
     return readBreadcrumb(db, taskId)?.slice(0, -1) ?? [];
   } catch (error: unknown) {
-    // 父链成环（只可能来自手工改库）在面包屑接口里是 500，那是单条任务的读，报错是合理的；
-    // 搜索是批量读，一条脏数据退化成「没有路径」比整页报错有用（见上面的说明）。
-    if (error instanceof TaskCycleError) return [];
+    // 父链成环或父行缺失（只可能来自手工改库）在面包屑接口里是 500，那是单条任务的读，
+    // 报错是合理的；搜索是批量读，一条脏数据退化成「没有路径」比整页报错有用（见上面的说明）。
+    if (error instanceof TaskCycleError || error instanceof TaskParentMissingError) return [];
     throw error;
   }
 }

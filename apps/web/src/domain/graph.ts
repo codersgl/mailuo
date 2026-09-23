@@ -134,6 +134,9 @@ export function layoutGraph(
   let height = 0;
   for (let layer = 0; layer <= maxLayer; layer += 1) {
     const column = byLayer.get(layer);
+    // 层号连续性由拓扑分层保证：0..maxLayer 每一层至少有一个节点，所以这里取不到只可能是
+    // 内部 bug（见审计报告 D10）。保留这个分支是因为布局函数不该抛异常——真出现空洞时
+    // 跳过一层，比整张图画不出来要好。
     if (column === undefined) continue;
     const stack = column.length * NODE_HEIGHT + (column.length - 1) * ROW_GAP;
     const top = CANVAS_PADDING + (tallest - stack) / 2;

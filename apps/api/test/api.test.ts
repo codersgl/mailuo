@@ -94,7 +94,7 @@ describe('未知路径', () => {
     const response = await app.request('/api/不存在');
 
     expect(response.status).toBe(404);
-    expect(await response.json()).toEqual({ error: 'not found' });
+    expect(await response.json()).toEqual({ error: '路径不存在' });
   });
 
   it('没有 JSON 请求体要求的路径不受写接口 Content-Type 校验影响', async () => {
@@ -104,7 +104,7 @@ describe('未知路径', () => {
     const response = await app.request('/api/health', { method: 'POST' });
 
     expect(response.status).toBe(404);
-    expect(await response.json()).toEqual({ error: 'not found' });
+    expect(await response.json()).toEqual({ error: '路径不存在' });
   });
 });
 
@@ -133,7 +133,7 @@ describe('错误处理', () => {
     const response = await app.request('/api/boom');
 
     expect(response.status).toBe(500);
-    expect(await response.json()).toEqual({ error: 'internal server error' });
+    expect(await response.json()).toEqual({ error: '服务器内部错误' });
     // 出错必须留痕，不能静默返回 500。
     expect(logged).toHaveBeenCalledOnce();
     logged.mockRestore();
