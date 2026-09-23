@@ -169,7 +169,9 @@ export function createApp(db: Db, options: AppOptions = {}): Hono {
   }
 
   // 错误统一返回 { error: string }（见 docs/spec.md）。
-  app.notFound((c) => c.json({ error: 'not found' }, 404));
+  // 两条兜底文案也用中文：前端把 error.message 直接显示给用户（见 client.ts），而这是用户
+  // 访问未知路径或后端崩掉时唯一能看到的一句话（见审计报告 D11）。
+  app.notFound((c) => c.json({ error: '路径不存在' }, 404));
   app.onError((error, c) => {
     // HTTPException 携带有意义的状态码（例如后续 zValidator 校验失败抛的 400），
     // 直接放行它的响应，不要压成 500。
@@ -177,7 +179,7 @@ export function createApp(db: Db, options: AppOptions = {}): Hono {
       return toErrorResponse(error, c);
     }
     console.error(error);
-    return c.json({ error: 'internal server error' }, 500);
+    return c.json({ error: '服务器内部错误' }, 500);
   });
 
   return app;

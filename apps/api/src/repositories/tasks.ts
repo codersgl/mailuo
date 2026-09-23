@@ -185,8 +185,23 @@ export class TaskCycleError extends Error {
 }
 
 /**
+ * 任务的父行缺失（`parent_id` 指向一条不存在的任务），只可能来自手工改库的脏数据。
+ *
+ * 为什么不沿用「返回 undefined」：那会让 undefined 同时表示「这条任务不存在」和「父链断了」，
+ * 同一份脏数据在三个消费者那里落到三种结局——面包屑路由回 404、搜索退化成空路径、
+ * 仓储契约被重载。现在它与成环一样抛错，由调用方按场景决定收场（见审计报告 D4）。
+ */
+export class TaskParentMissingError extends Error {
+  constructor(parentId: string) {
+    super(`任务的父行缺失: ${parentId}`);
+    this.name = 'TaskParentMissingError';
+  }
+}
+
+/**
  * 面包屑：第一项是根看板（id 为 null），随后是从根到 taskId 自身的每一层。
- * 任务不存在返回 undefined。父链理论上无环，仍加 visited 集合防御脏数据导致死循环。
+ * 任务不存在返回 undefined；父链走不通（成环、父行缺失）抛错——单条任务的读当 500 记日志，
+ * 批量搜索退化成空路径。父链理论上无环，仍加 visited 集合防御脏数据导致死循环。
  */
 export function readBreadcrumb(db: Db, taskId: string): BreadcrumbItem[] | undefined {
   let current = findTask(db, taskId);
@@ -204,9 +219,8 @@ export function readBreadcrumb(db: Db, taskId: string): BreadcrumbItem[] | undef
     if (current.parentId === null) break;
     const parent = findTask(db, current.parentId);
     if (!parent) {
-      // 父行缺失同样只可能来自脏数据（外键开启时不可达）。返回 undefined 让路由回 404，
-      // 不要把它当成根任务，否则前端会显示一条错误的面包屑。
-      return undefined;
+      // 外键开启时不可达；一旦出现，绝不能当成根任务，否则前端会显示一条错误的面包屑。
+      throw new TaskParentMissingError(current.parentId);
     }
     current = parent;
   }
@@ -300,7 +314,11 @@ export function updateTaskFields(
     return findTask(db, id);
   });
 
-  return update();
+  // 与其余写入口一致用 immediate：先读后写的 DEFERRED 事务会先拿读锁再升级，另一个进程
+  // （例如 dev watch 重启时短暂重叠）中途写入就会抛 SQLITE_BUSY_SNAPSHOT。它现在被
+  // applyTaskUpdate 的 immediate 事务包着（嵌套成 SAVEPOINT）才没暴露，但它是导出的，
+  // 直接调用就会拿到 DEFERRED（见审计报告 D5）。
+  return update.immediate();
 }
 
 /**

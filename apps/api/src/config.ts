@@ -35,7 +35,7 @@ export interface Config {
 
 /**
  * 默认端口。开发机上 3000 常被其他服务占用，这里避开它。
- * 注意 docs/spec.md 的开发约定里写的是 3000，改端口后需要用户同步更新规范。
+ * docs/spec.md 的开发约定里写的同样是 3001，改动时需要两边同步。
  */
 export const DEFAULT_PORT = 3001;
 

@@ -1,6 +1,10 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { createApp } from '../src/app.js';
-import { TaskCycleError, readBreadcrumb } from '../src/repositories/tasks.js';
+import {
+  TaskCycleError,
+  TaskParentMissingError,
+  readBreadcrumb,
+} from '../src/repositories/tasks.js';
 import { createTestDb, insertTask } from './helpers.js';
 
 describe('GET /api/board/:parentId', () => {
@@ -145,7 +149,7 @@ describe('GET /api/breadcrumb/:taskId', () => {
     expect(() => readBreadcrumb(db, bId)).toThrow(TaskCycleError);
   });
 
-  it('父行缺失时返回 undefined，不假装成根任务', () => {
+  it('父行缺失时抛错，不假装成根任务', () => {
     const db = createTestDb();
     const aId = insertTask(db, { title: 'A', columnId: 'todo', orders: 1000 });
     const bId = insertTask(db, { title: 'B', columnId: 'todo', orders: 2000, parentId: aId });
@@ -155,6 +159,26 @@ describe('GET /api/breadcrumb/:taskId', () => {
     db.prepare('DELETE FROM tasks WHERE id = ?').run(bId);
     db.pragma('foreign_keys = ON');
 
-    expect(readBreadcrumb(db, cId)).toBeUndefined();
+    // 与成环同一类脏数据、同一个口径：undefined 只表示「这条任务不存在」。
+    expect(() => readBreadcrumb(db, cId)).toThrow(TaskParentMissingError);
+  });
+
+  it('父行缺失的脏数据让面包屑接口回 500 并记日志，而不是 404 或一条假面包屑', async () => {
+    const db = createTestDb();
+    const aId = insertTask(db, { title: 'A', columnId: 'todo', orders: 1000 });
+    const bId = insertTask(db, { title: 'B', columnId: 'todo', orders: 2000, parentId: aId });
+    const cId = insertTask(db, { title: 'C', columnId: 'todo', orders: 3000, parentId: bId });
+    db.pragma('foreign_keys = OFF');
+    db.prepare('DELETE FROM tasks WHERE id = ?').run(bId);
+    db.pragma('foreign_keys = ON');
+    const logged = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    const response = await createApp(db).request(`/api/breadcrumb/${cId}`);
+
+    // 404 会骗人（任务在、只是父链断了），静默截断会画出错误的面包屑；单条任务的读报 500 最诚实。
+    expect(response.status).toBe(500);
+    expect(await response.json()).toEqual({ error: '服务器内部错误' });
+    expect(logged).toHaveBeenCalledOnce();
+    logged.mockRestore();
   });
 });

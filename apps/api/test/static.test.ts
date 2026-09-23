@@ -107,7 +107,7 @@ describe('静态托管：不能越过的边界', () => {
 
     expect(response.status).toBe(404);
     expect(response.headers.get('content-type')).toContain('application/json');
-    expect(await response.json()).toEqual({ error: 'not found' });
+    expect(await response.json()).toEqual({ error: '路径不存在' });
   });
 
   it('/api 与 /api/ 本身也是接口路径，不是页面', async () => {
@@ -117,7 +117,7 @@ describe('静态托管：不能越过的边界', () => {
       const response = await staticApp()(path);
 
       expect(response.status).toBe(404);
-      expect(await response.json()).toEqual({ error: 'not found' });
+      expect(await response.json()).toEqual({ error: '路径不存在' });
     }
   });
 
@@ -125,7 +125,7 @@ describe('静态托管：不能越过的边界', () => {
     const response = await staticApp()('/api/echo.json');
 
     expect(response.status).toBe(404);
-    expect(await response.json()).toEqual({ error: 'not found' });
+    expect(await response.json()).toEqual({ error: '路径不存在' });
   });
 
   it('接口正常响应不受静态托管影响', async () => {
@@ -146,7 +146,7 @@ describe('静态托管：不能越过的边界', () => {
     const response = await staticApp()('/board/task-1', { method: 'POST' });
 
     expect(response.status).toBe(404);
-    expect(await response.json()).toEqual({ error: 'not found' });
+    expect(await response.json()).toEqual({ error: '路径不存在' });
   });
 
   it('编码过的 .. 路径穿越读不到 dist 之外的文件', async () => {
@@ -190,6 +190,6 @@ describe('没有前端产物时（开发态）', () => {
     const response = await app.request('/');
 
     expect(response.status).toBe(404);
-    expect(await response.json()).toEqual({ error: 'not found' });
+    expect(await response.json()).toEqual({ error: '路径不存在' });
   });
 });

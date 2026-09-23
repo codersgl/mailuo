@@ -130,6 +130,47 @@ describe('PUT /api/tasks/:id/deps', () => {
     expect(await response.json()).toEqual({ error: '任务不存在' });
   });
 
+  /**
+   * 下面三条钉住的是「资源校验先于入参校验」这条顺序（见 docs/decisions.md D23/D48）：
+   * 目标任务的 404 / 400 必须排在「自己依赖自己」409 与「逐个前置任务」404/400 之前。
+   * 原来的三条路由各自重复这段校验时，这个边界没有用例守着——把顺序调换后整套测试仍然全绿。
+   */
+  it('不存在的任务带非空前置时，先回「任务不存在」而不是前置任务的 404', async () => {
+    const db = createTestDb();
+    const aId = insertTask(db, { title: 'A', columnId: 'todo', orders: 1000 });
+    const api = createApp(db);
+
+    const response = await setDeps(api, '不存在的任务', [aId]);
+
+    expect(response.status).toBe(404);
+    expect(await response.json()).toEqual({ error: '任务不存在' });
+  });
+
+  it('不存在的任务把「自己」列为前置时，先回「任务不存在」而不是 409 自己依赖自己', async () => {
+    const api = createApp(createTestDb());
+
+    const response = await setDeps(api, '不存在的任务', ['不存在的任务']);
+
+    expect(response.status).toBe(404);
+    expect(await response.json()).toEqual({ error: '任务不存在' });
+  });
+
+  it('已归档任务把「自己」列为前置时，先回「任务已归档」而不是 409 自己依赖自己', async () => {
+    const db = createTestDb();
+    const archivedId = insertTask(db, {
+      title: '归档任务',
+      columnId: 'todo',
+      orders: 1000,
+      archived: true,
+    });
+    const api = createApp(db);
+
+    const response = await setDeps(api, archivedId, [archivedId]);
+
+    expect(response.status).toBe(400);
+    expect(await response.json()).toEqual({ error: '任务已归档' });
+  });
+
   it('任务已归档返回 400', async () => {
     const db = createTestDb();
     const aId = insertTask(db, { title: 'A', columnId: 'todo', orders: 1000 });
@@ -320,7 +361,7 @@ describe('PUT /api/tasks/:id/deps', () => {
       body: 'a=1',
     });
     expect(similar.status).toBe(404);
-    expect(await similar.json()).toEqual({ error: 'not found' });
+    expect(await similar.json()).toEqual({ error: '路径不存在' });
 
     // 真正在任务接口下、但方法不对的写请求仍会被拦（宁可多拦，见 routes/tasks.ts 的注释）。
     const wrongMethod = await api.request(`/api/tasks/${aId}`, {

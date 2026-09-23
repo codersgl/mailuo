@@ -73,21 +73,15 @@ export function createTaskRoutes(db: Db): Hono {
     const patch = c.req.valid('json');
 
     // 顺序固定为：任务存在（404）→ 任务未归档（400）→ 目标列存在（400）。顺序写进测试。
-    const task = findTask(db, id);
-    if (!task) {
-      return c.json({ error: '任务不存在' }, 404);
-    }
-    if (task.archivedAt !== null) {
-      return c.json({ error: '任务已归档' }, 400);
+    const precheck = precheckTaskWritable(db, id);
+    if (!precheck.ok) {
+      return c.json({ error: precheck.error }, precheck.status);
     }
     if (patch.columnId !== undefined && !columnExists(db, patch.columnId)) {
       return c.json({ error: `列不存在: ${patch.columnId}` }, 400);
     }
 
-    const updated = applyTaskUpdate(db, id, patch);
-    if (!updated) {
-      return c.json({ error: '任务不存在' }, 404);
-    }
+    const updated = requireTask(applyTaskUpdate(db, id, patch));
     return c.json(withColumnTasks(db, updated, wantsArchived(c)));
   });
 
@@ -99,12 +93,9 @@ export function createTaskRoutes(db: Db): Hono {
       const input = c.req.valid('json');
 
       // 与 PATCH /api/tasks/:id 保持同一顺序：任务存在 → 任务未归档 → 列存在 → 父级检查。
-      const task = findTask(db, id);
-      if (!task) {
-        return c.json({ error: '任务不存在' }, 404);
-      }
-      if (task.archivedAt !== null) {
-        return c.json({ error: '任务已归档' }, 400);
+      const precheck = precheckTaskWritable(db, id);
+      if (!precheck.ok) {
+        return c.json({ error: precheck.error }, precheck.status);
       }
       if (!columnExists(db, input.columnId)) {
         return c.json({ error: `列不存在: ${input.columnId}` }, 400);
@@ -123,10 +114,7 @@ export function createTaskRoutes(db: Db): Hono {
         }
       }
 
-      const updated = changeTaskParent(db, id, input);
-      if (!updated) {
-        return c.json({ error: '任务不存在' }, 404);
-      }
+      const updated = requireTask(changeTaskParent(db, id, input));
       return c.json(withColumnTasks(db, updated, wantsArchived(c)));
     },
   );
@@ -180,13 +168,11 @@ export function createTaskRoutes(db: Db): Hono {
       const id = c.req.param('id');
       const { predecessorIds } = c.req.valid('json');
 
-      const task = findTask(db, id);
-      if (!task) {
-        return c.json({ error: '任务不存在' }, 404);
+      const precheck = precheckTaskWritable(db, id);
+      if (!precheck.ok) {
+        return c.json({ error: precheck.error }, precheck.status);
       }
-      if (task.archivedAt !== null) {
-        return c.json({ error: '任务已归档' }, 400);
-      }
+      const { task } = precheck;
       // 自己依赖自己在图的定义里就是一个环，单独给一句更直白的文案。
       if (predecessorIds.includes(id)) {
         return c.json({ error: '任务不能依赖自己' }, 409);
@@ -209,15 +195,49 @@ export function createTaskRoutes(db: Db): Hono {
         return c.json({ error: `依赖形成环: ${cyclic}` }, 409);
       }
 
-      const updated = setTaskDeps(db, id, predecessorIds);
-      if (!updated) {
-        return c.json({ error: '任务不存在' }, 404);
-      }
+      const updated = requireTask(setTaskDeps(db, id, predecessorIds));
       return c.json({ task: updated, predecessorIds: listPredecessorIds(db, id) });
     },
   );
 
   return routes;
+}
+
+/**
+ * 写接口的前置校验：任务存在（404）→ 任务未归档（400）。
+ *
+ * 三条写路由（`PATCH /api/tasks/:id`、`PATCH /api/tasks/:id/parent`、`PUT /api/tasks/:id/deps`）
+ * 的这两步原本逐字重复三份，顺序又被测试钉死（先资源后入参、未归档先于其它校验，见
+ * docs/decisions.md D23 与 D48），于是每次调整都要同时改三处加三组测试，漏一处就出现
+ * 「同一种错误在两条路径上状态码不同」。抽到一处后，各路由只负责自己特有的后续校验
+ * （列存在、父级成环、依赖各项…），顺序就只有一个来源。返回判别式联合而不是 Response：
+ * helper 拿不到 Context，也不需要知道调用方会怎么包装响应。
+ */
+function precheckTaskWritable(
+  db: Db,
+  id: string,
+): { ok: true; task: TaskRecord } | { ok: false; error: string; status: 400 | 404 } {
+  const task = findTask(db, id);
+  if (!task) return { ok: false, error: '任务不存在', status: 404 };
+  if (task.archivedAt !== null) return { ok: false, error: '任务已归档', status: 400 };
+  return { ok: true, task };
+}
+
+/**
+ * 前置校验通过后，仓储层仍按「查不到返回 undefined」的契约返回，但这一步已经不可达：
+ * better-sqlite3 是同步的，校验与写入之间没有 await，任务不可能凭空消失。
+ *
+ * 原本三处各写一次 `if (!updated) return 404`——读者判断不出哪一层权威，而将来若在前置校验
+ * 与仓储调用之间插入 await，那三处会从不可达变成没被测试过的真实竞态。这里收敛成一条显式
+ * 断言：真触发就是 500 加日志，比一个看起来像「另一层权威」的 404 更诚实（见审计报告 D10）。
+ * 代价要说清：真走到这里时写事务可能已经提交，客户端却只拿到 500——那种情况会变成「重试一次
+ * 可能重复写入」的语义，所以这条断言的目标是让它响亮地暴露，而不是替调用方兜底。
+ */
+function requireTask(task: TaskRecord | undefined): TaskRecord {
+  if (!task) {
+    throw new Error('前置校验通过后任务却查不到，说明校验与写入之间被插入了异步操作');
+  }
+  return task;
 }
 
 /**

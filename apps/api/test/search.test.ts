@@ -149,6 +149,27 @@ describe('GET /api/search', () => {
     expect(pathOf(normalId)).toEqual([{ id: null, title: '根看板' }]);
   });
 
+  it('父行缺失的脏数据同样只让那一条结果没有路径，不影响其余结果', async () => {
+    const db = createTestDb();
+    const aId = insertTask(db, { title: '甲 关键词', columnId: 'todo', orders: 1000 });
+    const bId = insertTask(db, { title: '乙 关键词', columnId: 'todo', orders: 2000, parentId: aId });
+    const normalId = insertTask(db, { title: '丙 关键词', columnId: 'todo', orders: 3000 });
+    // 与 tree.test.ts 的父行缺失用例同一手法：外键开启时删不掉被引用的父行，临时关掉。
+    db.pragma('foreign_keys = OFF');
+    db.prepare('DELETE FROM tasks WHERE id = ?').run(aId);
+    db.pragma('foreign_keys = ON');
+
+    const { status, body } = await search(db, { q: '关键词' });
+
+    expect(status).toBe(200);
+    expect(body.results).toHaveLength(2);
+    const pathOf = (id: string) =>
+      body.results.find((result: { id: string }) => result.id === id).path;
+    // 成环与父行缺失走的是同一条降级路径：批量读里一条脏数据不该让整页 500。
+    expect(pathOf(bId)).toEqual([]);
+    expect(pathOf(normalId)).toEqual([{ id: null, title: '根看板' }]);
+  });
+
   it('多余的查询参数被忽略，与其它读接口一致', async () => {
     const db = createTestDb();
     insertTask(db, { title: '重构登录', columnId: 'todo', orders: 1000 });
