@@ -66,6 +66,47 @@ export interface BreadcrumbItem {
 }
 
 /**
+ * 关键路径里的一个任务节点（`GET /api/board[/:parentId]/cpm`）。
+ *
+ * 前四项是任务字段，`durationMinutes` 保留 null（未估）而不是折成 0：CPM 按 0 算，
+ * 但界面要能区分「未估」与「瞬时」。后六项是后端按 CPM 算出的分钟数（相对项目起点）。
+ */
+export interface ScheduleNode {
+  id: string;
+  title: string;
+  columnId: string;
+  durationMinutes: number | null;
+  archivedAt: string | null;
+  earliestStart: number;
+  earliestFinish: number;
+  latestStart: number;
+  latestFinish: number;
+  /** 最晚开始 − 最早开始；0 表示这个任务在关键路径上。 */
+  slack: number;
+  critical: boolean;
+}
+
+/**
+ * 依赖图里的一条边：predecessor 完成后 successor 才能开始。
+ * `critical` 不只是「两端都关键」，还要求这条边是紧的（见 apps/api/src/domain/cpm.ts）。
+ */
+export interface ScheduleEdge {
+  predecessorId: string;
+  successorId: string;
+  critical: boolean;
+}
+
+/** 某一层的依赖图与关键路径（`GET /api/board[/:parentId]/cpm`）。 */
+export interface LayerSchedule {
+  /** null 表示根看板。 */
+  parentId: string | null;
+  /** 该层总工期（分钟）：所有任务最早完成时间的最大值。 */
+  projectDuration: number;
+  nodes: ScheduleNode[];
+  edges: ScheduleEdge[];
+}
+
+/**
  * 搜索命中一条任务（`GET /api/search`）。它不是任务记录的子集：
  * 列表要显示的「在哪一层」「为什么命中」都由后端算好，前端不再自己拼。
  */

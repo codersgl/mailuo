@@ -13,6 +13,7 @@ import { flattenGroups, groupByColumn, moveSelection } from './domain/search';
 import { useBoard } from './hooks/useBoard';
 import { useBreadcrumb } from './hooks/useBreadcrumb';
 import { resolveDropSlot, useCardDrag } from './hooks/useCardDrag';
+import { useLayerSchedule } from './hooks/useLayerSchedule';
 import { usePersistentState } from './hooks/usePersistentState';
 import { useRoute } from './hooks/useRoute';
 import { useSearch } from './hooks/useSearch';
@@ -56,6 +57,11 @@ function BoardPage({
   const [showArchived, setShowArchived] = usePersistentState(SHOW_ARCHIVED_KEY, false, isBoolean);
   const board = useBoard(boardId, showArchived);
   const breadcrumb = useBreadcrumb(boardId);
+  /**
+   * 这一层的依赖图。抽屉里的「前置任务」用它，后续的图上标记也用它（见 D49）。
+   * 固定取含归档的完整图：关着「显示已归档」时丢掉归档节点会让「已归档的前置」变成看不见的脏数据。
+   */
+  const schedule = useLayerSchedule(boardId);
 
   /**
    * 搜索状态。关键词非空时主区整块换成结果页（定版原型 C）。
@@ -105,6 +111,7 @@ function BoardPage({
 
   const { refresh: refreshBoard } = board;
   const { refresh: refreshBreadcrumb } = breadcrumb;
+  const { refresh: refreshSchedule } = schedule;
   /** 有指针正按在卡片上（不管是待定的点击还是拖拽中）。用它给静默重取让路。 */
   const pointerActiveRef = useRef(false);
   const refreshAll = useCallback(() => {
@@ -112,11 +119,13 @@ function BoardPage({
     // 松手后本来就会再重取一次，所以跳过这一次不会丢更新。面包屑与文件树不受影响。
     if (!pointerActiveRef.current) refreshBoard();
     refreshBreadcrumb();
+    // 依赖图也跟着重取：工期、归档、增删任务都会改变关键路径，抽屉里的候选与禁用原因也要跟上。
+    refreshSchedule();
     setTreeRefreshToken((token) => token + 1);
     // 搜索态下写操作也会让结果里的东西过期：文件树拖动会改层级路径，归档会改「已归档」标记。
     // 这种情况下唯一的写入口就是文件树，看板本身被结果页盖着。
     if (searching) search.retry();
-  }, [refreshBoard, refreshBreadcrumb, searching, search.retry]);
+  }, [refreshBoard, refreshBreadcrumb, refreshSchedule, searching, search.retry]);
 
   const actions = useTaskActions(refreshAll);
 
@@ -275,6 +284,15 @@ function BoardPage({
     return actions.update(editing.id, patch);
   }
 
+  /**
+   * 抽屉里保存前置依赖。只有面板发现集合真的变了才会调到它
+   * （判断在 TaskEditorPanel 的 depsNeedSave，那里才拿得到草稿）。
+   */
+  async function saveTaskDeps(predecessorIds: string[]): Promise<WriteResult> {
+    if (editing === null) return { ok: false, message: '没有正在编辑的任务' };
+    return actions.setDeps(editing.id, predecessorIds);
+  }
+
   /** 卡片的「⋯」菜单里归档或取消归档。 */
   async function setTaskArchived(task: BoardTask, archived: boolean) {
     setActionError(null);
@@ -387,7 +405,19 @@ function BoardPage({
 
         {editing !== null && (
           // key 用任务 id：换一个任务就整体重置表单草稿，不用写 effect 去同步 props。
-          <TaskEditorPanel key={editing.id} task={editing} onClose={closeEditor} onSave={saveTask} />
+          <TaskEditorPanel
+            key={editing.id}
+            task={editing}
+            onClose={closeEditor}
+            onSave={saveTask}
+            dependency={{
+              schedule: schedule.state,
+              onRetry: schedule.reload,
+              // 列只用来给候选分组查名字；候选任务本身来自依赖图的节点。
+              columns: board.state.status === 'ready' ? board.state.data.columns : [],
+              onSave: saveTaskDeps,
+            }}
+          />
         )}
       </div>
     </div>

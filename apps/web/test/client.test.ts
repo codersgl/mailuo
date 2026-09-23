@@ -5,9 +5,11 @@ import {
   createTask,
   deleteTask,
   fetchBoard,
+  fetchLayerSchedule,
   fetchSearch,
   moveTask,
   setTaskArchived,
+  setTaskDeps,
   updateTaskFields,
 } from '../src/api/client';
 
@@ -231,5 +233,81 @@ describe('写接口', () => {
 
     expect(failure).toBeInstanceOf(ApiError);
     expect((failure as ApiError).message).toBe('标题不能为空');
+  });
+});
+
+describe('fetchLayerSchedule', () => {
+  it('根看板走 /api/board/cpm，子层把 id 拼进路径', async () => {
+    const calls = stubFetch(() =>
+      jsonResponse(200, { parentId: null, projectDuration: 0, nodes: [], edges: [] }),
+    );
+
+    await fetchLayerSchedule(null, false);
+    await fetchLayerSchedule('a b', false);
+
+    expect(calls.map((call) => call.url)).toEqual(['/api/board/cpm', '/api/board/a%20b/cpm']);
+  });
+
+  it('开关打开时追加 includeArchived=1', async () => {
+    const calls = stubFetch(() =>
+      jsonResponse(200, { parentId: null, projectDuration: 0, nodes: [], edges: [] }),
+    );
+
+    await fetchLayerSchedule('t1', true);
+
+    expect(calls.map((call) => call.url)).toEqual(['/api/board/t1/cpm?includeArchived=1']);
+  });
+
+  it('把响应的四个字段原样带出来', async () => {
+    stubFetch(() =>
+      jsonResponse(200, {
+        parentId: 't1',
+        projectDuration: 210,
+        nodes: [{ id: 'a', title: '甲', durationMinutes: null }],
+        edges: [{ predecessorId: 'a', successorId: 'b', critical: false }],
+      }),
+    );
+
+    const schedule = await fetchLayerSchedule('t1', false);
+
+    expect(schedule.projectDuration).toBe(210);
+    expect(schedule.nodes[0]?.durationMinutes).toBeNull();
+    expect(schedule.edges[0]?.successorId).toBe('b');
+  });
+});
+
+describe('setTaskDeps', () => {
+  it('用 PUT 整体替换前置依赖，声明 JSON 并只带 predecessorIds', async () => {
+    const calls = stubFetch(() => jsonResponse(200, { task: taskRecord(), predecessorIds: ['a'] }));
+
+    const task = await setTaskDeps('t1', ['a']);
+
+    expect(calls[0]?.url).toBe('/api/tasks/t1/deps');
+    expect(calls[0]?.init?.method).toBe('PUT');
+    expect((calls[0]?.init?.headers as Record<string, string>)['Content-Type']).toBe(
+      'application/json',
+    );
+    expect(calls[0]?.init?.body).toBe(JSON.stringify({ predecessorIds: ['a'] }));
+    // 响应里的 task 就是改过依赖的那条记录，调用方据此更新本地快照。
+    expect(task.id).toBe('t1');
+  });
+
+  it('空数组表示清空，照原样发出去', async () => {
+    const calls = stubFetch(() => jsonResponse(200, { task: taskRecord(), predecessorIds: [] }));
+
+    await setTaskDeps('t1', []);
+
+    expect(calls[0]?.init?.body).toBe(JSON.stringify({ predecessorIds: [] }));
+  });
+
+  it('环与跨层这类拒绝把后端文案带出来（409 / 400）', async () => {
+    // 文案照真后端（apps/api/src/routes/tasks.ts 回 409 `依赖形成环: <id>`）。
+    stubFetch(() => jsonResponse(409, { error: '依赖形成环: b' }));
+
+    const failure = await setTaskDeps('t1', ['b']).catch((cause: unknown) => cause);
+
+    expect(failure).toBeInstanceOf(ApiError);
+    expect((failure as ApiError).status).toBe(409);
+    expect((failure as ApiError).message).toBe('依赖形成环: b');
   });
 });

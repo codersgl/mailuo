@@ -4,6 +4,7 @@ import {
   MINUTES_PER_DAY,
   MINUTES_PER_HOUR,
   formatDuration,
+  formatDurationShort,
   formatProgress,
   isDurationEstimated,
   progressPercent,
@@ -42,6 +43,15 @@ describe('formatDuration', () => {
 
   it('契约外的负数兜底按瞬时处理，不显示负工期', () => {
     expect(formatDuration(-1)).toBe('瞬时');
+  });
+});
+
+describe('formatDurationShort', () => {
+  it('三态与 formatDuration 一致，只是去掉「工期」前缀', () => {
+    expect(formatDurationShort(null)).toBe('未估');
+    expect(formatDurationShort(0)).toBe('瞬时');
+    expect(formatDurationShort(MINUTES_PER_DAY + MINUTES_PER_HOUR)).toBe('1 天 1 小时');
+    expect(formatDurationShort(45)).toBe('45 分');
   });
 });
 
