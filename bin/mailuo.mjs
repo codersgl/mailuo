@@ -12,7 +12,8 @@
  * 2. 命令行参数（`--port` 等）需要有一条唯一的优先级规则。放在这里翻译成环境变量，服务端
  *    自己完全不用知道「是谁传的」。
  *
- * 所以职责就一条：把命令行参数与环境变量合成一份确定的配置，起服务、开浏览器。
+ * 所以职责只有一条：把命令行参数与环境变量合成一份确定的配置，起服务、开浏览器，最后顺带
+ * 查一次 registry 有没有新版本（查不到就什么都不说）。
  *
  * 它自己只用 Node 内置模块，没有运行时依赖；但它是 `apps/api/dist` 的加载方，所以服务端的
  * 运行时依赖（hono、better-sqlite3 等）必须声明在**根** `package.json` 里，npm 才会把它们装到
@@ -36,6 +37,12 @@ const DEFAULT_HOST = '127.0.0.1';
 /** 与服务端 `apps/api/src/config.ts` 的 DEFAULT_PORT 保持一致。 */
 const DEFAULT_PORT = 3001;
 
+/**
+ * 查新版本用的默认 registry。`MAILUO_REGISTRY` 与 npm 自己的 `npm_config_registry` 都能改它，
+ * 后者让用镜像或私有源的用户不必再配一遍。
+ */
+const DEFAULT_REGISTRY = 'https://registry.npmjs.org';
+
 /** 相对包根定位服务端产物：源码运行与全局安装的布局相同。 */
 const SERVER_ENTRY_RELATIVE = path.join('apps', 'api', 'dist', 'index.js');
 
@@ -44,6 +51,11 @@ const PORT_SCAN_LIMIT = 20;
 
 /** 端口探测的超时：连不上就说明这个端口空着。 */
 const PORT_PROBE_TIMEOUT_MS = 300;
+
+/**
+ * 查新版本的超时。版本提示是附加信息，registry 慢或不通时宁可没有它，也不能让用户等。
+ */
+const UPDATE_CHECK_TIMEOUT_MS = 1500;
 
 /** 等端口真正开始监听的轮询参数：每 100ms 探一次，最多 10 秒。 */
 const READY_POLL_INTERVAL_MS = 100;
@@ -72,6 +84,8 @@ const HELP = `脉络（Mailuo）本地服务
   HOST_ALLOW       额外放行的 Host 主机名，逗号分隔
   KANBAN_DB_PATH   同 --db
   MAILUO_NO_OPEN   设为 1 时不自动打开浏览器
+  MAILUO_REGISTRY  查新版本用的 registry 地址，默认 ${DEFAULT_REGISTRY}
+  MAILUO_NO_UPDATE_CHECK  设为 1 时不查新版本
 
 优先级：命令行 > 环境变量 > 默认值。`;
 
@@ -213,22 +227,117 @@ export function resolveConfig(argv, env = process.env) {
     dbPath: path.resolve(dbRaw),
     open: flags.hasOpenFlag ? flags.open : env.MAILUO_NO_OPEN !== '1',
     hostAllow: env.HOST_ALLOW ?? '',
+    // 启动后查一次 registry 上有没有新版本；提示是附加信息，用户可以关掉（只认 '1'，与
+    // MAILUO_NO_OPEN 同一口径）。
+    updateCheck: env.MAILUO_NO_UPDATE_CHECK !== '1',
+    // registry 三级回落：本工具自己的变量 > npm 的配置（镜像 / 私有源）> 官方源。
+    // 空串视为「没设」——版本提示不是关键功能，不值得像 HOST 那样为一个空值报错。
+    registry: (env.MAILUO_REGISTRY ?? '').trim() || env.npm_config_registry || DEFAULT_REGISTRY,
   };
 }
 
-/** 读本包的版本号。读不到时返回 null，由调用方决定怎么降级。 */
-let cachedVersion;
-function findVersion() {
-  if (cachedVersion !== undefined) {
-    return cachedVersion;
+/** 读本包的 package.json（缓存在内存里）。读不到时返回 null，由调用方决定怎么降级。 */
+let cachedPackage;
+export function findPackage() {
+  if (cachedPackage !== undefined) {
+    return cachedPackage;
   }
   try {
-    const packageJson = JSON.parse(readFileSync(path.join(packageRoot, 'package.json'), 'utf8'));
-    cachedVersion = typeof packageJson.version === 'string' ? packageJson.version : null;
+    cachedPackage = JSON.parse(readFileSync(path.join(packageRoot, 'package.json'), 'utf8'));
   } catch {
-    cachedVersion = null;
+    cachedPackage = null;
   }
-  return cachedVersion;
+  return cachedPackage;
+}
+
+/** 本包版本号；读不到返回 null。 */
+function findVersion() {
+  const packageJson = findPackage();
+  return packageJson !== null && typeof packageJson.version === 'string' ? packageJson.version : null;
+}
+
+/**
+ * 把版本号解析成三段数字。`v` 前缀与 `-beta.1` 之类的预发布后缀都忽略——本包不发预发布版，
+ * registry 的 `latest` 也不会指向预发布。解析不出来（例如 dist-tag 指到了别的东西）返回 null。
+ */
+export function parseVersion(raw) {
+  if (typeof raw !== 'string') {
+    return null;
+  }
+  const match = /^\s*v?(\d+)\.(\d+)\.(\d+)/.exec(raw);
+  return match === null ? null : [Number(match[1]), Number(match[2]), Number(match[3])];
+}
+
+/**
+ * `latest` 是否严格新于 `current`。
+ *
+ * 任一版本号解析不出来就返回 false：宁可不提示，也不要凭半截比较给出一个错的升级建议。
+ */
+export function isNewerVersion(latest, current) {
+  const left = parseVersion(latest);
+  const right = parseVersion(current);
+  if (left === null || right === null) {
+    return false;
+  }
+  for (let index = 0; index < left.length; index += 1) {
+    if (left[index] !== right[index]) {
+      return left[index] > right[index];
+    }
+  }
+  return false;
+}
+
+/**
+ * 查 registry 上该包的 `latest`，只有确实比 `currentVersion` 新时才返回它，否则返回 null。
+ *
+ * 这个函数**不抛异常**：网络不通、超时、包还没发布（404）、响应不是 JSON、版本号格式不认识，
+ * 一律当成「没有新版本」。版本提示是附加信息，任何失败都不该冒到用户面前，更不该影响服务。
+ *
+ * @param {{ registry: string, name: string, currentVersion: string, timeoutMs?: number }} options
+ *   `registry` 末尾有没有 `/` 都行；带路径的私有 registry（如 Artifactory 的 `/api/npm/npm/`）
+ *   靠相对拼接保留路径段，不会被当成根路径截掉。
+ */
+export async function fetchLatestVersion({ registry, name, currentVersion, timeoutMs = UPDATE_CHECK_TIMEOUT_MS }) {
+  try {
+    const base = registry.endsWith('/') ? registry : `${registry}/`;
+    const url = new URL(`${encodeURIComponent(name)}/latest`, base);
+    const response = await fetch(url, {
+      signal: AbortSignal.timeout(timeoutMs),
+      headers: { accept: 'application/json' },
+    });
+    if (!response.ok) {
+      return null;
+    }
+    const body = await response.json();
+    const latest = body?.version;
+    return isNewerVersion(latest, currentVersion) ? latest : null;
+  } catch {
+    // 超时、DNS 失败、TLS 失败、JSON 解析失败都到这里。
+    return null;
+  }
+}
+
+/**
+ * 启动时的新版本提示：查到新版本就打印一行升级命令。
+ *
+ * 包名从自己的 package.json 读，不写死：改名或发到别处时提示里的命令不会指向一个不存在的包。
+ * 连 package.json 都读不到（安装残缺）这种极端情况也直接跳过，不在启动路径上再抛一个错。
+ */
+export async function reportUpdate(registry) {
+  try {
+    const packageJson = findPackage();
+    const name = packageJson?.name;
+    const currentVersion = packageJson?.version;
+    if (typeof name !== 'string' || typeof currentVersion !== 'string') {
+      return;
+    }
+    const latest = await fetchLatestVersion({ registry, name, currentVersion });
+    if (latest !== null) {
+      console.log(`发现新版本 ${latest}（当前 ${currentVersion}）：npm i -g ${name}@latest`);
+    }
+  } catch {
+    // console.log 之外的意外都吞掉：启动路径不该因为一条提示失败。
+  }
 }
 
 /**
@@ -338,12 +447,15 @@ function hasFlag(argv, ...names) {
  * 命令行主流程。
  *
  * @param {string[]} argv
- * @param {{ env?: NodeJS.ProcessEnv, startServer?: (config: object) => Promise<void> }} [options]
- *   `startServer` 可注入，便于在不真的起服务的前提下核对参数合成的结果。
+ * @param {{ env?: NodeJS.ProcessEnv, startServer?: (config: object) => Promise<void>,
+ *           reportUpdate?: (registry: string) => Promise<void> }} [options]
+ *   `startServer` 与 `reportUpdate` 可注入，便于在不真的起服务、不真的联网的前提下核对参数
+ *   合成的结果与调用与否。
  */
 export async function main(argv, options = {}) {
   const env = options.env ?? process.env;
   const start = options.startServer ?? startServer;
+  const report = options.reportUpdate ?? reportUpdate;
 
   // 先看帮助与版本，再做任何校验。
   if (hasFlag(argv, '-h', '--help')) {
@@ -379,6 +491,11 @@ export async function main(argv, options = {}) {
   console.log('按 Ctrl+C 退出。');
   if (config.open) {
     openBrowser(url);
+  }
+  // 版本提示排在最末：服务已经监听、浏览器也已经打开，registry 慢不会推迟任何用户可感知的
+  // 动作。写操作失败（例如端口被占）时根本走不到这里，也就不必为一次注定看不到的提示联网。
+  if (config.updateCheck) {
+    await report(config.registry);
   }
   return 0;
 }

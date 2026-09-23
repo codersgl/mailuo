@@ -14,7 +14,8 @@
 
 import assert from 'node:assert/strict';
 import { execFile, spawn } from 'node:child_process';
-import { mkdirSync, mkdtempSync, rmSync, symlinkSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync } from 'node:fs';
+import http from 'node:http';
 import net from 'node:net';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
@@ -24,21 +25,77 @@ import { fileURLToPath } from 'node:url';
 import {
   browserHost,
   defaultDbPath,
+  fetchLatestVersion,
   findFreePort,
   formatUrl,
   isDirectRun,
+  isNewerVersion,
   main,
   parseArgs,
   parsePort,
+  parseVersion,
   probePort,
+  reportUpdate,
   resolveConfig,
 } from './mailuo.mjs';
 
 const BIN_PATH = fileURLToPath(new URL('./mailuo.mjs', import.meta.url));
 
+/** 本包 package.json：用例据此造一个「更新」的版本号，而不是把 9.9.9 写死。 */
+const PACKAGE_JSON = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8'));
+
+/** 造一个一定比当前版本新的版本号。 */
+function nextMajorVersion() {
+  return `${Number(String(PACKAGE_JSON.version).split('.')[0]) + 1}.0.0`;
+}
+
+/** registry 用例的默认响应：一个 JSON 体加状态码。 */
+function respondJson(status, body) {
+  return (_req, res) => {
+    res.writeHead(status, { 'content-type': 'application/json' });
+    res.end(JSON.stringify(body));
+  };
+}
+
+/**
+ * 起一个假的 npm registry。用真 socket 而不是给 fetch 打桩：URL 拼接、超时与响应解析都要被
+ * 真的走到，打桩会把这几步一起绕过去。
+ */
+async function startRegistry(handler) {
+  const server = http.createServer(handler);
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+  return {
+    url: `http://127.0.0.1:${server.address().port}`,
+    close: () => new Promise((resolve) => server.close(resolve)),
+  };
+}
+
+/** 临时接管 console.log，返回收集到的行与还原函数。 */
+function captureLog() {
+  const lines = [];
+  const original = console.log;
+  console.log = (...args) => {
+    lines.push(args.join(' '));
+  };
+  return {
+    lines,
+    restore: () => {
+      console.log = original;
+    },
+  };
+}
+
 /** 只留必要的键：调用方的环境里可能有 PORT/HOST/KANBAN_DB_PATH，不隔离会串味。 */
 function env(overrides = {}) {
   return { HOME: '/home/tester', ...overrides };
+}
+
+/**
+ * 子进程共用的环境变量：默认关掉版本提示，只有专门验证它的那条用例才联网。
+ * `process.env` 在前，保证调用方传的覆盖值生效。
+ */
+function childEnv(overrides) {
+  return { ...process.env, MAILUO_NO_UPDATE_CHECK: '1', ...overrides };
 }
 
 /** 在 127.0.0.1 上占一个随机端口，返回端口号与关掉它的函数。 */
@@ -52,20 +109,23 @@ async function occupyPort() {
 }
 
 /** 跑一次 bin 子进程并收集结果，模拟用户敲命令。 */
-function runBin(args) {
+function runBin(args, envOverrides = {}) {
   return new Promise((resolve) => {
     execFile(
       process.execPath,
       [BIN_PATH, ...args],
-      { encoding: 'utf8', timeout: 30_000 },
+      { encoding: 'utf8', timeout: 30_000, env: childEnv(envOverrides) },
       (error, stdout, stderr) => resolve({ code: error?.code ?? 0, stdout, stderr }),
     );
   });
 }
 
 /** 真起一个 CLI 子进程，返回句柄：等某段输出、拿全部输出、收尾。 */
-function startCli(args) {
-  const child = spawn(process.execPath, [BIN_PATH, ...args], { stdio: ['ignore', 'pipe', 'pipe'] });
+function startCli(args, envOverrides = {}) {
+  const child = spawn(process.execPath, [BIN_PATH, ...args], {
+    stdio: ['ignore', 'pipe', 'pipe'],
+    env: childEnv(envOverrides),
+  });
   let output = '';
   child.stdout.setEncoding('utf8');
   child.stderr.setEncoding('utf8');
@@ -196,6 +256,129 @@ test('resolveConfig：非法端口、空监听地址、空数据库路径直接�
   assert.throws(() => resolveConfig([], env({ KANBAN_DB_PATH: '' })), /数据库路径不能为空/);
 });
 
+test('resolveConfig：版本提示默认开，MAILUO_NO_UPDATE_CHECK=1 才关；registry 三级回落', () => {
+  assert.equal(resolveConfig([], env()).updateCheck, true);
+  assert.equal(resolveConfig([], env({ MAILUO_NO_UPDATE_CHECK: '1' })).updateCheck, false);
+  // 只认 '1'：设成 '0' 或 'false' 不算关（与 MAILUO_NO_OPEN 同一口径）。
+  assert.equal(resolveConfig([], env({ MAILUO_NO_UPDATE_CHECK: '0' })).updateCheck, true);
+
+  assert.equal(resolveConfig([], env()).registry, 'https://registry.npmjs.org');
+  // 用镜像或私有源的用户只配过 npm，这里跟随它，不必再配一遍。
+  assert.equal(
+    resolveConfig([], env({ npm_config_registry: 'https://mirror.example/' })).registry,
+    'https://mirror.example/',
+  );
+  // 自己的变量优先于 npm 的配置；空串视为没设，回落而不是当成一个空地址。
+  assert.equal(
+    resolveConfig(
+      [],
+      env({ npm_config_registry: 'https://mirror.example/', MAILUO_REGISTRY: 'https://own.example' }),
+    ).registry,
+    'https://own.example',
+  );
+  assert.equal(resolveConfig([], env({ MAILUO_REGISTRY: '  ' })).registry, 'https://registry.npmjs.org');
+});
+
+test('parseVersion 与 isNewerVersion：只认三段数字，只有严格更新才算新', () => {
+  assert.deepEqual(parseVersion('1.2.3'), [1, 2, 3]);
+  assert.deepEqual(parseVersion(' v0.10.2 '), [0, 10, 2]);
+  assert.deepEqual(parseVersion('0.2.0-beta.1'), [0, 2, 0]);
+  assert.equal(parseVersion('next'), null);
+  assert.equal(parseVersion(undefined), null);
+
+  assert.equal(isNewerVersion('0.2.0', '0.1.0'), true);
+  assert.equal(isNewerVersion('0.1.1', '0.1.0'), true);
+  assert.equal(isNewerVersion('1.0.0', '0.9.9'), true);
+  assert.equal(isNewerVersion('0.1.0', '0.1.0'), false);
+  assert.equal(isNewerVersion('0.0.9', '0.1.0'), false);
+  // 预发布后缀不参与比较：0.2.0-beta.1 与 0.2.0 算同一个版本，不提示升级。
+  assert.equal(isNewerVersion('0.2.0-beta.1', '0.2.0'), false);
+  // 解析不出来时一律「不算新」：宁可不提示，也不能凭半截比较给出错的升级建议。
+  assert.equal(isNewerVersion('latest', '0.1.0'), false);
+  assert.equal(isNewerVersion('9.9.9', 'not-a-version'), false);
+});
+
+test('fetchLatestVersion：本地 registry 上的 latest 决定是否提示，各种失败都静默', async (t) => {
+  const newer = nextMajorVersion();
+  const cases = [
+    { label: '有新版本', handler: respondJson(200, { version: newer }), expected: newer },
+    { label: '同版本', handler: respondJson(200, { version: PACKAGE_JSON.version }), expected: null },
+    { label: '版本更旧', handler: respondJson(200, { version: '0.0.1' }), expected: null },
+    { label: '包还没发布（404）', handler: respondJson(404, { error: 'Not found' }), expected: null },
+    {
+      label: '响应不是 JSON',
+      handler: (_req, res) => {
+        res.writeHead(200, { 'content-type': 'text/html' });
+        res.end('<html>not json</html>');
+      },
+      expected: null,
+    },
+  ];
+
+  for (const item of cases) {
+    const registry = await startRegistry(item.handler);
+    t.after(() => registry.close());
+    const latest = await fetchLatestVersion({
+      registry: registry.url,
+      name: PACKAGE_JSON.name,
+      currentVersion: PACKAGE_JSON.version,
+    });
+    assert.equal(latest, item.expected, item.label);
+  }
+});
+
+test('fetchLatestVersion：registry 卡住时到点就放弃，不抛异常', async (t) => {
+  // 只接受连接、永不回应，模拟 registry 无响应。
+  const registry = await startRegistry(() => {});
+  t.after(() => registry.close());
+
+  const started = Date.now();
+  const latest = await fetchLatestVersion({
+    registry: registry.url,
+    name: PACKAGE_JSON.name,
+    currentVersion: PACKAGE_JSON.version,
+    timeoutMs: 100,
+  });
+  assert.equal(latest, null);
+  assert.ok(Date.now() - started < 1000, '应在上限附近就返回，而不是把默认的 1.5 秒耗完');
+});
+
+test('fetchLatestVersion：registry 不是合法地址时也返回 null', async () => {
+  const latest = await fetchLatestVersion({
+    registry: '不是地址',
+    name: PACKAGE_JSON.name,
+    currentVersion: PACKAGE_JSON.version,
+  });
+  assert.equal(latest, null);
+});
+
+test('reportUpdate：查到新版本打印一行升级命令，其余情况一个字都不打', async (t) => {
+  const newer = nextMajorVersion();
+  const registry = await startRegistry(respondJson(200, { version: newer }));
+  t.after(() => registry.close());
+
+  const spoken = captureLog();
+  try {
+    await reportUpdate(registry.url);
+  } finally {
+    spoken.restore();
+  }
+  assert.deepEqual(spoken.lines, [
+    `发现新版本 ${newer}（当前 ${PACKAGE_JSON.version}）：npm i -g ${PACKAGE_JSON.name}@latest`,
+  ]);
+
+  // 没有新版本（这里用 404）时不打印：失败的版本提示不该在启动输出里留痕。
+  const missing = await startRegistry(respondJson(404, {}));
+  t.after(() => missing.close());
+  const quiet = captureLog();
+  try {
+    await reportUpdate(missing.url);
+  } finally {
+    quiet.restore();
+  }
+  assert.deepEqual(quiet.lines, []);
+});
+
 test('formatUrl：IPv6 加方括号，重复的方括号不会叠', () => {
   assert.equal(formatUrl('127.0.0.1', 3001), 'http://127.0.0.1:3001');
   assert.equal(formatUrl('::1', 3001), 'http://[::1]:3001');
@@ -260,14 +443,45 @@ test('main：--help 与 --version 只打印，不起服务，且不被参数错�
 
 test('main：命令行的端口与数据库路径确实交给启动函数', async () => {
   const received = [];
+  const checked = [];
   const startServer = async (config) => {
     received.push(config);
   };
-  await main(['--port', '3010', '--db', './tasks.db', '--no-open'], { env: env(), startServer });
+  // 注入版本检查：这条用例不该联网，也不该等 registry。
+  const reportUpdate = async (registry) => {
+    checked.push(registry);
+  };
+  await main(['--port', '3010', '--db', './tasks.db', '--no-open'], { env: env(), startServer, reportUpdate });
   assert.equal(received.length, 1);
   assert.equal(received[0].port, 3010);
   assert.equal(received[0].dbPath, path.resolve('./tasks.db'));
   assert.equal(received[0].open, false);
+  // 默认查一次，用的是官方源。
+  assert.deepEqual(checked, ['https://registry.npmjs.org']);
+});
+
+test('main：版本检查跟随开关与 MAILUO_REGISTRY，且排在启动之后', async () => {
+  const order = [];
+  const checked = [];
+  const startServer = async () => {
+    order.push('start');
+  };
+  const reportUpdate = async (registry) => {
+    order.push('check');
+    checked.push(registry);
+  };
+
+  await main(['--port', '3010'], { env: env({ MAILUO_NO_UPDATE_CHECK: '1' }), startServer, reportUpdate });
+  assert.deepEqual(checked, [], '关掉后不该查');
+
+  await main(['--port', '3010'], {
+    env: env({ MAILUO_REGISTRY: 'https://mirror.example/' }),
+    startServer,
+    reportUpdate,
+  });
+  assert.deepEqual(checked, ['https://mirror.example/']);
+  // 服务先起来，版本提示最后做。
+  assert.deepEqual(order, ['start', 'start', 'check']);
 });
 
 test('进程级：符号链接调用 bin 时 --version 正常输出（全局安装的形状）', async (t) => {
@@ -294,6 +508,7 @@ test('进程级：--help 打印用法后退出 0，不起服务', async () => {
   assert.equal(result.code, 0);
   assert.match(result.stdout, /脉络（Mailuo）本地服务/);
   assert.match(result.stdout, /--db <路径>/);
+  assert.match(result.stdout, /MAILUO_NO_UPDATE_CHECK/);
   assert.equal(result.stderr, '');
 });
 
@@ -337,6 +552,32 @@ test('进程级：真起服务，监听成功后才打印启动横幅', async (t
     const page = await fetch(`http://127.0.0.1:${port}/`);
     assert.equal(page.status, 200);
     assert.match(page.headers.get('content-type') ?? '', /text\/html/);
+  } finally {
+    await cli.stop();
+  }
+});
+
+test('进程级：启动后查 registry 上的新版本，并在启动横幅之后提示升级命令', async (t) => {
+  const newer = nextMajorVersion();
+  const registry = await startRegistry(respondJson(200, { version: newer }));
+  t.after(() => registry.close());
+  const dir = mkdtempSync(path.join(tmpdir(), 'mailuo-update-'));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const { port, release } = await occupyPort();
+  await release(); // 只是为了拿一个当前空着的端口
+
+  // MAILUO_NO_UPDATE_CHECK=0 压过子进程默认的 '1'：只有这条用例真的联网（连的是本地假 registry）。
+  const cli = startCli(['--port', String(port), '--db', path.join(dir, 'kanban.db'), '--no-open'], {
+    MAILUO_REGISTRY: registry.url,
+    MAILUO_NO_UPDATE_CHECK: '0',
+  });
+  try {
+    await cli.waitFor(`发现新版本 ${newer}`);
+    const output = cli.output();
+    assert.ok(
+      output.indexOf('脉络已启动') < output.indexOf('发现新版本'),
+      `版本提示应排在启动横幅之后，实际输出：\n${output}`,
+    );
   } finally {
     await cli.stop();
   }
