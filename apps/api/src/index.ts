@@ -4,7 +4,7 @@ import { createApp } from './app.js';
 import { loadConfig, loadEnvFileIfPresent } from './config.js';
 import { openDatabase } from './db/client.js';
 import { runMigrations } from './db/migrate.js';
-import { collectLocalAddresses, isLoopbackListenHost, isWildcardHost } from './domain/net.js';
+import { collectLocalAddresses, formatHostForUrl, isLoopbackListenHost, isWildcardHost } from './domain/net.js';
 
 // 先读本机 .env（可选），再读配置：这样 `pnpm dev:api` 不带前缀也能拿到 .env 里的 PORT。
 loadEnvFileIfPresent();
@@ -40,7 +40,7 @@ const server = serve(
     hostname: config.host,
   },
   (info) => {
-    console.log(`API 监听 http://${formatHost(config.host)}:${info.port}`);
+    console.log(`API 监听 http://${formatHostForUrl(config.host)}:${info.port}`);
     if (!isLoopbackListenHost(config.host)) {
       console.warn(
         `注意：HOST=${config.host} 让 API 监听非本机地址，而接口没有鉴权——` +
@@ -49,16 +49,12 @@ const server = serve(
     }
     // 通配监听下 Host/Origin 只放行回环名与下面这些地址；用户用机器名/域名访问时要自己加。
     if (isWildcardHost(config.host)) {
-      console.log(`放行的 Host：回环名、${allowedHosts.join('、')}（还需要的名字请设 HOST_ALLOW）`);
+      const listed = allowedHosts.map(formatHostForUrl).join('、');
+      console.log(`放行的 Host：回环名、${listed}（还需要的名字请设 HOST_ALLOW）`);
     }
     console.log(`数据库: ${config.dbPath}`);
   },
 );
-
-/** IPv6 地址要加方括号才是一个能点开的 URL。 */
-function formatHost(host: string): string {
-  return host.includes(':') ? `[${host}]` : host;
-}
 
 // 监听失败（最常见的是端口被占用）会以 error 事件抛出。默认行为是打印一大段堆栈后崩溃，
 // 这里换成一行可操作的提示。

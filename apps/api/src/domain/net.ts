@@ -105,7 +105,8 @@ export function isAllowedHostHeader(
   const name = hostNameOf(hostHeader);
   if (name === '') return false;
   if (isLoopbackHostName(name)) return true;
-  if (name === hostNameOf(options.listenHost)) return true;
+  // 监听地址可能是裸 IPv6（`HOST=::1`），而 Host 头里的 IPv6 必须带方括号，走同一个归一化。
+  if (name === normalizeHostEntry(options.listenHost)) return true;
   return matchesAllowedHost(name, options.allowedHosts);
 }
 
@@ -119,6 +120,30 @@ export function isAllowedOrigin(origin: string, options: HostAllowOptions): bool
   }
   if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') return false;
   return isAllowedHostHeader(parsed.host, options);
+}
+
+/**
+ * 白名单条目（监听地址、网卡地址、`HOST_ALLOW` 里的项）的归一化。
+ *
+ * 为什么不能直接用 `hostNameOf`：条目里的 IPv6 是**裸地址**（`os.networkInterfaces()` 给的就是
+ * `fd7a:115c:a1e0::d236:4d36` 这种），而 Host 头里的 IPv6 必须带方括号，`hostNameOf` 因此
+ * 对裸 IPv6 返回空串。不补这一层的话，`HOST=::` 下所有 IPv6 客户端都会被 403，而
+ * `HOST=<具体 IPv6 地址>` 更是连本机都进不来（审阅实测）。
+ *
+ * 判据是「冒号数量」：裸 IPv6 至少两个冒号（`::1`、`fd7a::1`）；`host:port` 只有一处冒号，
+ * 照常交给 `hostNameOf` 去端口。要写带端口的 IPv6 就自己带方括号（`[fd7a::1]:3003`）。
+ */
+export function normalizeHostEntry(entry: string): string {
+  const value = entry.trim();
+  if (value === '') return '';
+  if (!value.startsWith('[') && value.split(':').length > 2) return hostNameOf(`[${value}]`);
+  return hostNameOf(value);
+}
+
+/** 把一个监听地址/网卡地址渲染成能拼进 URL 的形式（IPv6 加方括号）。 */
+export function formatHostForUrl(host: string): string {
+  const value = host.trim();
+  return value.includes(':') && !value.startsWith('[') ? `[${value}]` : value;
 }
 
 /** 把 `HOST_ALLOW` 的逗号分隔值切成主机名列表，空白项丢掉。 */
@@ -151,5 +176,6 @@ export function collectLocalAddresses(
 
 function matchesAllowedHost(name: string, allowed: readonly string[] | undefined): boolean {
   if (allowed === undefined) return false;
-  return allowed.some((entry) => hostNameOf(entry) === name);
+  // 条目走 normalizeHostEntry：网卡地址里的 IPv6 是裸形式，不归一化就永远匹配不上。
+  return allowed.some((entry) => normalizeHostEntry(entry) === name);
 }

@@ -1064,10 +1064,13 @@ useEffect(() => {
 
 审阅还实测确认了几件「不是缺陷」：Host 校验在路由前、覆盖 `/api/health` 与未知路径；`bodyLimit` 对 chunked 体逐块计数（不是只信 `Content-Length`）；403/413 短路后 keep-alive 连接没有请求夹带；路由表里没有写语义的 GET。
 
-**验证**：API 单测 245 项全过（原 210 + 新增 35：`net.test.ts` 21 条纯函数、`security.test.ts` 12 条接口级、`config.test.ts` 2 条）；API 端 typecheck 与 build 通过。真实进程三轮：
+**第二轮复核（同一子代理，对 bc30f8b）抓到一个真缺陷并已修**：白名单条目直接送 `hostNameOf` 归一化，而网卡地址里的 IPv6 是裸形式（`fd7a:115c:a1e0::d236:4d36`），`hostNameOf` 对裸 IPv6 返回空串——于是 `HOST=::` 下所有 IPv6 客户端 403，`HOST=<具体 IPv6 地址>` 连本机都进不来，而启动日志还把它们列成「放行」。修法是新增 `normalizeHostEntry`（条目是裸 IPv6 时先补方括号）并用于 `matchesAllowedHost`、`listenHost` 对照与日志渲染（`formatHostForUrl`）。复核同时指出 README 把「机器名访问读能通、写 403」说得过宽（那是**经 Vite 代理**的情形；直接访问时 Host 就被拒，读也 403），以及 D55 里的测试计数写错——都已改。复核的第二轮变异表 13 处里 12 处变红，唯一全绿的是 m17（把白名单条目改成原文比较），它正好等价于修掉这个 IPv6 缺陷，说明当时确实没有测试约束这一层；现在补了三条 IPv6 白名单用例与两条归一化/渲染用例。
+
+**验证**：API 单测 249 项全过（基线 210 + 新增 39：`net.test.ts` 21 条纯函数、`security.test.ts` 15 条接口级、`config.test.ts` 3 条）；API 端 typecheck 与 build 通过。真实进程四轮：
 
 - 不设 `HOST`：`ss -ltn` 显示 `127.0.0.1:3113`（不再是 `*`）、日志「API 监听 http://127.0.0.1:3113」、`curl` 正常 Host 200、`curl -H 'Host: evil.example'` → `403 {"error":"Host 不在允许列表内"}`、带 `Origin: http://evil.example` 的写请求 → `403 {"error":"Origin 不允许"}`。
 - `HOST=0.0.0.0`：`ss` 显示 `0.0.0.0:3114`、多打印那条无鉴权提醒与放行名单、经 LAN 地址 `http://10.32.213.214:3114/api/health` 200、同源 Origin 的写请求 201、300KB 请求体 → `413 {"error":"请求体过大"}`、伪造 Host 的请求 403。
+- `HOST=::` 与 `HOST=<本机具体 IPv6>`：用真实 IPv6 地址连接，读 200（修之前是 403）。
 - 真实 Vite 代理：API `PORT=3116` + `vite --port 5316`，`curl http://127.0.0.1:5316/api/health` 200、带 `Origin: http://127.0.0.1:5316` 的写请求 201 且落库——本机 dev 这条链路没被误伤。
 
 **没做的**：不做鉴权/令牌（用户选的是「默认收回」这条路）；不做速率限制；用机器名/域名跨设备访问要自己配 `HOST_ALLOW`（README 写明）。另外记两条操作事项：**合并后要跑一次 `pnpm build`**——`dist/` 不入版本库，直接 `pnpm start` 跑的是上次构建的产物（`pnpm dev:api` 用 tsx 不受影响）；**需要用户同步 `docs/spec.md`**：环境变量一节补 `HOST` 与 `HOST_ALLOW`（默认只绑本机），错误契约一节补两个新状态码 `403`（Host/Origin 不在允许列表）与 `413`（请求体过大）。

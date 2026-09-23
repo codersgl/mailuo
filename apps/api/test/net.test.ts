@@ -2,12 +2,14 @@ import { describe, expect, it } from 'vitest';
 import {
   DEFAULT_HOST,
   collectLocalAddresses,
+  formatHostForUrl,
   hostNameOf,
   isAllowedHostHeader,
   isAllowedOrigin,
   isLoopbackHostName,
   isLoopbackListenHost,
   isWildcardHost,
+  normalizeHostEntry,
   parseHostAllow,
 } from '../src/domain/net.js';
 
@@ -125,6 +127,52 @@ describe('isAllowedHostHeader', () => {
     expect(isAllowedHostHeader('127.0.0.1:3003', options)).toBe(true);
     expect(isAllowedHostHeader('10.32.213.214:3003', options)).toBe(false);
     expect(isAllowedHostHeader('evil.example', options)).toBe(false);
+  });
+
+  it('IPv6 的监听地址与白名单条目都要能匹配上（裸地址 vs 方括号 Host）', () => {
+    // 网卡地址与 HOST 都是裸 IPv6，Host 头里必须带方括号。不归一化就会把 IPv6 客户端全拒掉。
+    expect(isAllowedHostHeader('[fd7a:115c:a1e0::d236:4d36]:3003', {
+      listenHost: 'fd7a:115c:a1e0::d236:4d36',
+    })).toBe(true);
+    expect(
+      isAllowedHostHeader('[fd7a:115c:a1e0::d236:4d36]:3003', {
+        listenHost: '::',
+        allowedHosts: ['fd7a:115c:a1e0::d236:4d36'],
+      }),
+    ).toBe(true);
+    expect(
+      isAllowedHostHeader('[fd7a:115c:a1e0::d236:4d36]:3003', {
+        listenHost: '::',
+        allowedHosts: ['[fd7a:115c:a1e0::d236:4d36]:3003'],
+      }),
+    ).toBe(true);
+    // 不在名单里的 IPv6 照样拒。
+    expect(
+      isAllowedHostHeader('[fd7a:115c:a1e0::9999]:3003', {
+        listenHost: '::',
+        allowedHosts: ['fd7a:115c:a1e0::d236:4d36'],
+      }),
+    ).toBe(false);
+  });
+});
+
+describe('normalizeHostEntry / formatHostForUrl', () => {
+  it('裸 IPv6 补方括号后再解析，其余走 hostNameOf', () => {
+    expect(normalizeHostEntry('fd7a:115c:a1e0::d236:4d36')).toBe('fd7a:115c:a1e0::d236:4d36');
+    expect(normalizeHostEntry('::1')).toBe('::1');
+    expect(normalizeHostEntry('[fd7a::1]:3003')).toBe('fd7a::1');
+    expect(normalizeHostEntry('10.32.213.214')).toBe('10.32.213.214');
+    expect(normalizeHostEntry('10.32.213.214:3003')).toBe('10.32.213.214');
+    expect(normalizeHostEntry('KanBan.Local')).toBe('kanban.local');
+    expect(normalizeHostEntry('evil.com/x')).toBe('');
+    expect(normalizeHostEntry('')).toBe('');
+  });
+
+  it('渲染成 URL 形式时给 IPv6 补方括号', () => {
+    expect(formatHostForUrl('127.0.0.1')).toBe('127.0.0.1');
+    expect(formatHostForUrl('::1')).toBe('[::1]');
+    expect(formatHostForUrl('fd7a::1')).toBe('[fd7a::1]');
+    expect(formatHostForUrl('[fd7a::1]')).toBe('[fd7a::1]');
   });
 });
 
