@@ -29,7 +29,8 @@ interface TreeNodeRowProps {
  * 子节点用嵌套的 ul 表达层级（缩进靠 ul 的 padding-left），不把层级压成缩进数值。
  *
  * 拖动这一行可以改父级，落点由上层换算（见 hooks/useTreeDrag）：
- * 悬停行上半区 = 成为它的子节点，下半区 = 排到它后面成为兄弟。这里只负责把提示画出来。
+ * 悬停行上半区 = 成为它的子节点，下半区 = 与它同级（挂到它的父级下）。这里只负责把
+ * 「这一行就是新父级」画出来；落点在根层时没有行可高亮，那种提示在 Sidebar 顶部。
  */
 export function TreeNodeRow({
   node,
@@ -51,9 +52,12 @@ export function TreeNodeRow({
   const reminder = reminderView(task, nowMs);
 
   const dragging = drag?.draggingId === task.id;
-  const dropParentId = drag?.drop?.parentId ?? null;
-  const isDropParent = drag !== null && drag.drop !== null && dropParentId === task.id;
-  const isDropSibling = drag?.drop?.afterTaskId === task.id;
+  /**
+   * 这一行会不会成为新父级。下半区落到「与目标同级」时，进的是目标的父级那一行——
+   * `drop.parentId` 就是它，所以两半共用这一个判断。落点在根层时没有任何一行是父级，
+   * 那种情形由 Sidebar 顶部的落点提示表达（定版原型 B2）。
+   */
+  const isDropParent = drag !== null && drag.drop !== null && drag.drop.parentId === task.id;
 
   return (
     <li>
@@ -145,12 +149,21 @@ export function TreeNodeRow({
         {collapsed && hasChildren ? (
           <>
             <span className="flex-none text-[10px] leading-4 text-ink-3">已折叠</span>
-            <span
-              className="flex-none rounded-lg border border-dashed border-line-strong px-[5px] text-center text-[11px] leading-[14px] tabular-nums text-ink-3"
-              title={`有 ${children.length} 个子任务，当前已折叠`}
-            >
-              {children.length}
-            </span>
+            {/*
+              数字与展开态用同一个口径（countChildren：只算未归档的直接子任务），否则打开
+              「显示已归档」并折叠一个含归档子任务的节点时，会看到「5」与展开后的「3/5」并存，
+              像是数据变了（审计报告 C6）。归档的那部分只在 title 里说明。
+              `total > 0` 才画徽标：子任务全部已归档时展开态也没有徽标，折叠态显示「0」会是
+              另一种不一致；那种情况留一行「已折叠」就够，三角本身就说明有子任务。
+            */}
+            {total > 0 && (
+              <span
+                className="flex-none rounded-lg border border-dashed border-line-strong px-[5px] text-center text-[11px] leading-[14px] tabular-nums text-ink-3"
+                title={collapsedBadgeTitle(total, children.length - total)}
+              >
+                {total}
+              </span>
+            )}
           </>
         ) : total > 0 ? (
           // 进度徽标口径见 lib/tree.ts 的 countChildren。
@@ -175,15 +188,6 @@ export function TreeNodeRow({
             className={cx('size-1.5 flex-none rounded-full', leafDotClass(task.columnId))}
           />
         ) : null}
-
-        {/* 「排到它后面成为兄弟」的插入线：贴在这一行的下缘。 */}
-        {isDropSibling && (
-          <span
-            data-tree-line
-            className="pointer-events-none absolute inset-x-0 -bottom-[1px] h-0.5 rounded-[1px] bg-accent"
-            aria-hidden="true"
-          />
-        )}
       </div>
 
       {hasChildren && !collapsed && (
@@ -206,6 +210,15 @@ export function TreeNodeRow({
       )}
     </li>
   );
+}
+
+/**
+ * 折叠徽标的 title。徽标上的数字只算未归档子任务（与展开态口径一致），
+ * 有归档子任务时在这里补一句，免得用户以为子任务丢了。
+ */
+function collapsedBadgeTitle(activeChildren: number, archivedChildren: number): string {
+  if (archivedChildren <= 0) return `有 ${activeChildren} 个子任务，当前已折叠`;
+  return `有 ${activeChildren} 个子任务（另有 ${archivedChildren} 个已归档），当前已折叠`;
 }
 
 function leafDotClass(columnId: string): string {

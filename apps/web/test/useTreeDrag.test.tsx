@@ -21,7 +21,7 @@ function Harness({ log, over }: { log: string[]; over: () => string }) {
     tasks,
     onStart: (id) => log.push('start ' + id),
     onDrop: (id, drop) =>
-      log.push(`drop ${id} ${drop === null ? 'null' : `${drop.parentId}/${drop.afterTaskId}`}`),
+      log.push(`drop ${id} ${drop === null ? 'null' : `${drop.parentId}`}`),
     onCancel: () => log.push('cancel'),
   });
   return (
@@ -105,30 +105,30 @@ describe('useTreeDrag', () => {
     drag('row-a', { x: 40, y: 5 });
     fireEvent.pointerUp(document, { clientX: 40, clientY: 5 });
 
-    expect(log).toEqual(['begin a', 'start a', 'drop a b/null']);
+    expect(log).toEqual(['begin a', 'start a', 'drop a b']);
   });
 
   it('拖到顶层节点的下半区：落点是根看板（它的「兄弟」只能是根层）', () => {
     const { log, setOver } = setup();
 
-    // b 的父级是 null：下半区表达为「回到根层」（父级 null），插入线画在 b 的下缘。
-    // 这里没有「排在 b 后面」这种更细的位置——树的顶层不支持排序。
+    // b 的父级是 null：下半区表达为「回到根层」（父级 null）。树不支持排序，所以没有
+    // 「排在 b 后面」这种更细的位置，界面只在树顶给出「挂到根看板」这一行提示。
     setOver('b');
     drag('row-a', { x: 40, y: 15 });
     fireEvent.pointerUp(document, { clientX: 40, clientY: 15 });
 
-    expect(log).toEqual(['begin a', 'start a', 'drop a null/b']);
+    expect(log).toEqual(['begin a', 'start a', 'drop a null']);
   });
 
   it('拖到有父级的行下半区：落点是「与它同级，排在它后面」', () => {
     const { log, setOver } = setup();
 
-    // a1 的父级是 a，所以 a1x（a1 的子节点）拖到 a1 的下半区 = 父级 a、锚点 a1。
+    // a1 的父级是 a，所以 a1x（a1 的子节点）拖到 a1 的下半区 = 挂到 a 下。
     setOver('a1');
     drag('row-a1x', { x: 40, y: 15 });
     fireEvent.pointerUp(document, { clientX: 40, clientY: 15 });
 
-    expect(log).toEqual(['begin a1x', 'start a1x', 'drop a1x a/a1']);
+    expect(log).toEqual(['begin a1x', 'start a1x', 'drop a1x a']);
   });
 
   it('拖到自己的后代上不算落点，松手什么都不做', () => {
@@ -181,6 +181,6 @@ describe('useTreeDrag', () => {
     await act(async () => {});
     fireEvent.click(screen.getByTestId('row-a'));
 
-    expect(log).toEqual(['begin a', 'start a', 'drop a b/null', 'open false']);
+    expect(log).toEqual(['begin a', 'start a', 'drop a b', 'open false']);
   });
 });

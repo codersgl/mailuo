@@ -4,6 +4,7 @@ import { usePersistentState } from '../hooks/usePersistentState';
 import { useNow } from '../hooks/useNow';
 import { useTree } from '../hooks/useTree';
 import { useTreeDrag } from '../hooks/useTreeDrag';
+import { cx } from '../lib/cx';
 import { COLLAPSED_TASKS_KEY, TREE_COLLAPSED_KEY } from '../lib/preferences';
 import { ancestorIds, buildTree, expandAncestors, toggleCollapsed } from '../lib/tree';
 import { ErrorNote, LoadingNote } from './StatusNote';
@@ -121,6 +122,15 @@ export function Sidebar({
   }, [boardId, state, setCollapsedIds]);
 
   const roots = state.status === 'ready' ? buildTree(state.data) : [];
+  /**
+   * 落点在根看板：拖动的节点会挂到根层。这种情况整棵树里没有一行能高亮（根看板不是一行），
+   * 所以在树顶给一行具名落点（定版原型 B2）。只在真的落到根层时出现，平时不占位置——
+   * 与「下半区落到某个节点下」时高亮那一行的父级正好互补。
+   */
+  const rootDropActive =
+    treeDrag.state !== null &&
+    treeDrag.state.drop !== null &&
+    treeDrag.state.drop.parentId === null;
   // 直接打开一个已归档任务的看板（手输地址或书签）时，开关关着的话树里没有它，
   // 用户会看到一棵没有任何选中项的树；给一行说明，别让他自己猜。
   const boardMissingFromTree =
@@ -139,7 +149,12 @@ export function Sidebar({
       // （「显示已归档」有 whitespace-nowrap、树容器 overflow-y-auto 会把横向也算成 auto）
       // 已经渲染出来了，不裁的话标题会被逐字换行、文字和多出来的滚动条会画到看板列上
       // （审阅实测首帧 aside 宽 44 而内容宽 99）。按钮距面板边缘 11px，聚焦环不会被剪到。
-      className="flex flex-none flex-col overflow-hidden border-r border-line bg-surface transition-[width] duration-150"
+      className={cx(
+        'flex flex-none flex-col overflow-hidden border-r border-line bg-surface transition-[width] duration-150',
+        // 落点在根层时给面板顶边一条强调色：提示「落点是整棵树的根这一层」，
+        // 而不是某个具体节点下（行内没有可高亮的目标）。
+        rootDropActive && 'shadow-[inset_0_2px_0_var(--color-accent)]',
+      )}
       style={{ width: collapsed ? RAIL_WIDTH : PANEL_WIDTH }}
     >
       <div
@@ -195,54 +210,95 @@ export function Sidebar({
         卸载的代价实测过：每次展开都会重新发一次 /api/tree，网络往返期间窄条里先空一下，
         这么高频的开关不该带一次请求。收起时那次挂载请求留着（见 D46 的取舍）。
       */}
-      <div
-        id={panelId}
-        hidden={collapsed}
-        className="min-h-0 flex-1 overflow-y-auto px-2 pb-3 pt-1.5"
-      >
-        {boardMissingFromTree && (
-          <p className="px-2 py-1 text-[11px] text-ink-3">当前看板不在树里，可能已归档</p>
-        )}
-        {dragError !== null && (
-          // 拖动的错误没有表单可以就地报错，在树顶上给一行，点一下就收起。
-          <button
-            type="button"
-            onClick={() => setDragError(null)}
-            className="mb-1 block w-full rounded-[5px] border border-line bg-surface px-2 py-1 text-left text-[11px] text-danger hover:border-line-strong"
-          >
-            {dragError}
-          </button>
-        )}
-        {state.status === 'loading' && <LoadingNote />}
-        {state.status === 'failed' && <ErrorNote message={state.message} onRetry={reload} />}
-        {state.status === 'ready' && roots.length === 0 && (
-          <p className="px-2 py-1 text-[11px] text-ink-3">暂无任务</p>
-        )}
-        {state.status === 'ready' && roots.length > 0 && (
-          <ul>
-            {roots.map((node) => (
-              <TreeNodeRow
-                key={node.task.id}
-                node={node}
-                selectedId={boardId}
-                collapsedIds={collapsedIds}
-                onToggle={(taskId) =>
-                  setCollapsedIds((ids) => toggleCollapsed(ids, taskId))
-                }
-                onOpen={(taskId) => {
-                  // 拖完那一下浏览器仍会补一个 click，不拦就会顺手进入它的看板。
-                  if (treeDrag.canOpen()) onNavigate(taskId);
-                }}
-                onDragStart={treeDrag.begin}
-                drag={treeDrag.state}
-                nowMs={nowMs}
-                depth={0}
-              />
-            ))}
-          </ul>
-        )}
+      {/*
+        提示放在滚动容器**之外**、绝对定位到它的顶部，而不是按文档流插在列表上面。
+        为什么：提示一旦占位，出现时会把所有行下推一行高（26px），而落点判定每次 pointermove
+        都重读实时矩形——同一个屏幕坐标会因此算出不同的行，于是提示闪、松手还可能落空，
+        正好把 B8 要修的洞换个形式复现（审阅用布局模型实测出 true → false → true）。
+        绝对定位既不推挤内容，也不随滚动跑掉：它定位在滚动容器这一层，不在滚动内容里。
+      */}
+      <div id={panelId} hidden={collapsed} className="relative min-h-0 flex-1">
+        {rootDropActive && state.status === 'ready' && roots.length > 0 && <RootDropHint />}
+        <div className="h-full overflow-y-auto px-2 pb-3 pt-1.5">
+          {boardMissingFromTree && (
+            <p className="px-2 py-1 text-[11px] text-ink-3">当前看板不在树里，可能已归档</p>
+          )}
+          {dragError !== null && (
+            // 拖动的错误没有表单可以就地报错，在树顶上给一行，点一下就收起。
+            <button
+              type="button"
+              onClick={() => setDragError(null)}
+              className="mb-1 block w-full rounded-[5px] border border-line bg-surface px-2 py-1 text-left text-[11px] text-danger hover:border-line-strong"
+            >
+              {dragError}
+            </button>
+          )}
+          {state.status === 'loading' && <LoadingNote />}
+          {state.status === 'failed' && <ErrorNote message={state.message} onRetry={reload} />}
+          {state.status === 'ready' && roots.length === 0 && (
+            <p className="px-2 py-1 text-[11px] text-ink-3">暂无任务</p>
+          )}
+          {state.status === 'ready' && roots.length > 0 && (
+            <ul>
+              {roots.map((node) => (
+                <TreeNodeRow
+                  key={node.task.id}
+                  node={node}
+                  selectedId={boardId}
+                  collapsedIds={collapsedIds}
+                  onToggle={(taskId) =>
+                    setCollapsedIds((ids) => toggleCollapsed(ids, taskId))
+                  }
+                  onOpen={(taskId) => {
+                    // 拖完那一下浏览器仍会补一个 click，不拦就会顺手进入它的看板。
+                    if (treeDrag.canOpen()) onNavigate(taskId);
+                  }}
+                  onDragStart={treeDrag.begin}
+                  drag={treeDrag.state}
+                  nowMs={nowMs}
+                  depth={0}
+                />
+              ))}
+            </ul>
+          )}
+        </div>
       </div>
     </aside>
+  );
+}
+
+/**
+ * 落点在根看板时的树顶提示（定版原型 B2）。
+ *
+ * 为什么需要它：树里只有任务行，根看板没有对应的行，所以「与顶层节点同级」这种落点在界面上
+ * 无处高亮——用户松手前看不到任何反馈，只能凭记忆确认落点。这一行把那个落点具名化。
+ *
+ * 只画激活态，不做常驻的虚线占位：常驻会在每一次拖动之外多占一行，而这条信息只在拖动时有用。
+ * 它绝对定位覆盖在树顶（`inset-x-2 top-1.5` 与滚动容器的内边距对齐），所以出现/消失都不动布局；
+ * 代价是拖动期间会盖住第一行，而这一行此刻本来也不是落点。
+ */
+function RootDropHint() {
+  return (
+    <div
+      data-root-drop-hint
+      className="absolute inset-x-2 top-1.5 z-10 flex min-h-6 items-center gap-1.5 rounded-[5px] border border-accent-border bg-accent-weak px-[7px] text-[11.5px] font-semibold text-accent"
+    >
+      <svg
+        width="13"
+        height="13"
+        viewBox="0 0 16 16"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="1.5"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+        aria-hidden="true"
+      >
+        <path d="M2.5 4.5 8 8l5.5-3.5" />
+        <rect x="1.75" y="2.75" width="12.5" height="10.5" rx="2" />
+      </svg>
+      <span>挂到根看板</span>
+    </div>
   );
 }
 

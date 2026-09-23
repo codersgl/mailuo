@@ -151,21 +151,18 @@ describe('resolveTreeDrop', () => {
   it('悬停行上半区：成为它的子节点', () => {
     expect(resolveTreeDrop(tasks, 'b', { id: 'a', lowerHalf: false })).toEqual({
       parentId: 'a',
-      afterTaskId: null,
     });
   });
 
-  it('悬停行下半区：排到它后面，与它同级', () => {
+  it('悬停行下半区：与它同级，也就是挂到它的父级下', () => {
     expect(resolveTreeDrop(tasks, 'a', { id: 'b1', lowerHalf: true })).toEqual({
       parentId: 'b',
-      afterTaskId: 'b1',
     });
   });
 
-  it('顶层节点的下半区也是「与它同级排在它后面」（新父级为 null）', () => {
+  it('顶层节点的下半区也是「与它同级」（新父级为 null，界面靠树顶的落点提示表达）', () => {
     expect(resolveTreeDrop(tasks, 'a1', { id: 'b', lowerHalf: true })).toEqual({
       parentId: null,
-      afterTaskId: 'b',
     });
   });
 

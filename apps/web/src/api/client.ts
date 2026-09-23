@@ -13,7 +13,10 @@ import type {
  */
 export class ApiError extends Error {
   constructor(
-    /** HTTP 状态码；0 表示请求根本没发出去（后端没启动）。 */
+    /**
+     * HTTP 状态码。0 表示「没拿到响应」这一类：请求根本没发出去（后端没启动）、超时，
+     * 或者读响应途中失败。调用方区分不出具体是哪种，只能拿到 message 里的文案。
+     */
     readonly status: number,
     message: string,
   ) {
@@ -28,6 +31,20 @@ interface WriteInit {
   body?: unknown;
 }
 
+/**
+ * 单次请求的超时（毫秒）。
+ *
+ * 为什么需要：后端「连上了但不回包」时 `fetch` 永远不会 settle——进程卡死，或者端口被一个
+ * 只接受连接、不回包的进程占着（本机就被这类进程占过端口，排查时表现为浏览器一直转圈、
+ * curl 也不返回）。没有超时的话界面会永久停在「加载中…」，重试按钮永远不出现，写操作也一直
+ * 显示保存中，只能刷新页面（见 docs/audit-2026-09-23.md 的 C1）。
+ *
+ * 10 秒的依据：所有接口都是本机 SQLite 上的小查询，正常响应在毫秒级；10 秒还没拿到任何
+ * 响应，基本可以判定是卡住而不是慢。这不是「取消」——调用方没有可取消的请求，
+ * 所以与 D34 记的「不做 AbortController（拖拽竞态已有 cancelled 守卫）」不冲突。
+ */
+export const REQUEST_TIMEOUT_MS = 10_000;
+
 /** 开发时走 Vite 的代理，生产同源部署，所以路径里不写主机与端口。 */
 async function request<T>(path: string, init?: WriteInit): Promise<T> {
   const headers: Record<string, string> = { Accept: 'application/json' };
@@ -40,17 +57,24 @@ async function request<T>(path: string, init?: WriteInit): Promise<T> {
       method: init?.method ?? 'GET',
       headers,
       body: init?.body === undefined ? undefined : JSON.stringify(init.body),
+      // 每次请求各自一个超时信号：写请求卡住同样会让界面一直显示保存中。
+      signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
     });
-  } catch {
-    throw new ApiError(0, '连不上后端，确认 `pnpm dev:api` 已经启动');
+  } catch (cause) {
+    throw new ApiError(
+      0,
+      isTimeout(cause)
+        ? '后端响应超时，请重试'
+        : '连不上后端，确认 `pnpm dev:api` 已经启动',
+    );
   }
 
-  // 读 body 也可能失败（连接被重置等），和 fetch 本身一样归到「发不出去」这一类。
+  // 读 body 也可能失败（连接被重置、读到一半超时等），和 fetch 本身一样归到「拿不到响应」这一类。
   let text = '';
   try {
     text = await response.text();
-  } catch {
-    throw new ApiError(0, '读取响应失败，请重试');
+  } catch (cause) {
+    throw new ApiError(0, isTimeout(cause) ? '后端响应超时，请重试' : '读取响应失败，请重试');
   }
 
   const body = parseJson(text);
@@ -67,7 +91,9 @@ async function request<T>(path: string, init?: WriteInit): Promise<T> {
   return body as T;
 }
 
-/** 解析失败一律当作「没有 body」，让上层用状态码给出兜底文案，而不是抛 JSON 语法错误。 */
+/**
+ * 解析失败一律当作「没有 body」，让上层用状态码给出兜底文案，而不是抛 JSON 语法错误。
+ */
 function parseJson(text: string): unknown {
   if (text === '') return undefined;
   try {
@@ -75,6 +101,19 @@ function parseJson(text: string): unknown {
   } catch {
     return undefined;
   }
+}
+
+/**
+ * 判断一次 fetch 失败是不是超时。
+ *
+ * `AbortSignal.timeout()` 抛的是名为 `TimeoutError` 的 DOMException；某些运行时或包装层只给
+ * `AbortError`，两个都认。这里按 `name` 判断而不是 `instanceof DOMException`：测试与不同
+ * 运行时里的错误对象未必是同一个构造器（真跑出来的和构造出来的不是一回事）。
+ * `AbortError` 只可能来自我们自己的超时信号——调用方没有别的取消来源。
+ */
+function isTimeout(cause: unknown): boolean {
+  const name = (cause as { name?: unknown } | null)?.name;
+  return name === 'TimeoutError' || name === 'AbortError';
 }
 
 /** 只认契约里的 `{ error: string }`；其它形状交给调用方用兜底文案。 */

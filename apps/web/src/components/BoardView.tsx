@@ -2,7 +2,7 @@ import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react
 import type { PointerEvent as ReactPointerEvent } from 'react';
 import type { Board, BoardTask } from '../api/types';
 import type { DropSlot } from '../domain/board';
-import { CARD_ATTR } from '../hooks/useCardDrag';
+import { CARD_ATTR, COLUMN_ATTR } from '../hooks/useCardDrag';
 import { useCardFlip } from '../hooks/useCardFlip';
 import type { CardDragPreview } from '../hooks/useCardDrag';
 import { useNow } from '../hooks/useNow';
@@ -113,9 +113,8 @@ function DropLine({
     }
 
     // 目标列的卡片列表：插入线的左右边界与「列尾」的纵坐标都从这里取。
-    const body = grid.querySelector<HTMLElement>(
-      `[data-column-id="${slot.columnId}"] [data-column-body]`,
-    );
+    const column = findByDataAttr<HTMLElement>(grid, COLUMN_ATTR, slot.columnId);
+    const body = column?.querySelector<HTMLElement>('[data-column-body]') ?? null;
     if (body === null) {
       setRect(null);
       return;
@@ -127,7 +126,7 @@ function DropLine({
     const anchor =
       slot.beforeTaskId === null
         ? null
-        : grid.querySelector<HTMLElement>(`[${CARD_ATTR}="${slot.beforeTaskId}"]`);
+        : findByDataAttr<HTMLElement>(grid, CARD_ATTR, slot.beforeTaskId);
     const top = anchor === null ? bodyRect.bottom : anchor.getBoundingClientRect().top;
 
     setRect({
@@ -157,9 +156,29 @@ function DropLine({
 
   return (
     <div
+      data-drop-line
       className="pointer-events-none absolute z-10 h-0.5 rounded-[1px] bg-accent"
       style={{ left: rect.left, top: rect.top - 1, width: rect.width }}
       aria-hidden="true"
     />
   );
+}
+
+/**
+ * 按 data-* 属性的值找元素。
+ *
+ * 为什么不用 `[attr="value"]` 拼选择器：值来自数据库（列 id、任务 id），手工改库造出带引号的
+ * id 会让 `querySelector` 抛 `SyntaxError`，而这一抛发生在 layout effect 里——没有错误边界时
+ * 就是整页白屏（审计报告 C4）。这里只有**属性名**是常量、拼进选择器，值一律走 `getAttribute`
+ * 比较；不依赖 `CSS.escape` 在目标环境里是否存在。
+ */
+function findByDataAttr<T extends HTMLElement>(
+  root: ParentNode,
+  attr: string,
+  value: string,
+): T | null {
+  for (const element of root.querySelectorAll<T>(`[${attr}]`)) {
+    if (element.getAttribute(attr) === value) return element;
+  }
+  return null;
 }

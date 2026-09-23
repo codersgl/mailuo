@@ -278,7 +278,12 @@ function BoardPage({
    * 顺带处理输入法：组合期间方向键在给候选词用、Enter 是确认选字，一律不接管。
    */
   function handleSearchKeyDown(event: KeyboardEvent<HTMLInputElement>) {
-    if (event.nativeEvent.isComposing) return;
+    /**
+     * 两种组合期信号都要判。`isComposing` 覆盖组合过程中的按键；`keyCode === 229` 覆盖
+     * 「按 Enter 确认选字」那一次——Chrome/Safari 在这时已经把 isComposing 置回 false，
+     * 只留下 229 这个约定值，不判它的话确认选字会顺手进入选中项（审计报告 B11）。
+     */
+    if (event.nativeEvent.isComposing || event.nativeEvent.keyCode === 229) return;
 
     if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
       event.preventDefault();

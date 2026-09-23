@@ -224,6 +224,19 @@ describe('依赖图视图', () => {
     expect(screen.queryByLabelText('梳理旧登录流程 的排期')).toBeNull();
   });
 
+  it('焦点不在节点上时 Esc 也收起详情（点过详情卡之后的那条路径）', () => {
+    const { container } = renderGraph();
+    fireEvent.click(graphNode(container, 't1'));
+    expect(screen.queryByLabelText('梳理旧登录流程 的排期')).not.toBeNull();
+
+    // 事件直接派发到 document：模拟焦点既不在节点按钮上（Safari 点按钮不给焦点）、
+    // 也不在别处的情形。旧实现只在节点按钮的 onKeyDown 里处理 Esc，这一条没有任何反应。
+    fireEvent.keyDown(document, { key: 'Escape' });
+
+    expect(screen.queryByLabelText('梳理旧登录流程 的排期')).toBeNull();
+    expect(graphNode(container, 't1').getAttribute('aria-pressed')).toBe('false');
+  });
+
   it('焦点停在没选中的节点上按 Escape：什么都不选，而不是把它选中', () => {
     const { container } = renderGraph();
     fireEvent.keyDown(graphNode(container, 't1'), { key: 'Escape' });

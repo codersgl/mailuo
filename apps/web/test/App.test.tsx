@@ -1215,6 +1215,30 @@ describe('App 搜索', () => {
     await waitFor(() => expect(window.location.pathname).toBe('/board/b1'));
   });
 
+  it('输入法确认选字那一次（keyCode 229）不接管按键', async () => {
+    createFakeApi(fixtures);
+    render(<App />);
+    await boardArea().findByText('支付对账');
+
+    type('脚本');
+    await boardArea().findByText('找到 1 个任务');
+
+    /**
+     * Chrome/Safari 在「按 Enter 确认选字」那一次 keydown 上 `isComposing` 已经回到 false，
+     * 只留下 `keyCode === 229` 这个约定值。jsdom 的 KeyboardEvent 不认构造参数里的 keyCode，
+     * 所以手动 defineProperty 后再派发——这样才真的覆盖住那条分支。
+     */
+    const box = searchBox();
+    const event = new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true });
+    Object.defineProperty(event, 'keyCode', { value: 229 });
+    box.dispatchEvent(event);
+
+    // 没有进入选中的结果：地址没变，搜索词与结果页都还在。
+    expect(window.location.pathname).toBe('/');
+    expect((searchBox() as HTMLInputElement).value).toBe('脚本');
+    expect(boardArea().getByText('找到 1 个任务')).toBeTruthy();
+  });
+
   it('Esc 清空搜索并回到看板', async () => {
     createFakeApi(fixtures);
     render(<App />);
