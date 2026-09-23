@@ -1535,3 +1535,152 @@ GNU 官网的 `https://www.gnu.org/licenses/agpl-3.0.txt` 与 SPDX 的 `AGPL-3.0
 - 没有给每个源文件套 How to Apply 里那 15 行文件头。AGPL 的要求是「随程序提供协议副本」与「修改过的版本标明改动」，仓库根的 `LICENSE` 加 git 历史已经满足；几百个文件各贴 15 行只在接受外部贡献、需要逐文件声明时才值。
 - 没有加 `CONTRIBUTING.md` / CLA / 贡献者许可协议：单作者项目，没有需要归一的权利。
 - 没有改 `README.md`（下一步单独做，协议的署名与说明放在那时加）；没有动 `docs/intend.md` 的勾选框，那是用户文件。
+
+## D64 第 27 步：命令行启动器 mailuo（2026-09-23）
+
+### 需求与范围
+
+`docs/intend.md`：「改为命令行工具：`npm i -g mailuo` 或 `npx mailuo`，起本地服务并自动打开浏览器」。
+本步只做这一条，不含同列表里的「启动时查 npm registry 提示新版本」与「自动更新」——那两步要有
+已发布的包才有意义。本步也没有改动 `apps/api` 与 `apps/web` 的任何源码。
+
+分支 `feat/cli-launcher` 从 `9e35cef`（main）切出，中途 rebase 到 `cf6b961`（D63 合入后的 main），
+`package.json` 的 `license`/`author` 与新增的 `bin`/`files` 各自落在不同位置，自动合并没有冲突。
+
+### 问题：服务端入口的默认值是按「源码目录」算的
+
+`apps/api/src/config.ts` 用 `import.meta.dirname` 上推两级得到仓库根，于是：
+
+- 数据库默认 `<包根>/data/kanban.db`；
+- 本机配置读 `<包根>/.env`。
+
+从源码 `pnpm start` 时这两条都对。装成 npm 包后 `<包根>` 变成
+`node_modules/mailuo/`：数据会写进一个升级/重装就被替换的目录，而且包目录通常是只读的，
+写入直接失败。这正是不能把 `node apps/api/dist/index.js` 直接当成命令行的原因。
+
+### 做法：一个零依赖的启动器，只负责合成配置
+
+`bin/mailuo.mjs` 做三件事，然后就再没有别的职责：
+
+1. 解析命令行（`--port/--host/--db/--open/--no-open/--help/--version`，支持 `--port 3010`、
+   `--port=3010`、`-p 3010`、`-p3010` 四种写法）；
+2. 按「命令行 > 环境变量 > 默认值」合成配置，写进 `process.env`
+   （`PORT`/`HOST`/`KANBAN_DB_PATH`/`HOST_ALLOW`）——服务端入口随后读的就是进程环境，
+   所以覆盖顺序天然成立，服务端一行都不用改；
+3. `await import(apps/api/dist/index.js)` 在同一个进程里起服务，并按平台打开浏览器。
+
+为什么在进程内 import 而不是 `spawn` 一个子进程跑 `dist/index.js`：能少一层进程与信号转发，
+Ctrl+C 直接作用于唯一进程；也不需要为「子进程崩了」再写一遍日志转发。代价是
+`bin/` 与 `apps/api/dist` 必须在同一个包里——这正是 `files` 字段要保证的事。
+
+为什么把参数逻辑写成一个独立文件而不是塞进 `apps/api`：CLI 的参数解析属于「命令行」这个外壳，
+服务端只认环境变量与自己的默认值。将来若加配置文件、`--daemon` 之类，都只动这一个文件。
+
+### 四条具体口径
+
+1. **数据库默认 `~/.mailuo/kanban.db`**（`HOME` 缺失时退 `USERPROFILE`）。与包的安装位置和版本
+   都无关，重装不换数据。`--db` 的相对路径按**当前工作目录**解析（用户敲命令的地方），
+   不是按包目录。
+2. **默认端口 3001，被占用时自动往后试 20 个**。只在「既没有 `--port` 也没有 `PORT` 环境变量」
+   时扫描：显式指定的端口是用户的决定，被占用应当直接报错，而不是悄悄换一个他找不到的端口。
+   扫描本身是 connect 探测，存在「探测完到真正 listen 之间被抢」的窗口，那种情况下报的是
+   Node 的 `EADDRINUSE`，可以接受。
+3. **`--host 0.0.0.0` 或 `::` 时浏览器仍打开回环地址**：通配地址不是可访问的 URL，
+   `http://0.0.0.0:3001` 在多数浏览器里打不开。跨设备访问时另外用真实 IP（启动日志里已经打印）。
+4. **打开浏览器失败只警告**：`xdg-open`/`open`/`explorer.exe` 不存在或没有桌面环境时，
+   服务该继续跑；地址已经打印在终端里。
+
+### 发布相关的 `package.json` 改动
+
+- `bin: { "mailuo": "bin/mailuo.mjs" }`；
+- `files`：`bin/mailuo.mjs`、`apps/api/dist/`、`apps/api/migrations/`、`apps/web/dist/`、
+  `LICENSE`、`README.md`。`pnpm pack` 实测 67 个文件、189KB（含 sourcemap）——包体很小，
+  不需要 `.npmignore`。只列 `bin/mailuo.mjs` 而不是整个 `bin/`：单测文件不必进包。
+- `test` 脚本改成 `node --test bin/*.test.mjs && pnpm -r test`：启动器在包根的 `bin/` 下，
+  不属于任何工作区包，`pnpm -r test` 不会跑到它。
+- `prepack: pnpm build`：`apps/api/dist` 与 `apps/web/dist` 都不入版本库，而 **npm 对 `files`
+  里不存在的目录是静默忽略的**（实测：缺失目录不报错、不警告，只是不打进包）。没有这个钩子，
+  任何干净检出直接 `pnpm publish` / `npm publish` 都会发出一个缺少服务端产物的包，用户拿到的是
+  「找不到服务端产物」。README 也写明了从源码运行要先构建。
+- **运行时依赖挪到根**：`@hono/node-server`、`@hono/zod-validator`、`better-sqlite3`、`hono`、
+  `zod` 现在同时声明在根 `package.json`。原因是 bin 在根包里、它 `import` 的 `apps/api/dist`
+  也在根包里，而 `apps/api/package.json` 不进 `files`、安装时也不会作为子包被解析——依赖只声明
+  在 `apps/api` 时，全局安装后 `import` 会报 `Cannot find package '@hono/node-server'`。
+  `apps/api/package.json` 里那份保留：它在工作区里仍是一个独立包（`pnpm --filter @mailuo/api`
+  的脚本、版本语义都靠它）。
+- `private: true` **本步保留**：它挡的是 `npm publish`（EPRIVATE），不影响 `npm pack` 与本地
+  安装验证，也不改变「本步不做发布」的范围。真正发布那一步把它去掉。
+
+### 验证
+
+- `node --test bin/*.test.mjs`：21 条，全绿。除函数级用例外，关键的三条是**进程级**：
+  符号链接调用 bin 时 `--version` 正常输出（全局安装的形状）；显式端口被占用时打印 CLI 自己的
+  提示、退出码 1、且不打印启动横幅；真起服务后横幅晚于服务端的「API 监听」。
+- `pnpm --filter @mailuo/api test`：273 条全绿（本步没有改后端，跑它是为了确认没被牵连）。
+- **真实全局安装验证**（隔离环境，不是推演）：`pnpm pack` → `npm i -g --prefix <tmp>` 得到
+  `prefix/bin/mailuo -> ../lib/node_modules/mailuo/bin/mailuo.mjs`（与线上安装同形），随后
+  `mailuo --version` 输出 0.1.0、`mailuo --help` 正常、`mailuo --no-open` 用默认端口扫描起在
+  3003、`/api/health` 200、`/` 200 text/html、`POST /api/tasks` 落到 `$HOME/.mailuo/kanban.db`
+  并自动应用三条迁移。这一步正是阻断缺陷的复现与回归。
+- 从源码运行：`node bin/mailuo.mjs --port 3110 --db <cwd>/kanban.db --no-open`，同上；显式端口
+  被占用时（占住 3001）报 `端口 3001 已被占用，请换一个：mailuo --port 3002`。
+- 临时库、临时 `HOME`、pnpm store、npm 缓存与安装 prefix 都在 `.tmp-*`（已被 `.gitignore` 覆盖），
+  验收后删除。
+
+### 审阅（子代理，只读）与修复
+
+只读审阅在 worktree 上跑了完整流程，结论是**不能合并**，指出两个阻断缺陷——两个都打在需求上，
+而且第一版单测 21 条当时是 17 条全绿，恰好没盖到这两条路径：
+
+1. **（阻断）符号链接下「是否直接执行」恒假**。npm / pnpm 全局安装的 bin 是指向真实文件的符号
+   链接，Node 经符号链接执行时 `import.meta.url` 是 realpath 而 `process.argv[1]` 是链接路径，
+   `mailuo --version` **无输出、退出码 0**——静默什么都不做。修法：`isDirectRun` 用
+   `realpathSync(process.argv[1])` 比较，realpath 失败按「不是直接执行」处理；并补一条真起
+   符号链接布局的子进程用例。这是本步最值得记的一条：**失败形态是「成功退出但什么都没做」**。
+2. **（阻断）发布后的包没有运行时依赖**。根 `package.json` 里没有 dependencies，而
+   `apps/api/package.json` 不进 `files`。修法见上「运行时依赖挪到根」，并用真实的
+   `npm i -g` + 起服务验证收口。
+3. **（中）`KANBAN_DB_PATH=''` 会把库指到当前目录**：`path.resolve('')` 得到 cwd，随后
+   better-sqlite3 打开目录时报一个与「路径是空串」无关的错。`--db ''` 本来就报错，环境变量这条
+   与它不一致。已按 HOST 的口径统一：空串直接抛「数据库路径不能为空」。
+4. **（中）`--help` / `--version` 不短路**：`mailuo --help --port abc`、`--help --nonsense` 会被
+   参数错误顶回去。已改成先用 `hasFlag` 扫一遍 argv 再看其它参数——求助路径不该因为别的参数
+   写错而失败。
+5. **（中）端口占用的提示是写给源码开发的**：服务端 `apps/api/src/index.ts` 在 EADDRINUSE 时教
+   用户「改根目录 .env、重启 dev:api/dev:web」，命令行用户没有这两个脚本。已改成 CLI 在 import
+   之前先探一次端口：被占用就直接报 `端口 N 已被占用，请换一个：mailuo --port N+1`，不再走进
+   服务端那条提示。
+6. **（中）「脉络已启动」打印在真正 listen 之前**：`await import` 只等到模块执行完。已加
+   `waitUntilListening`（连得上才算就绪），成功横幅与服务端「API 监听」的顺序现在有子进程用例
+   钉住。
+7. **（中）单测假覆盖两处**：一条名字叫「默认端口占用时换端口」的用例实际传的是显式 `--port`，
+   扫描分支从未被走到（已删掉这条并换成真的走 `findFreePort` 的用例）；一条只断言 `typeof` 与
+   测试文件名，等于恒真（已换成 `isDirectRun` 的直接用例加符号链接子进程用例）。
+8. **（可选，已采纳）** `--port=3010` 与 `-p3010` 两种常见写法现在都支持（README 与 `--help`
+   写明四种写法）；`files` 只列 `bin/mailuo.mjs`，不再把单测文件打进包；`prepack` 从「留待以后」
+   提到「发布前必办」并已实现（理由见上）。
+9. **（可选，未采纳，备案）** `openBrowser` 仍只看 `spawn` 的 `error` 事件、不读子进程退出码：
+   `xdg-open` 存在但没有桌面环境时是「退出非 0」，这里会静默当成功。改它要区分「真失败」与
+   「命令不存在」，而地址已经打在终端里，收益低于多一个分支；Windows 上 `explorer.exe` 对含
+   逗号的 URL 会截断这一点已写进代码注释。
+
+审阅自己声明**未能验证**的：`npx` 的真实路径（需网络；它与全局安装同属符号链接布局，已由上述
+修复与用例覆盖同一根因）、Windows 全部行为、扫描探测与 listen 之间被抢的真实复现、真实 registry
+的 EPRIVATE。
+
+### 规范改动（2026-09-23 用户验收后授权）
+
+用户验收通过并授权改规范，只动与本步直接相关的两处：
+
+1. 「项目结构」的树里补 `bin/`（命令行入口 `mailuo.mjs`）与 `package.json`（包元数据：bin / files / 运行时依赖）。原来的树只列了目录，没有列包根的文件。
+2. 新增「命令行运行」一节：入口是谁、参数与四种写法、优先级、数据库默认位置与相对路径口径、端口扫描的触发条件、启动横幅与打开浏览器的时机（服务真正监听之后）、`--help`/`--version` 先于校验、以及「命令行与开发用的不是同一个库、不自动搬迁」。
+
+没写的：`package.json` 的 `files` 与 `prepack` 是发布机制的细节，属命令行的可选复杂性，规范不展开。
+
+### 没做的（可选复杂性）
+
+- 没有加 `--daemon`、`--quiet`、配置文件的持久化：需求只要求「起服务并开浏览器」。
+- 没有把 CLI 的参数解析并进 `apps/api` 的类型检查（`bin/mailuo.mjs` 是 JS，不进任何 tsconfig）。
+  现在靠 21 条单测与实机验收守着。
+- README 仍然保留开发与生产两段（给源码开发者）。`docs/intend.md` 里「README 只包含使用方法和
+  功能介绍」是另外一条待办，那时再删。
