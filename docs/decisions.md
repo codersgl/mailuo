@@ -2432,3 +2432,19 @@ D70 里那条 `npx eslint sample.ts` 的原始报错（落地后根上已是 TS 
 所以取了 **D70**。写完后 D69 先合入主干（`51e37d3`），本分支已 rebase 到新的 main：D69 在前、
 D70 在后，除本文档末尾这一处外没有冲突（`package.json` 的包名与本文的 devDependencies 落在
 不同行，`docs/development.md` 改的是不同小节，都是自动合并）。
+
+### 合并后收尾（2026-09-24，用户验收并合并 `cd0e77c` 之后）
+
+合并用 `--no-ff`，worktree `.worktrees/ci-eslint` 与分支 `chore/ci-eslint` 已删除。按 D55 之后的
+惯例在主仓重建产物（`dist/` 不入版本库）并跑全量，命令与 CI 同序、同一串：
+
+- `pnpm install --frozen-lockfile`：只新增根上的 `typescript 6.0.3` 与服务端那批 lint 依赖，
+  应用侧的 TypeScript 7 未受影响。
+- `pnpm lint` 0 error / 5 warning；`pnpm typecheck`、`pnpm build` 通过。
+- `pnpm test`：bin 37 / api 273 / web 474 全绿，退出码 0。这次没有撞上「已知抖动」那条
+  （`fetchLatestVersion` 的超时断言），它仍是待处理的一条债：CI 上线后若偶发红，先看是不是它。
+
+主仓 `docs/intend.md` 仍留着你自己的未提交改动（需求重组）。按项目规则该文件只由你改，
+所以 `Tasks` 里「添加`CI`和`ESLint`」的勾选留给你；本条实现后它就成立了。
+
+CI 只在 GitHub 上运行，本机没有 runner，所以 workflow 的真实执行结果要等这次推送后才有。
