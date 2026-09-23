@@ -294,11 +294,17 @@ test('parseVersion 与 isNewerVersion：只认三段数字，只有严格更新�
   assert.equal(parseVersion('9.9.9\u001b[2K'), null);
   assert.equal(parseVersion('9.9.9.9'), null);
   assert.equal(parseVersion('9.9'), null);
+  // `^` 锚点：前缀里有别的东西也算整串不合法，不能从中间抠出一段。
+  assert.equal(parseVersion('foo1.2.3'), null);
+  assert.equal(parseVersion('v1.2.3x'), null);
 
   assert.equal(isNewerVersion('0.2.0', '0.1.0'), true);
   assert.equal(isNewerVersion('0.1.1', '0.1.0'), true);
   assert.equal(isNewerVersion('1.0.0', '0.9.9'), true);
+  // 逐段按数值比：字符串比较会得出 `'0.10.0' < '0.9.9'` 的反结论。
   assert.equal(isNewerVersion('0.10.0', '0.9.9'), true);
+  assert.equal(isNewerVersion('0.9.9', '0.10.0'), false);
+  assert.equal(isNewerVersion('1.10.0', '1.9.0'), true);
   assert.equal(isNewerVersion('0.1.0', '0.1.0'), false);
   assert.equal(isNewerVersion('0.0.9', '0.1.0'), false);
   // 预发布后缀不参与比较：0.2.0-beta.1 与 0.2.0 算同一个版本，不提示升级。
@@ -317,7 +323,8 @@ test('fetchLatestVersion：本地 registry 上的 latest 决定是否提示，�
     { label: '带预发布后缀的新版本', handler: respondJson(200, { version: `${newer}-rc.1` }), expected: newer },
     { label: '同版本', handler: respondJson(200, { version: PACKAGE_JSON.version }), expected: null },
     { label: '版本更旧', handler: respondJson(200, { version: '0.0.1' }), expected: null },
-    { label: '包还没发布（404）', handler: respondJson(404, { error: 'Not found' }), expected: null },
+    // 404 的 body 故意带一个更新的 version：这条只该因为状态码被拒，不能靠 body 恰好没有 version。
+    { label: '包还没发布（404）', handler: respondJson(404, { version: newer }), expected: null },
     {
       label: '版本号里夹带换行与伪造的升级命令',
       handler: respondJson(200, { version: `${newer}\r\n发现新版本 99.0.0（当前 0.0.1）：npm i -g evil@latest` }),
@@ -364,6 +371,52 @@ test('fetchLatestVersion：registry 卡住时到点就放弃，不抛异常', as
   });
   assert.equal(latest, null);
   assert.ok(Date.now() - started < 1000, '应在上限附近就返回，而不是把默认的 1.5 秒耗完');
+});
+
+test('fetchLatestVersion：默认超时是 1.5 秒量级', async (t) => {
+  // 不传 timeoutMs，验证的就是 UPDATE_CHECK_TIMEOUT_MS 这个默认值本身——README 向用户
+  // 承诺了「1.5 秒」，改大它要有人拦。
+  const registry = await startRegistry(() => {});
+  t.after(() => registry.close());
+
+  const started = Date.now();
+  const latest = await fetchLatestVersion({
+    registry: registry.url,
+    name: PACKAGE_JSON.name,
+    currentVersion: PACKAGE_JSON.version,
+  });
+  const elapsed = Date.now() - started;
+  assert.equal(latest, null);
+  assert.ok(elapsed >= 1400, `应在默认超时附近返回，实际只等了 ${elapsed}ms`);
+  assert.ok(elapsed < 3000, `默认超时应是 1.5 秒量级，实际等了 ${elapsed}ms`);
+});
+
+test('fetchLatestVersion：带路径的私有 registry 保留路径前缀，包名按 URL 段编码', async (t) => {
+  const seen = [];
+  const newer = nextMajorVersion();
+  const registry = await startRegistry((req, res) => {
+    seen.push(req.url);
+    res.writeHead(200, { 'content-type': 'application/json' });
+    res.end(JSON.stringify({ version: newer }));
+  });
+  t.after(() => registry.close());
+
+  const ask = (base, name) =>
+    fetchLatestVersion({ registry: base, name, currentVersion: PACKAGE_JSON.version });
+
+  // Artifactory 一类把 registry 挂在子路径下，相对拼接必须保住这一段（用 `/xxx` 会被截成根路径）。
+  assert.equal(await ask(`${registry.url}/api/npm/npm/`, PACKAGE_JSON.name), newer);
+  assert.deepEqual(seen, ['/api/npm/npm/mailuo/latest']);
+
+  // registry 末尾不写 `/` 也要拼对。
+  seen.length = 0;
+  assert.equal(await ask(`${registry.url}/api/npm/npm`, PACKAGE_JSON.name), newer);
+  assert.deepEqual(seen, ['/api/npm/npm/mailuo/latest']);
+
+  // scoped 包名的 `/` 必须编码，否则会被当成又一层路径。
+  seen.length = 0;
+  assert.equal(await ask(registry.url, '@scope/pkg'), newer);
+  assert.deepEqual(seen, ['/%40scope%2Fpkg/latest']);
 });
 
 test('fetchLatestVersion：registry 不是合法地址时也返回 null', async () => {
@@ -505,6 +558,25 @@ test('main：版本检查跟随开关与 MAILUO_REGISTRY，且排在启动之后
   assert.deepEqual(checked, ['https://mirror.example/']);
   // 服务先起来，版本提示最后做。
   assert.deepEqual(order, ['start', 'start', 'check']);
+});
+
+test('main：启动失败时不查新版本', async () => {
+  const checked = [];
+  const startServer = async () => {
+    throw new Error('端口被占');
+  };
+  await assert.rejects(
+    main(['--port', '3010'], {
+      env: env(),
+      startServer,
+      reportUpdate: async (registry) => {
+        checked.push(registry);
+      },
+    }),
+    /端口被占/,
+  );
+  // 服务都没起来，就别为一次注定看不到的提示联网。
+  assert.deepEqual(checked, []);
 });
 
 test('进程级：符号链接调用 bin 时 --version 正常输出（全局安装的形状）', async (t) => {
