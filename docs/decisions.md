@@ -1882,3 +1882,137 @@ stdout 的 `error` 处理，值得单独一小步，这里只记录。
 `chore/npm-package` 那一条合入时要改成 **D67**。它同时改过旧的 `README.md`（本步整篇改写）与
 `docs/decisions.md` 末尾，合并时这两处会有冲突，处理口径与 D65 那次相同：README 用本步的新结构，
 把打包相关的说明补进对应的新章节；决策编号改成 D67。
+
+## D67 第 29 步：发布 npm 包前的打包就绪（2026-09-23，分支 chore/npm-package）
+
+需求（`docs/intend.md`）：「发布npm包」。这一步只做到「`npm pack` 出来的 tarball 装到别处能跑」，
+真正的 `npm publish` 需要账号登录，留给用户（见下面「没做的」里的两条命令）。
+
+### 问题
+
+三件事在仓库里全都看不见，只有装到别处才会暴露：
+
+1. 根 `package.json` 是 `private: true`：`npm publish` 会在最后一步失败，而 `npm pack` 照常成功，
+   所以本地「我包都打出来了」并不能说明可发布。
+2. 服务端产物按哪种模块格式解析，取决于**装完之后**包根有没有 `type`。仓库里存在
+   `apps/api/package.json`（`"type": "module"`），而它不在 `files` 清单里、不进 tarball；于是
+   「本地能跑」不能推出「装完能跑」。
+3. 没有 `description` / `keywords`：发布出去在源上是一张没有一句话说明的卡片。
+
+第 2 条实测过，具体追踪（Node 22.23.1，本步的 worktree）：
+
+- tarball 里 `apps/api/package.json` 的个数是 0；包根是 `mailuo/package.json`。
+- 删掉 `type` 的变体：`HOME=... mailuo --no-open --port 3997` 仍然起得来，`API 监听` 正常打出。
+  原因是 Node 22.7 起默认打开**模块语法探测**：`.js` 按 CJS 解析失败后会被当成 ESM 再加载一次。
+- 同一个变体加 `NODE_OPTIONS=--no-experimental-detect-module`（等价于 22.0–22.6 用户的行为）：
+  `启动失败：Cannot require() ES Module .../apps/api/dist/index.js in a cycle`，退出码 1。
+- 所以 `type: "module"` 不是装饰：它把「能跑」从 Node 的探测行为里摘出来。`engines` 写的是
+  `>=22`，这四舍五入包含了没有探测的 22.x。
+
+### 做法
+
+- 根 `package.json`：去掉 `private`，加 `"type": "module"`、`description`、`keywords`（含中文）。
+- 不加 `repository` / `homepage` / `bugs`：GitHub 远端还不存在（`docs/intend.md` 的「发布到Github」
+  是另一步）。写一个猜的地址比留空更糟——它会出现在源的侧栏，且错误链接比没有链接更难发现。
+  与 D66 的接口：D66 的取舍 4 记着 README 里的 `docs/images/*.webp` 截图、顶部 `brand/icon.svg`
+  logo 与 `docs/*.md` 链接在 npm 页面上会裂，等 `repository` 补上后由 npm 重写相对链接。那一步
+  与「发布到Github」绑定（先有仓库地址，字段才写得出），所以本步只把这个口留在记录里。
+- 清单本身钉成用例：新增 `bin/package.test.mjs`（5 条，不构建、不联网），核对
+  `private`/`type`/`description`/`keywords`、`bin` 指向存在文件、`files` 覆盖服务端运行时要读的
+  六个路径、`files` 里**仓库内**的路径真的存在、白名单里没有 `.env`/`data/`/`node_modules/`
+  这类本机文件、构建产物的入口文件（`apps/api/dist/index.js`、`apps/web/dist/index.html`）在产物
+  存在时确实在，以及 `apps/api/dist` 里的每个裸 import 都能在根 `dependencies` 里找到。
+  最后一条针对的是 `bin/mailuo.mjs` 的注释已经写明的约束：服务端产物是**被包根加载**的，运行时
+  依赖必须声明在根，而不是 `apps/api` 自己的 `dependencies` 里。
+- `prepack` 保持 `pnpm build` 不变：`npm pack` 与 `npm publish` 都会先构建，不会打出一份过期产物。
+
+### 验证
+
+装一遍真 tarball（`.tmp-verify/`，验收后已删；本机 `/root/.npm` 不可写，故给 npm 指定了一个仓内缓存目录）：
+
+```sh
+pnpm build && npm pack                       # 190.8 kB / 67 files（README 并主干 D66 后重测）
+npm install -g --prefix .tmp-verify/global ./mailuo-0.1.0.tgz
+HOME=$PWD/.tmp-verify/home .tmp-verify/global/bin/mailuo --version   # 0.1.0
+HOME=$PWD/.tmp-verify/home MAILUO_NO_UPDATE_CHECK=1 \
+  .tmp-verify/global/bin/mailuo --no-open --port 3998
+```
+
+- 起服务后 `curl /api/health` 是 200 `{"status":"ok"}`；`/` 返回页面 HTML（静态托管指向
+  `.../lib/node_modules/mailuo/apps/web/dist`）；`/api/board` 返回三列空看板。日志里
+  `已应用迁移: 001_init.sql, 002_minutes…` 说明迁移目录也在 tarball 里被找到了。
+- 不传 `--db` 时库落在 `$HOME/.mailuo/kanban.db`（本步用 `HOME` 指向临时目录复验），
+  与 D64 的口径一致。
+- 反向验证 `type`：见上面「问题」第 2 条的四行追踪。
+- 变异检验（第一版）：把 `private` 改回 `true`、从 `files` 删 `apps/api/migrations/`、从
+  `dependencies` 删 `hono`，三条用例分别失败（`not ok`），改回后全绿。补上审阅要求的存在性断言后
+  又做了一轮：从 `files` 删 `apps/web/dist/`、把 `files` 里的 `LICENSE` 改成不存在的
+  `LICENSE.md`、删掉磁盘上的 `apps/api/dist/index.js`，三条分别让对应用例变红，改回后 5 条全绿。
+- 终审又补了三条断言（`files` 反向断言、`description`、`keywords`，见下）并再变异一轮：往
+  `files` 加 `.env`、删 `description`、`keywords` 置空、把 `private` 写成字符串 `"true"`，
+  四条分别让对应用例变红，改回后 5 条全绿。
+- 全量：`pnpm test` bin 37（基线 32 + 新增 5）、api 273、web 474 全绿；`pnpm typecheck` 通过。
+  第一次跑时 web 有 1 条 `App.test.tsx` 失败，当时并行的审阅子代理正在同一台机器上反复跑变异检验，
+  重跑该套件 474 全绿——按环境争用处理，不是本步引入的失败。
+- 合并主干（D66 README 改写）后重跑：`node --test bin/*.test.mjs` 37 全绿、web 474 全绿，并重新
+  `npm pack` + 装 tarball 起了一遍服务（190.8 kB / 67 files，`/api/health` 200、`/` 出页面、
+  默认库落 `$HOME/.mailuo/kanban.db`）。
+
+### 审阅（子代理，只读）与修复
+
+安全与健壮性那份（结论：可以合并）核实了误发布面（仓库里没有 workflow、没有 `.npmrc`、
+`apps/*` 仍是 `private`）、tarball 里没有 `.env`/`data/`/`node_modules`、`type: module` 对仓库其余
+工具链没有副作用（`git ls-files '*.js'` 与 `*.cjs` 都是 0 个，只有 `.mjs` 与 TS）、安装生命周期里
+没有 install/postinstall/prepare、以及 `registry.npmjs.org` 上 `mailuo` 仍是 404。
+
+它提了一条中等问题：清单用例只核对 `files` 里写了哪些字符串，不核对这些路径在磁盘上存在，而
+`npm pack` 对白名单里不存在的路径是**静默跳过、仍然成功**。方向同意，事实有一处不对（它说
+`apps/web/dist/` 没进必查清单，实际进了），它给的改法也不能照抄——给 `files` 每一项加
+`existsSync` 会把干净 checkout 弄红，因为两个 `dist` 目录不入版本库，`pnpm install && pnpm test`
+时根本不存在（这与它自己「dist 不存在时跳过而不是失败」的判断矛盾）。已按存在性的实质改：
+把必查清单拆成「仓库里就该在的文件」（查存在性）与「构建产物」（产物在时查它的入口文件），并把
+`apps/web/dist/` 的断言从「字符串在数组里」升级成「入口文件 `index.html` 真的在」。
+
+它列的其余条目（正则漏 `require(` 与模板动态 import、`files` 不钉文件数、`*.js.map` 进包、
+无 `repository`/`publishConfig`）按低或「不改」处理；其中正则已顺手补上 `require(` 分支（当前产物
+一个都匹配不到，留着是防止将来混进 CJS 产物时静默漏过）。
+
+终审那份（结论：可以合并）把 D67 的每一句声明都实测复核了一遍（包括在 `.tmp-review-final/` 的
+安装副本里删 `type` 复现那四行追踪、独立重测出同一个 shasum `88f854f5…`），并跑了一张 17 组的
+变异矩阵：13 组被现有用例捕获，3 组漏网。漏网的三条已按它的建议补上，都是用例断言，不碰运行时：
+
+1. **`files` 没有反向断言**（中）：往白名单加 `.env` / `data/` 时 5 条全绿，而仓根的 `.env` 与
+   `data/kanban.db` 是真实存在的文件，`npm pack` 会照单收进 tarball。已加一条反向断言。
+2. **`description` / `keywords` 零覆盖**（中）：它们是「问题」第 3 条的动机，但删掉或置空都全绿。
+   已在这两个字段上各加一条非空断言。
+3. **注释里的编号没跟着改**（低）：`bin/package.test.mjs` 头部的「见 D66」在编号顺延后指向了
+   README 那条决策。已改成 D67。
+
+它同时确认「整目录缺失」这个漏网口子（F4）与「`private` 写成字符串」的假阴性（F5，已顺手改成
+`assert.ok(!private)`），前者同意本步不堵，「`*.js.map` 进包」与「`files` 里列 LICENSE/README」
+明确不改。它还指出 D67 里那句「第一次 web 失败是环境争用」它无法证实也无法证伪，这里照原样留着，
+标注为未复核。
+
+### 没做的（可选复杂性）
+
+- **不执行真正的发布**：本机 `npm whoami` 未登录，且 `~/.npmrc` 指向 `registry.npmmirror.com`
+  ——镜像是只读的，发布要
+  `npm login --registry https://registry.npmjs.org` 后
+  `npm publish --registry https://registry.npmjs.org`。
+- **不加 `publishConfig.registry`**：把官方源写死进包，将来想发到私有源还要再改回来；一条命令行
+  旗标就够。用户如果希望「敲 `npm publish` 就发对地方」，这是一处可以再来一小步的地方。
+- **不加 CI / 不加 `publish:check` 脚本**：一次性的装包烟测按项目惯例放 `.tmp-verify/` 里跑完即删，
+  留下的守卫是那 5 条不需要构建的清单用例。
+- **不在 `prepack` 里加守门脚本**：现在还剩一个口子——`files` 里列了、但构建产物**整个目录**不存在
+  时（例如 `vite` 的 `outDir` 被改到别处），快速套件会跳过产物检查，`npm pack` 依然静默成功。
+  要堵它得在 `prepack` 里跑一个「清单里每项都必须存在」的脚本（那时刚构建完，产物理应在）。
+  代价是发布链路上多一个会失败的点，收益是一个很窄的失败模式，本步不做。
+- **不动 README**：README 已由 D66 整篇改写（`npx mailuo` / `npm i -g mailuo` 那段安装说明就是
+  本步发布后的形态），本步一行没改。
+
+
+**编号备案（承接 D66）**：两个 worktree 并行时都写了 `D66`，`docs/readme` 那条（现在的 D66）先
+合入主干（`2f498fd`），所以本步顺延为 **D67**，标题已改，正文其余内容未变。D66 的备案里写
+「它同时改过旧的 `README.md`」不准确：`chore/npm-package` 从头到尾没碰过 `README.md`，改的是根
+`package.json`、新增 `bin/package.test.mjs` 与本文。合并时也只有本文冲突，README 的安装段
+（`npx mailuo` / `npm i -g mailuo`）与打包无关，不需要跟着改。
