@@ -3,7 +3,9 @@ import {
   ancestorIds,
   buildTree,
   countChildren,
+  descendantIds,
   expandAncestors,
+  resolveTreeDrop,
   toggleCollapsed,
 } from '../src/lib/tree';
 import type { TreeTask } from '../src/api/types';
@@ -124,5 +126,56 @@ describe('expandAncestors', () => {
     const collapsed = ['a'];
 
     expect(expandAncestors(collapsed, ['x'])).toBe(collapsed);
+  });
+});
+
+describe('descendantIds', () => {
+  it('给出整棵子树的后代，不含自己', () => {
+    expect([...descendantIds(flat, 'a')].sort()).toEqual(['a1', 'a1x', 'a2']);
+    expect([...descendantIds(flat, 'a1x')]).toEqual([]);
+  });
+
+  it('成环的脏数据不会死循环', () => {
+    const cyclic = [task('p', 'q'), task('q', 'p')];
+
+    expect([...descendantIds(cyclic, 'p')].sort()).toEqual(['p', 'q']);
+  });
+});
+
+describe('resolveTreeDrop', () => {
+  const tasks = [task('a'), task('b'), task('a1', 'a'), task('a1x', 'a1'), task('b1', 'b')];
+
+  it('悬停行上半区：成为它的子节点', () => {
+    expect(resolveTreeDrop(tasks, 'b', { id: 'a', lowerHalf: false })).toEqual({
+      parentId: 'a',
+      afterTaskId: null,
+    });
+  });
+
+  it('悬停行下半区：排到它后面，与它同级', () => {
+    expect(resolveTreeDrop(tasks, 'a', { id: 'b1', lowerHalf: true })).toEqual({
+      parentId: 'b',
+      afterTaskId: 'b1',
+    });
+  });
+
+  it('顶层节点的下半区也是「与它同级排在它后面」（新父级为 null）', () => {
+    expect(resolveTreeDrop(tasks, 'a1', { id: 'b', lowerHalf: true })).toEqual({
+      parentId: null,
+      afterTaskId: 'b',
+    });
+  });
+
+  it('拖到自己身上不算落点', () => {
+    expect(resolveTreeDrop(tasks, 'a', { id: 'a', lowerHalf: false })).toBeNull();
+  });
+
+  it('拖到自己的后代下不算落点（否则成环）', () => {
+    expect(resolveTreeDrop(tasks, 'a', { id: 'a1', lowerHalf: false })).toBeNull();
+    expect(resolveTreeDrop(tasks, 'a', { id: 'a1x', lowerHalf: true })).toBeNull();
+  });
+
+  it('目标不在树里（数据过期）时不算落点', () => {
+    expect(resolveTreeDrop(tasks, 'a', { id: 'ghost', lowerHalf: false })).toBeNull();
   });
 });

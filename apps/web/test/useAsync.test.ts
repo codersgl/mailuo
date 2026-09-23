@@ -156,4 +156,37 @@ describe('useAsync', () => {
 
     expect(result.current.state).toEqual({ status: 'ready', data: 'b 的结果' });
   });
+
+  it('mutate 就地改数据，不触发重取', async () => {
+    const load = vi.fn(() => Promise.resolve(['a', 'b']));
+    const { result } = renderHook(() => useAsync(load, [], '失败'));
+    await waitFor(() => expect(result.current.state.status).toBe('ready'));
+
+    act(() => result.current.mutate((data) => [...data].reverse()));
+
+    expect(result.current.state).toEqual({ status: 'ready', data: ['b', 'a'] });
+    expect(load).toHaveBeenCalledTimes(1);
+  });
+
+  it('mutate 在还没有数据时不生效：没有「就地」可言', async () => {
+    const { result } = renderHook(() => useAsync(() => new Promise<string>(() => {}), [], '失败'));
+
+    act(() => result.current.mutate(() => '改过的'));
+
+    expect(result.current.state).toEqual({ status: 'loading' });
+  });
+
+  it('mutate 之后再 refresh，服务端数据仍然覆盖本地改动', async () => {
+    const load = vi.fn<() => Promise<string>>().mockResolvedValueOnce('第一版');
+    const { result } = renderHook(() => useAsync(load, [], '失败'));
+    await waitFor(() => expect(result.current.state).toEqual({ status: 'ready', data: '第一版' }));
+
+    act(() => result.current.mutate(() => '本地改的'));
+    expect(result.current.state).toEqual({ status: 'ready', data: '本地改的' });
+
+    load.mockResolvedValue('服务端的');
+    act(() => result.current.refresh());
+
+    await waitFor(() => expect(result.current.state).toEqual({ status: 'ready', data: '服务端的' }));
+  });
 });

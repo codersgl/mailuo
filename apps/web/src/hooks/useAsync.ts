@@ -17,6 +17,12 @@ export interface AsyncResult<T> {
    * 否则一次改标题会让整块看板退回「加载中」闪一下。
    */
   refresh: () => void;
+  /**
+   * 就地改当前数据。拖拽这类操作要在服务端确认之前先把界面改成用户刚做出的结果，
+   * 否则卡片会先弹回原位再跳到新位置。只在已经有数据时生效：没有数据就没有「就地」可言，
+   * 这一次改动被忽略，随后的读取结果才是准的。
+   */
+  mutate: (update: (data: T) => T) => void;
 }
 
 /**
@@ -89,5 +95,13 @@ export function useAsync<T>(
     setAttempt((value) => value + 1);
   }, []);
 
-  return { state, reload, refresh };
+  const mutate = useCallback((update: (data: T) => T) => {
+    // 就地改不改 quiet：它不触发 effect，quiet 只对「下一轮重取要不要清空」有意义。
+    // 用户这时已经看到新位置，若紧接着有一次静默重取，也该保持静默。
+    setState((previous) =>
+      previous.status === 'ready' ? { status: 'ready', data: update(previous.data) } : previous,
+    );
+  }, []);
+
+  return { state, reload, refresh, mutate };
 }
