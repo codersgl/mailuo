@@ -54,6 +54,18 @@ export function isDurationEstimated(durationMinutes: number | null): boolean {
   return durationMinutes !== null;
 }
 
+/**
+ * 时间量（依赖图里的最早开始 / 最早结束 / 最晚开始 / 最晚结束 / 松弛）的文案。
+ *
+ * 与 `formatDurationShort` 共用同一套换算，只有 0 的解释不同：这些是**时刻与差值**，不是时长，
+ * 所以 0 是「0 分」而不是「瞬时」。节点上「松弛 0 分」表示这个任务在关键路径上；
+ * 写成「松弛 瞬时」会被读成「这个任务一眨眼就做完了」。
+ */
+export function formatScheduleMinutes(minutes: number): string {
+  // groupMinutes 对 0 返回空串（各段都是 0，没有可显示的部分），这里兜成「0 分」。
+  return groupMinutes(minutes) || '0 分';
+}
+
 /** 折成「N 天 M 小时 K 分」，只保留非零的部分；不到一天的时长不会显示「0 天」。 */
 function groupMinutes(total: number): string {
   const { days, hours, minutes } = splitMinutes(total);

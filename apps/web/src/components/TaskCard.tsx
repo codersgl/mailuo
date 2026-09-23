@@ -66,7 +66,7 @@ export function TaskCard({
   useEffect(() => {
     if (!menuOpen) return;
 
-    // 默认向下展开；菜单会超出视口底边时改成向上翻（否则会被 main 的滚动区裁掉）。
+    // 默认向下展开；菜单会超出视口底边时改成向上翻（否则会被主区滚动区的边缘裁掉）。
     // 打开时算一次，之后滚动或改窗高都要重算——只在打开那一刻判断的话，用户滚一下菜单就跑到屏幕外了。
     const reposition = () => {
       const rect = triggerRef.current?.getBoundingClientRect();
@@ -88,7 +88,7 @@ export function TaskCard({
 
     document.addEventListener('mousedown', handlePointerDown);
     document.addEventListener('keydown', handleKeyDown);
-    // 滚动事件不冒泡，捕获阶段才能听到 main 的滚动。
+    // 滚动事件不冒泡，捕获阶段才能听到主区滚动容器（见 D50）的滚动。
     window.addEventListener('scroll', reposition, true);
     window.addEventListener('resize', reposition);
     return () => {

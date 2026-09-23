@@ -2,11 +2,14 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import type { KeyboardEvent } from 'react';
 import { BoardView } from './components/BoardView';
 import type { NewTaskControls } from './components/Column';
+import { DependencyGraph } from './components/DependencyGraph';
 import { SearchResults } from './components/SearchResults';
 import { Sidebar } from './components/Sidebar';
 import { ErrorNote, LoadingNote } from './components/StatusNote';
 import { TaskEditorPanel } from './components/TaskEditorPanel';
 import { TopBar } from './components/TopBar';
+import { ViewToolbar } from './components/ViewToolbar';
+import type { ViewMode } from './components/ViewToolbar';
 import { dropToMove, moveTaskInBoard } from './domain/board';
 import type { DropSlot } from './domain/board';
 import { flattenGroups, groupByColumn, moveSelection } from './domain/search';
@@ -55,6 +58,12 @@ function BoardPage({
 }) {
   // 「显示已归档」总开关：看板列与文件树都认它。只存前端，不落库（见 docs/spec.md 的「归档」）。
   const [showArchived, setShowArchived] = usePersistentState(SHOW_ARCHIVED_KEY, false, isBoolean);
+  /**
+   * 主区正在看哪一种视图：看板列，还是这一层的依赖图（第三批）。
+   * 只存在前端且不落盘：它是「这一次在看什么」，不是一项偏好（与文件树的折叠偏好不同）。
+   * 换一层看板时不重置——在依赖图里顺着文件树往下看，是正常用法。
+   */
+  const [view, setView] = useState<ViewMode>('board');
   const board = useBoard(boardId, showArchived);
   const breadcrumb = useBreadcrumb(boardId);
   /**
@@ -341,13 +350,13 @@ function BoardPage({
           onShowArchivedChange={setShowArchived}
           refreshToken={treeRefreshToken}
         />
-        <main className="min-w-0 flex-1 overflow-auto">
+        <main className="flex min-w-0 flex-1 flex-col overflow-hidden">
           {actionError !== null && (
-            // sticky：提示条是 main 的第一个子元素，长看板下 main 会滚动，不粘住就会滚出视野。
             // role="alert" 让读屏立刻播报（看板区没有别的地方会报这个错）。
+            // 不再是 sticky：main 自己不再滚动，提示条是固定的一行，滚动的是它下面的内容区。
             <div
               role="alert"
-              className="sticky top-0 z-[6] mx-4 mt-3 flex items-start gap-2 rounded-[5px] border border-line bg-surface px-2.5 py-1.5"
+              className="mx-4 mt-3 flex flex-none items-start gap-2 rounded-[5px] border border-line bg-surface px-2.5 py-1.5"
             >
               <p className="min-w-0 flex-1 text-[11.5px] text-danger">{actionError}</p>
               <button
@@ -362,44 +371,71 @@ function BoardPage({
           {/*
             搜索态整块换成结果页（定版原型 C）。不依赖看板数据：结果页要的列名与列顺序
             由搜索响应自带（见 repositories/search.ts），所以当前这一层看板取不到时搜索照样能用。
+            搜索态下不显示视图切换条：结果页占满主区，清空关键词就回到原来的视图。
           */}
           {searching ? (
-            <SearchResults
-              state={search.state}
-              groups={searchGroups}
-              selectedIndex={selectedIndex}
-              onOpen={openResult}
-              onClear={clearSearch}
-              onRetry={search.retry}
-            />
-          ) : (
+            <div className="min-h-0 flex-1 overflow-auto">
+              <SearchResults
+                state={search.state}
+                groups={searchGroups}
+                selectedIndex={selectedIndex}
+                onOpen={openResult}
+                onClear={clearSearch}
+                onRetry={search.retry}
+              />
+            </div>
+          ) : view === 'board' ? (
             <>
-              {board.state.status === 'loading' && <LoadingNote />}
-              {board.state.status === 'failed' && (
-                <ErrorNote message={board.state.message} onRetry={board.reload} />
-              )}
-              {board.state.status === 'ready' && (
-                <BoardView
-                  board={board.state.data}
-                  dragPreview={drag.preview}
-                  dragSlot={dragSlot}
-                  draggingTaskId={drag.draggingTaskId}
-                  onOpenTask={(taskId) => {
-                    // 拖完那一下浏览器仍会补一个 click，不拦就会顺手进入子看板。
-                    if (drag.canOpen()) onNavigate(taskId);
-                  }}
-                  onEditTask={setEditing}
-                  onSetArchived={setTaskArchived}
-                  onDeleteTask={deleteTask}
-                  onDragStart={(task, event) => {
-                    // 按下就上标记：待定的点击期间也不该让静默重取换掉看板（那会重置这次拖拽）。
-                    // begin 返回 false 表示这一次按下不会产生拖拽，标记不能留着自己不放。
-                    if (drag.begin(task, event)) pointerActiveRef.current = true;
-                  }}
-                  create={create}
-                />
-              )}
+              <ViewToolbar view={view} onViewChange={setView} />
+              {/*
+                滚动容器从 main 挪到这一层：main 现在是「工具栏 + 内容区」的竖向布局，
+                而看板列尾那片可落点要求滚动容器有确定高度（flex-1 + min-h-0 给得出），
+                看板网格的 h-full 才能撑满、列尾的空白才属于列（见 BoardView 的注释与 D47）。
+              */}
+              <div className="min-h-0 flex-1 overflow-auto">
+                {board.state.status === 'loading' && <LoadingNote />}
+                {board.state.status === 'failed' && (
+                  <ErrorNote message={board.state.message} onRetry={board.reload} />
+                )}
+                {board.state.status === 'ready' && (
+                  <BoardView
+                    board={board.state.data}
+                    dragPreview={drag.preview}
+                    dragSlot={dragSlot}
+                    draggingTaskId={drag.draggingTaskId}
+                    onOpenTask={(taskId) => {
+                      // 拖完那一下浏览器仍会补一个 click，不拦就会顺手进入子看板。
+                      if (drag.canOpen()) onNavigate(taskId);
+                    }}
+                    onEditTask={setEditing}
+                    onSetArchived={setTaskArchived}
+                    onDeleteTask={deleteTask}
+                    onDragStart={(task, event) => {
+                      // 按下就上标记：待定的点击期间也不该让静默重取换掉看板（那会重置这次拖拽）。
+                      // begin 返回 false 表示这一次按下不会产生拖拽，标记不能留着自己不放。
+                      if (drag.begin(task, event)) pointerActiveRef.current = true;
+                    }}
+                    create={create}
+                  />
+                )}
+              </div>
             </>
+          ) : (
+            <DependencyGraph
+              state={schedule.state}
+              view={view}
+              onViewChange={setView}
+              showArchived={showArchived}
+              // 列只用来给详情卡翻列名；看板还没到位时退化成 columnId，图本身不依赖它。
+              columns={board.state.status === 'ready' ? board.state.data.columns : []}
+              onOpenTask={(taskId) => {
+                // 与「从搜索结果进入任务」同一个口径：进入后回到看板视图，
+                // 否则刚打开的那一层会被依赖图盖着，看起来像「点了没反应」。
+                setView('board');
+                onNavigate(taskId);
+              }}
+              onRetry={schedule.reload}
+            />
           )}
         </main>
 
