@@ -1814,11 +1814,12 @@ stdout 的 `error` 处理，值得单独一小步，这里只记录。
 - 根 `package.json`：去掉 `private`，加 `"type": "module"`、`description`、`keywords`（含中文）。
 - 不加 `repository` / `homepage` / `bugs`：GitHub 远端还不存在（`docs/intend.md` 的「发布到Github」
   是另一步）。写一个猜的地址比留空更糟——它会出现在源的侧栏，且错误链接比没有链接更难发现。
-- 清单本身钉成用例：新增 `bin/package.test.mjs`（4 条，不构建、不联网），核对
-  `private`/`type`、`bin` 指向存在文件、`files` 覆盖服务端运行时要读的六个路径、以及
-  `apps/api/dist` 里的每个裸 import 都能在根 `dependencies` 里找到。最后一条针对的是 `bin/mailuo.mjs`
-  的注释已经写明的约束：服务端产物是**被包根加载**的，运行时依赖必须声明在根，而不是 `apps/api`
-  自己的 `dependencies` 里。
+- 清单本身钉成用例：新增 `bin/package.test.mjs`（5 条，不构建、不联网），核对
+  `private`/`type`、`bin` 指向存在文件、`files` 覆盖服务端运行时要读的六个路径、`files` 里
+  **仓库内**的路径真的存在、构建产物的入口文件（`apps/api/dist/index.js`、`apps/web/dist/index.html`）
+  在产物存在时确实在，以及 `apps/api/dist` 里的每个裸 import 都能在根 `dependencies` 里找到。
+  最后一条针对的是 `bin/mailuo.mjs` 的注释已经写明的约束：服务端产物是**被包根加载**的，运行时
+  依赖必须声明在根，而不是 `apps/api` 自己的 `dependencies` 里。
 - `prepack` 保持 `pnpm build` 不变：`npm pack` 与 `npm publish` 都会先构建，不会打出一份过期产物。
 
 ### 验证
@@ -1839,9 +1840,30 @@ HOME=$PWD/.tmp-verify/home MAILUO_NO_UPDATE_CHECK=1 \
 - 不传 `--db` 时库落在 `$HOME/.mailuo/kanban.db`（本步用 `HOME` 指向临时目录复验），
   与 D64 的口径一致。
 - 反向验证 `type`：见上面「问题」第 2 条的四行追踪。
-- 变异检验：把 `private` 改回 `true`、从 `files` 删 `apps/api/migrations/`、从 `dependencies` 删
-  `hono`，三条用例分别失败（`not ok`），改回后 4 条全绿。
-- 全量：`pnpm test` bin 36（基线 32 + 新增 4）、api 273、web 474 全绿；`pnpm typecheck` 通过。
+- 变异检验（第一版）：把 `private` 改回 `true`、从 `files` 删 `apps/api/migrations/`、从
+  `dependencies` 删 `hono`，三条用例分别失败（`not ok`），改回后全绿。补上审阅要求的存在性断言后
+  又做了一轮：从 `files` 删 `apps/web/dist/`、把 `files` 里的 `LICENSE` 改成不存在的
+  `LICENSE.md`、删掉磁盘上的 `apps/api/dist/index.js`，三条分别让对应用例变红，改回后 5 条全绿。
+- 全量：`pnpm test` bin 37（基线 32 + 新增 5）、api 273、web 474 全绿；`pnpm typecheck` 通过。
+
+### 审阅（子代理，只读）与修复
+
+安全与健壮性那份（结论：可以合并）核实了误发布面（仓库里没有 workflow、没有 `.npmrc`、
+`apps/*` 仍是 `private`）、tarball 里没有 `.env`/`data/`/`node_modules`、`type: module` 对仓库其余
+工具链没有副作用（`git ls-files '*.js'` 与 `*.cjs` 都是 0 个，只有 `.mjs` 与 TS）、安装生命周期里
+没有 install/postinstall/prepare、以及 `registry.npmjs.org` 上 `mailuo` 仍是 404。
+
+它提了一条中等问题：清单用例只核对 `files` 里写了哪些字符串，不核对这些路径在磁盘上存在，而
+`npm pack` 对白名单里不存在的路径是**静默跳过、仍然成功**。方向同意，事实有一处不对（它说
+`apps/web/dist/` 没进必查清单，实际进了），它给的改法也不能照抄——给 `files` 每一项加
+`existsSync` 会把干净 checkout 弄红，因为两个 `dist` 目录不入版本库，`pnpm install && pnpm test`
+时根本不存在（这与它自己「dist 不存在时跳过而不是失败」的判断矛盾）。已按存在性的实质改：
+把必查清单拆成「仓库里就该在的文件」（查存在性）与「构建产物」（产物在时查它的入口文件），并把
+`apps/web/dist/` 的断言从「字符串在数组里」升级成「入口文件 `index.html` 真的在」。
+
+它列的其余条目（正则漏 `require(` 与模板动态 import、`files` 不钉文件数、`*.js.map` 进包、
+无 `repository`/`publishConfig`）按低或「不改」处理；其中正则已顺手补上 `require(` 分支（当前产物
+一个都匹配不到，留着是防止将来混进 CJS 产物时静默漏过）。
 
 ### 没做的（可选复杂性）
 
@@ -1852,7 +1874,11 @@ HOME=$PWD/.tmp-verify/home MAILUO_NO_UPDATE_CHECK=1 \
 - **不加 `publishConfig.registry`**：把官方源写死进包，将来想发到私有源还要再改回来；一条命令行
   旗标就够。用户如果希望「敲 `npm publish` 就发对地方」，这是一处可以再来一小步的地方。
 - **不加 CI / 不加 `publish:check` 脚本**：一次性的装包烟测按项目惯例放 `.tmp-verify/` 里跑完即删，
-  留下的守卫是那 4 条不需要构建的清单用例。
+  留下的守卫是那 5 条不需要构建的清单用例。
+- **不在 `prepack` 里加守门脚本**：现在还剩一个口子——`files` 里列了、但构建产物**整个目录**不存在
+  时（例如 `vite` 的 `outDir` 被改到别处），快速套件会跳过产物检查，`npm pack` 依然静默成功。
+  要堵它得在 `prepack` 里跑一个「清单里每项都必须存在」的脚本（那时刚构建完，产物理应在）。
+  代价是发布链路上多一个会失败的点，收益是一个很窄的失败模式，本步不做。
 - **不动 README 的安装段**：并行的 `docs/readme` worktree 正在整篇改写 README，两边都改必然冲突。
 
 **编号冲突备案（承接 D65）**：本步先占用 D66，`docs/readme` 那条「README 改为面向使用者」顺延为

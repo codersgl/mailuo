@@ -22,14 +22,19 @@ import { fileURLToPath } from 'node:url';
 const packageRoot = fileURLToPath(new URL('..', import.meta.url));
 const packageJson = JSON.parse(readFileSync(path.join(packageRoot, 'package.json'), 'utf8'));
 
-/** 服务端进程运行时要读的包内路径；`files` 少一个，用户那边的安装就是残缺的。 */
-const REQUIRED_FILES = [
-  'bin/mailuo.mjs',
-  'apps/api/dist/',
-  'apps/api/migrations/',
-  'apps/web/dist/',
-  'LICENSE',
-  'README.md',
+/**
+ * 服务端进程运行时要读的包内路径；`files` 少一个，用户那边的安装就是残缺的。
+ *
+ * 分成两半是因为「清单里写了」与「仓库里真有」是两件事：`npm pack` 对白名单里**不存在**的路径
+ * 是静默跳过、仍然成功，所以只核对字符串，改名的目录能一路绿到用户机器上。而 `files` 里的两个
+ * 构建产物目录不入版本库（`.gitignore`），干净 checkout 上本来就没有——对它们强制 `existsSync`
+ * 会让 `pnpm install && pnpm test` 变红，所以改为「产物在的时候，查它的入口文件」。
+ */
+const TRACKED_FILES = ['bin/mailuo.mjs', 'apps/api/migrations/', 'LICENSE', 'README.md'];
+
+const BUILT_ARTIFACTS = [
+  { entry: 'apps/api/dist/', probe: 'apps/api/dist/index.js', why: 'bin/mailuo.mjs 加载的服务端入口' },
+  { entry: 'apps/web/dist/', probe: 'apps/web/dist/index.html', why: '服务端据此判定要不要托管页面' },
 ];
 
 test('package.json 可以被发布：去掉 private，并显式声明 ESM', () => {
@@ -46,9 +51,22 @@ test('bin 指向一个存在的文件', () => {
   assert.ok(existsSync(path.join(packageRoot, packageJson.bin.mailuo)));
 });
 
-test('files 覆盖服务端运行时要读的路径', () => {
-  for (const entry of REQUIRED_FILES) {
+test('files 覆盖服务端运行时要读的路径，且仓库里的那些路径真的存在', () => {
+  for (const entry of [...TRACKED_FILES, ...BUILT_ARTIFACTS.map((artifact) => artifact.entry)]) {
     assert.ok(packageJson.files?.includes(entry), `files 缺少 ${entry}`);
+  }
+  for (const entry of TRACKED_FILES) {
+    assert.ok(existsSync(path.join(packageRoot, entry)), `files 里的 ${entry} 在磁盘上不存在，npm pack 会静默跳过它`);
+  }
+});
+
+test('构建出的产物落在清单覆盖的路径下', () => {
+  for (const { probe, why } of BUILT_ARTIFACTS) {
+    // 没构建过就没有产物可查。这一步跳过而不是失败，与下面那条依赖用例同一个理由。
+    if (!existsSync(path.dirname(path.join(packageRoot, probe)))) {
+      continue;
+    }
+    assert.ok(existsSync(path.join(packageRoot, probe)), `构建产物缺 ${probe}（${why}），发布出去就是残缺的`);
   }
 });
 
@@ -59,8 +77,10 @@ test('服务端产物的运行时依赖都声明在包根的 dependencies 里', 
     return;
   }
 
-  // 从 `import x from 'y'`、`import 'y'`、`await import('y')` 三种写法里取模块名。
-  const specifierPattern = /(?:\bfrom\s*|\bimport\s*\(\s*|\bimport\s+)['"]([^'"]+)['"]/g;
+  // 从 `import x from 'y'`、`export … from 'y'`、`import 'y'`、`await import('y')` 与 `require('y')`
+  // 取模块名。`require` 现在一个都匹配不到（产物全是 ESM），留着是为了将来混进 CJS 产物时不会
+  // 静默漏过；模板字面量形式的动态 import 取不到静态模块名，不在这里处理。
+  const specifierPattern = /(?:\bfrom\s*|\bimport\s*\(\s*|\bimport\s+|\brequire\s*\(\s*)['"]([^'"]+)['"]/g;
   const missing = new Set();
 
   for (const file of listJsFiles(distDir)) {
