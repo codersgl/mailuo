@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import type { Db } from '../db/client.js';
 import { ROOT_BOARD_TITLE } from '../domain/board.js';
+import { settleClock, shouldRun } from '../domain/clock.js';
 import { ORDERS_STEP } from '../domain/orders.js';
 
 /** 任务的完整字段。数据库列名保持 snake_case，对外统一 camelCase（见 docs/decisions.md D4）。 */
@@ -12,6 +13,10 @@ export interface TaskRecord {
   description: string;
   /** 工期，单位分钟；null 表示未估工期，0 表示瞬时任务。 */
   durationMinutes: number | null;
+  /** 已结算的累计用时，单位分钟，只在「进行中」列里增长。 */
+  spentMinutes: number;
+  /** 当前这一段的开始时刻；非空表示正在计时（不变式见 domain/clock.ts）。 */
+  runningSince: string | null;
   orders: number;
   createdAt: string;
   updatedAt: string;
@@ -26,6 +31,8 @@ export interface TaskRow {
   title: string;
   description: string;
   duration_minutes: number | null;
+  spent_minutes: number;
+  running_since: string | null;
   orders: number;
   created_at: string;
   updated_at: string;
@@ -40,6 +47,9 @@ export interface TreeTask {
   columnId: string;
   /** 非空表示已归档。前端用它把归档节点画成另一种样式，而不是靠「是否在列表里」推断。 */
   archivedAt: string | null;
+  durationMinutes: number | null;
+  spentMinutes: number;
+  runningSince: string | null;
 }
 
 /** 面包屑的一项。id 为 null 表示根看板。 */
@@ -80,7 +90,7 @@ export interface ChangeTaskParentInput {
 }
 
 const TASK_COLUMNS =
-  'id, parent_id, column_id, title, description, duration_minutes, orders, created_at, updated_at, archived_at';
+  'id, parent_id, column_id, title, description, duration_minutes, spent_minutes, running_since, orders, created_at, updated_at, archived_at';
 
 /**
  * 递归求子树的 CTE。用 UNION（不是 UNION ALL）去重：父子关系成环的脏数据下递归也能终止。
@@ -113,6 +123,8 @@ export function toTaskRecord(row: TaskRow): TaskRecord {
     title: row.title,
     description: row.description,
     durationMinutes: row.duration_minutes,
+    spentMinutes: row.spent_minutes,
+    runningSince: row.running_since,
     orders: row.orders,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
@@ -135,7 +147,8 @@ export function findTask(db: Db, id: string): TaskRecord | undefined {
 export function listTreeTasks(db: Db, includeArchived = false): TreeTask[] {
   const rows = db
     .prepare(
-      `SELECT id, parent_id, title, column_id, archived_at
+      `SELECT id, parent_id, title, column_id, archived_at,
+              duration_minutes, spent_minutes, running_since
        FROM tasks
        WHERE (@includeArchived = 1 OR archived_at IS NULL)
        ORDER BY parent_id, orders`,
@@ -146,6 +159,9 @@ export function listTreeTasks(db: Db, includeArchived = false): TreeTask[] {
     title: string;
     column_id: string;
     archived_at: string | null;
+    duration_minutes: number | null;
+    spent_minutes: number;
+    running_since: string | null;
   }>;
 
   return rows.map((row) => ({
@@ -154,6 +170,9 @@ export function listTreeTasks(db: Db, includeArchived = false): TreeTask[] {
     title: row.title,
     columnId: row.column_id,
     archivedAt: row.archived_at,
+    durationMinutes: row.duration_minutes,
+    spentMinutes: row.spent_minutes,
+    runningSince: row.running_since,
   }));
 }
 
@@ -224,13 +243,15 @@ export function createTask(db: Db, input: CreateTaskInput): TaskRecord {
       .get(params) as { max_orders: number };
 
     db.prepare(
-      `INSERT INTO tasks (id, parent_id, column_id, title, description, duration_minutes, orders, created_at, updated_at, archived_at)
-       VALUES (@id, @parentId, @columnId, @title, '', NULL, @orders, @createdAt, @updatedAt, NULL)`,
+      `INSERT INTO tasks (id, parent_id, column_id, title, description, duration_minutes, spent_minutes, running_since, orders, created_at, updated_at, archived_at)
+       VALUES (@id, @parentId, @columnId, @title, '', NULL, 0, @runningSince, @orders, @createdAt, @updatedAt, NULL)`,
     ).run({
       id,
       parentId: input.parentId,
       columnId: input.columnId,
       title: input.title,
+      // 直接建在「进行中」列的任务从建立那一刻起计时，与拖进去同义。
+      runningSince: shouldRun(input.columnId, null) ? now : null,
       orders: maxRow.max_orders + ORDERS_STEP,
       createdAt: now,
       updatedAt: now,
@@ -309,6 +330,64 @@ export function applyTaskUpdate(db: Db, id: string, patch: UpdateTaskInput): Tas
 }
 
 /**
+ * 让一个任务的计时跟上它「接下来」的列与归档状态，需要时写库。
+ *
+ * `next` 传的是**将要生效**的状态，所以调用方可以把「归档」表达成传一个非空的 archivedAt。
+ * 只在时钟真的变了才发 UPDATE：这两列是派生状态、不是用户编辑，因此不动 updated_at
+ * （与 moveTask 里「位置和列都没变就不写」同一个理由，见 D20 的注释）。
+ * 参数只用到 id 与两个时钟字段，所以归档路径可以直接把查询结果传进来，不必先读整行。
+ */
+function settleTaskClock(
+  db: Db,
+  task: Pick<TaskRecord, 'id' | 'spentMinutes' | 'runningSince'>,
+  next: { columnId: string; archivedAt: string | null },
+  now: string,
+): void {
+  const current = { spentMinutes: task.spentMinutes, runningSince: task.runningSince };
+  const settled = settleClock(current, shouldRun(next.columnId, next.archivedAt), now);
+  if (settled === current) return;
+
+  db.prepare(
+    'UPDATE tasks SET spent_minutes = @spentMinutes, running_since = @runningSince WHERE id = @id',
+  ).run({ id: task.id, spentMinutes: settled.spentMinutes, runningSince: settled.runningSince });
+}
+
+/**
+ * 让一批任务的计时跟上它们**当前**的列与归档状态。
+ * 归档与取消归档会一次性改掉整棵子树，两处都先改完行、再调这里：归档后 archived_at 已非空，
+ * 计时中的任务会被结算停表；取消归档后处于「进行中」的任务重新开始计时。
+ *
+ * 一条 SELECT 取回整批，而不是逐个 findTask（子树可能几十个节点，取消归档时还要带上祖先链）。
+ * 分钟换算仍然只走 domain/clock.ts 那一份实现，没有搬进 SQL。
+ */
+function settleSubtreeClocks(db: Db, ids: string[], now: string): void {
+  if (ids.length === 0) return;
+
+  const placeholders = ids.map(() => '?').join(', ');
+  const rows = db
+    .prepare(
+      `SELECT id, column_id, archived_at, spent_minutes, running_since
+       FROM tasks WHERE id IN (${placeholders})`,
+    )
+    .all(...ids) as Array<{
+    id: string;
+    column_id: string;
+    archived_at: string | null;
+    spent_minutes: number;
+    running_since: string | null;
+  }>;
+
+  for (const row of rows) {
+    settleTaskClock(
+      db,
+      { id: row.id, spentMinutes: row.spent_minutes, runningSince: row.running_since },
+      { columnId: row.column_id, archivedAt: row.archived_at },
+      now,
+    );
+  }
+}
+
+/**
  * 把任务移动到目标列的指定位置，并重写该列（同一父任务下）未归档任务的 orders。
  *
  * position 是目标列里的插入下标（0 开始，schema 已保证非负），按「先把任务移出、再插入」计算，
@@ -356,6 +435,9 @@ function moveTask(db: Db, id: string, input: MoveTaskInput): void {
     if (previous && previous.orders === orders && previous.columnId === input.columnId) return;
     update.run({ id: taskId, columnId: input.columnId, orders, updatedAt: now });
   });
+
+  // 同一列里的其余任务本来就在目标列，列没变；只有被移动的任务自己的列可能变，所以只结算它一个。
+  settleTaskClock(db, task, { columnId: input.columnId, archivedAt: task.archivedAt }, now);
 }
 
 /**
@@ -399,6 +481,9 @@ export function changeTaskParent(
       updatedAt: now,
     });
 
+    // 改父级同时可能换列，计时要跟着走。时钟状态取事务开头读到的那份（上面的 UPDATE 没动这两列），
+    // 列状态传新值；最后重新读一次，保证返回给前端的是结算后的数据。
+    settleTaskClock(db, task, { columnId: input.columnId, archivedAt: task.archivedAt }, now);
     return findTask(db, id);
   });
 
@@ -430,6 +515,8 @@ export function setTaskArchived(db: Db, id: string, archived: boolean): TaskReco
         `UPDATE tasks SET archived_at = ?, updated_at = ?
          WHERE archived_at IS NULL AND id IN (${placeholders})`,
       ).run(now, now, ...ids);
+      // 归档之后整棵子树都不该再计时；此时行的 archived_at 已非空，settleClock 会把表停掉。
+      settleSubtreeClocks(db, ids, now);
     } else {
       // 祖先链：从任务的 parent_id 起逐层向上，遇到 NULL 停止。
       const ancestors = db
@@ -451,6 +538,9 @@ export function setTaskArchived(db: Db, id: string, archived: boolean): TaskReco
         `UPDATE tasks SET archived_at = NULL, updated_at = ?
          WHERE archived_at IS NOT NULL AND id IN (${placeholders})`,
       ).run(now, ...ids);
+      // 恢复出来的任务里，处在「进行中」的那些要重新开始计时：不变式要求
+      // 「进行中且未归档」必须有 running_since，否则它下次被拖出这一列时不会被结算。
+      settleSubtreeClocks(db, ids, now);
     }
 
     return findTask(db, id);
