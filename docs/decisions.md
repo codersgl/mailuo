@@ -1918,9 +1918,10 @@ stdout 的 `error` 处理，值得单独一小步，这里只记录。
   logo 与 `docs/*.md` 链接在 npm 页面上会裂，等 `repository` 补上后由 npm 重写相对链接。那一步
   与「发布到Github」绑定（先有仓库地址，字段才写得出），所以本步只把这个口留在记录里。
 - 清单本身钉成用例：新增 `bin/package.test.mjs`（5 条，不构建、不联网），核对
-  `private`/`type`、`bin` 指向存在文件、`files` 覆盖服务端运行时要读的六个路径、`files` 里
-  **仓库内**的路径真的存在、构建产物的入口文件（`apps/api/dist/index.js`、`apps/web/dist/index.html`）
-  在产物存在时确实在，以及 `apps/api/dist` 里的每个裸 import 都能在根 `dependencies` 里找到。
+  `private`/`type`/`description`/`keywords`、`bin` 指向存在文件、`files` 覆盖服务端运行时要读的
+  六个路径、`files` 里**仓库内**的路径真的存在、白名单里没有 `.env`/`data/`/`node_modules/`
+  这类本机文件、构建产物的入口文件（`apps/api/dist/index.js`、`apps/web/dist/index.html`）在产物
+  存在时确实在，以及 `apps/api/dist` 里的每个裸 import 都能在根 `dependencies` 里找到。
   最后一条针对的是 `bin/mailuo.mjs` 的注释已经写明的约束：服务端产物是**被包根加载**的，运行时
   依赖必须声明在根，而不是 `apps/api` 自己的 `dependencies` 里。
 - `prepack` 保持 `pnpm build` 不变：`npm pack` 与 `npm publish` 都会先构建，不会打出一份过期产物。
@@ -1947,6 +1948,9 @@ HOME=$PWD/.tmp-verify/home MAILUO_NO_UPDATE_CHECK=1 \
   `dependencies` 删 `hono`，三条用例分别失败（`not ok`），改回后全绿。补上审阅要求的存在性断言后
   又做了一轮：从 `files` 删 `apps/web/dist/`、把 `files` 里的 `LICENSE` 改成不存在的
   `LICENSE.md`、删掉磁盘上的 `apps/api/dist/index.js`，三条分别让对应用例变红，改回后 5 条全绿。
+- 终审又补了三条断言（`files` 反向断言、`description`、`keywords`，见下）并再变异一轮：往
+  `files` 加 `.env`、删 `description`、`keywords` 置空、把 `private` 写成字符串 `"true"`，
+  四条分别让对应用例变红，改回后 5 条全绿。
 - 全量：`pnpm test` bin 37（基线 32 + 新增 5）、api 273、web 474 全绿；`pnpm typecheck` 通过。
   第一次跑时 web 有 1 条 `App.test.tsx` 失败，当时并行的审阅子代理正在同一台机器上反复跑变异检验，
   重跑该套件 474 全绿——按环境争用处理，不是本步引入的失败。
@@ -1972,6 +1976,22 @@ HOME=$PWD/.tmp-verify/home MAILUO_NO_UPDATE_CHECK=1 \
 它列的其余条目（正则漏 `require(` 与模板动态 import、`files` 不钉文件数、`*.js.map` 进包、
 无 `repository`/`publishConfig`）按低或「不改」处理；其中正则已顺手补上 `require(` 分支（当前产物
 一个都匹配不到，留着是防止将来混进 CJS 产物时静默漏过）。
+
+终审那份（结论：可以合并）把 D67 的每一句声明都实测复核了一遍（包括在 `.tmp-review-final/` 的
+安装副本里删 `type` 复现那四行追踪、独立重测出同一个 shasum `88f854f5…`），并跑了一张 17 组的
+变异矩阵：13 组被现有用例捕获，3 组漏网。漏网的三条已按它的建议补上，都是用例断言，不碰运行时：
+
+1. **`files` 没有反向断言**（中）：往白名单加 `.env` / `data/` 时 5 条全绿，而仓根的 `.env` 与
+   `data/kanban.db` 是真实存在的文件，`npm pack` 会照单收进 tarball。已加一条反向断言。
+2. **`description` / `keywords` 零覆盖**（中）：它们是「问题」第 3 条的动机，但删掉或置空都全绿。
+   已在这两个字段上各加一条非空断言。
+3. **注释里的编号没跟着改**（低）：`bin/package.test.mjs` 头部的「见 D66」在编号顺延后指向了
+   README 那条决策。已改成 D67。
+
+它同时确认「整目录缺失」这个漏网口子（F4）与「`private` 写成字符串」的假阴性（F5，已顺手改成
+`assert.ok(!private)`），前者同意本步不堵，「`*.js.map` 进包」与「`files` 里列 LICENSE/README」
+明确不改。它还指出 D67 里那句「第一次 web 失败是环境争用」它无法证实也无法证伪，这里照原样留着，
+标注为未复核。
 
 ### 没做的（可选复杂性）
 

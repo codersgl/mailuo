@@ -6,11 +6,11 @@
  * 按哪种模块格式解析，取决于**装完之后**包根有没有 `type`——仓库里因为存在
  * `apps/api/package.json`（它不入 tarball），这个字段写不写都跑得通。
  *
- * 实测（Node 22.23，见 docs/decisions.md D66）：去掉 `type` 后，装了包的机器靠 Node 的语法探测
+ * 实测（Node 22.23，见 docs/decisions.md D67）：去掉 `type` 后，装了包的机器靠 Node 的语法探测
  * 仍能起服务；但探测是 22.7 才默认打开的行为，加 `NODE_OPTIONS=--no-experimental-detect-module`
  * 复现的是老 22.x 用户会遇到的失败——`启动失败：Cannot require() ES Module ... in a cycle`。
  *
- * 这里只做不需要构建、不联网的清单核对；真装一遍 tarball 的烟测是发布前手工跑的，见 D66。
+ * 这里只做不需要构建、不联网的清单核对；真装一遍 tarball 的烟测是发布前手工跑的，见 D67。
  */
 
 import assert from 'node:assert/strict';
@@ -38,11 +38,22 @@ const BUILT_ARTIFACTS = [
 ];
 
 test('package.json 可以被发布：去掉 private，并显式声明 ESM', () => {
-  assert.notEqual(packageJson.private, true, 'private: true 会让 npm publish 直接失败');
+  // 不写成 `private !== true`：npm 判的是真假值，`"private": "true"` 这种字符串同样会让 publish
+  // 在最后一步失败，而它不等于 `true`。
+  assert.ok(!packageJson.private, 'private 为真会让 npm publish 直接失败');
   assert.equal(
     packageJson.type,
     'module',
     'apps/api/package.json 不入 tarball，包根必须是 ESM，否则服务端产物要靠 Node 的语法探测才能加载',
+  );
+  // 这两项没有别的地方盯着：漏了不影响任何行为，只让发布出去的卡片在源上没法被检索到。
+  assert.ok(
+    typeof packageJson.description === 'string' && packageJson.description.trim() !== '',
+    'description 不能为空，源上的卡片就靠它说明这个包是做什么的',
+  );
+  assert.ok(
+    Array.isArray(packageJson.keywords) && packageJson.keywords.length > 0,
+    'keywords 不能为空数组，否则在源上搜不到',
   );
 });
 
@@ -58,6 +69,10 @@ test('files 覆盖服务端运行时要读的路径，且仓库里的那些路�
   for (const entry of TRACKED_FILES) {
     assert.ok(existsSync(path.join(packageRoot, entry)), `files 里的 ${entry} 在磁盘上不存在，npm pack 会静默跳过它`);
   }
+  // 反向：白名单是发布内容的唯一闸门，混进本机文件就会被 `npm pack` 照单收进 tarball。仓根的
+  // `.env` 与 `data/kanban.db` 是真实存在的例子，只有这条反向断言盯着它们。
+  const leaked = packageJson.files.filter((entry) => /^(\.env|data\/|node_modules\/)/.test(entry));
+  assert.deepEqual(leaked, [], `files 里混进了本机文件：${leaked.join('、')}`);
 });
 
 test('构建出的产物落在清单覆盖的路径下', () => {
