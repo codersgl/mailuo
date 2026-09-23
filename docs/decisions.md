@@ -1086,7 +1086,7 @@ useEffect(() => {
 - `index.ts`：启动时看 `<webDistDir>/index.html` 在不在，在才传 `staticRoot`；不在打一行中文提示。监听日志多一行 `页面: <dir>`。
 - 根 `package.json` 加 `start` 脚本（`pnpm --filter @kanban/api start`；这个 scope 在 D57 里改名为 `@mailuo/api`，合并后命令是 `pnpm start`）；README 加「生产运行」一节。
 
-**注册顺序是关键**：Hono 按注册顺序执行、返回即止，所以放在 API 路由之后，静态文件不可能盖住**已注册的**接口；`app.use('*')` 的缓存中间件同理只对「没被接口吃掉」的请求生效。但只靠顺序还不够——`/api/*` 里没注册的那些路径会落到静态层上，所以两道静态 handler 都套了 `isApiPath` 守卫，让「接口的 404 一定是 JSON」不依赖「dist 里恰好没有同名文件」这个巧合。具体触发场景：用户往 `apps/web/public/api/` 放任何东西，Vite 都会原样拷进 `dist/api/`，那时 `GET /api/xxx` 就会被静态层响应成那个文件。用例里故意摆了 `dist/api/echo.json`，断言它仍是 `404 {"error":"not found"}`。
+**注册顺序与守卫各管一段**：Hono 按注册顺序执行、返回即止，所以放在 API 路由之后，接口请求在前面就返回了、根本走不到静态层——这只是省掉两道无用 handler。保证「静态文件盖不住接口」的是 `isApiPath` 守卫：审阅的变异检验里把整块静态注册挪到路由之前全绿，去掉守卫才红。只靠顺序也不够，`/api/*` 里没注册的那些路径会落到静态层上，所以两道静态 handler 都套了守卫，让「接口的 404 一定是 JSON」不依赖「dist 里恰好没有同名文件」这个巧合。具体触发场景：用户往 `apps/web/public/api/` 放任何东西，Vite 都会原样拷进 `dist/api/`，那时 `GET /api/xxx` 就会被静态层响应成那个文件。用例里故意摆了 `dist/api/echo.json`，断言它仍是 `404 {"error":"not found"}`。
 
 **回退里也排除 `/api` 前缀**，否则接口 404 会变成一张 HTML 页面，而规范要求错误统一是 `{error:string}`。判定写成 `path === '/api' || path.startsWith('/api/')`：`/apiary` 不是接口路径，照常回落页面（有用例）。
 
@@ -1120,6 +1120,10 @@ useEffect(() => {
 **留给用户验收的环境**：worktree 的生产进程留在 `http://127.0.0.1:3119`（后端 3119，读 `.tmp-verify/kanban-user.db` 这份用户库副本，页面是 worktree 里 `pnpm build` 的真实产物）。主仓自己的 dev server（3003 + 5173）没动过。验收完我会停掉进程并删掉 `.tmp-verify/`。
 
 **没做的**：不做按 `Accept` 头区分「浏览器导航」与「资源请求」（未知路径一律回页面，拼错的资源路径也会拿到 200 的 HTML，由前端路由画「未找到」）；不做压缩（`precompressed` 没开，Vite 产物没有 `.br`/`.gz` 文件）；不做 ETag/Last-Modified 的条件请求（`serveStatic` 只回 `Content-Length` 与这次的 `Cache-Control`）；不做多进程/反向代理部署的说明。真实浏览器验收只到 curl 这一层：页面能在浏览器里正常渲染与操作要靠用户这次点一遍。
+
+**合并后收尾（2026-09-23，用户验收并合并 a407293 之后）**：`dist/` 不入版本库，所以合并后的主仓跑的还是**上一步的旧产物**（实测 `grep staticRoot apps/api/dist/app.js` 为 0、`apps/web/dist/assets` 还是改名前的哈希 `index-CxZBCxL2.js`）——这正是 D55 记过的「合并后要跑一次 `pnpm build`」。这次除了重建，还遇到两个后续状态：一是 D57 改了包名（`kanban` → `mailuo`），主仓的 `pnpm <任何脚本>` 会先做依赖状态检查、再因本机 HOME 下的 store 只读而以 `ERR_SQLITE_ERROR` 失败（D57 已写明合并后要 `pnpm install`），按那条说明跑 `pnpm install --store-dir .pnpm-store`（仓库内 store，1 秒完成，只重新链接）就恢复正常；临时绕过检查的写法是 `pnpm --config.verify-deps-before-run=false <脚本>`（实测可用）。二是收尾清理：验收进程 3119 与冒烟进程 3150/3151 都已停，worktree 的 `.tmp-verify/`、审阅留下的 `.tmp-review/` 与主仓这次的 `.tmp-verify/` 都已删。
+
+**恢复后的实机验证**（全部在主仓、合并后的代码上）：`pnpm typecheck` 过；`pnpm test` api 264 / web 448 全绿；`pnpm build` 过；`pnpm start`（端口 3151，读用户库副本）`/` 200 且标题是「脉络」、`/board/x` 刷新 200、`/api/health` 200、`/api/nope` 404 JSON、`/assets/index-BcNLSgFk.js` 200 且 `immutable`、`/favicon.ico` 200。
 
 
 ## D57 第 20 步：品牌设计——改名「脉络 / Mailuo」与图标落地（2026-09-23，用户分三次拍板）
