@@ -1872,3 +1872,13 @@ stdout 的 `error` 处理，值得单独一小步，这里只记录。
 硬失败补上 `PORT`（原稿只写了 `--port`），README 补回「命令行只起一个进程，接口和页面都由它提供」。
 `node bin/mailuo.mjs --db data/kanban.db` 这个具体示例没有补回——同一事实已由「用 `--db` 指过去」
 表达，示例只是重复。
+
+### 合并与编号冲突备案（2026-09-23）
+
+本步在 `docs/readme` 分支上完成，经用户验收后合入主干（`2f498fd`），worktree 与分支已删除。
+
+合并期间发现并行的 `chore/npm-package` worktree（分支 `chore/npm-package`，基于 `4843fff`）也写了
+`## D66 第 29 步：发布 npm 包前的打包就绪`。本步先合入主干，所以 D66 归「README 改为面向使用者」；
+`chore/npm-package` 那一条合入时要改成 **D67**。它同时改过旧的 `README.md`（本步整篇改写）与
+`docs/decisions.md` 末尾，合并时这两处会有冲突，处理口径与 D65 那次相同：README 用本步的新结构，
+把打包相关的说明补进对应的新章节；决策编号改成 D67。
