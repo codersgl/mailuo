@@ -1,4 +1,4 @@
-import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { App } from '../src/App';
 import type { Board, BoardTask, TreeTask } from '../src/api/types';
@@ -494,6 +494,107 @@ describe('App 导航', () => {
 });
 
 describe('App 增删改', () => {
+  it('点过卡片之后再新建，看板也要立刻显示新卡片', async () => {
+    const api = createFakeApi(fixtures);
+    render(<App />);
+    const card = (await boardArea().findByText('支付对账')).closest('button')!;
+
+    // 一次没有位移的按下：真实浏览器里这就是「点卡片进子看板」，不产生拖拽。
+    // 回归用例：这条路径以前会把「指针还按着」的标记留在原地，之后每次写操作都不再刷新看板，
+    // 于是新建出来的任务只出现在文件树里（树走的是另一条刷新路径），看板一直停在旧数据上。
+    fireEvent.pointerDown(card, { button: 0, clientX: 100, clientY: 100 });
+    fireEvent.pointerUp(document, { clientX: 100, clientY: 100 });
+    fireEvent.click(card);
+    await waitFor(() => expect(window.location.pathname).toBe('/board/b'));
+    fireEvent.click(breadcrumbNav().getByRole('button', { name: '根看板' }));
+    await waitFor(() => expect(window.location.pathname).toBe('/'));
+
+    const boardCalls = () =>
+      api.calls.filter((call) => call.method === 'GET' && call.url === '/api/board').length;
+    const boardCallsBefore = boardCalls();
+    fireEvent.click(boardArea().getByRole('button', { name: '在「待办」新建任务' }));
+    const input = boardArea().getByRole('textbox', { name: '在「待办」新建任务' });
+    fireEvent.change(input, { target: { value: '补迁移测试' } });
+    fireEvent.submit(input.closest('form')!);
+
+    expect(await boardArea().findByText('补迁移测试')).toBeTruthy();
+    // 而且真的是重取回来的，不是靠别的什么巧合显示出来的。
+    await waitFor(() => expect(boardCalls()).toBe(boardCallsBefore + 1));
+  });
+
+  it('从卡片的「⋯」按下之后再新建，看板同样要立刻显示（另一条按下起点）', async () => {
+    createFakeApi(fixtures);
+    render(<App />);
+    await boardArea().findByText('支付对账');
+    // 按下起点不止卡片主体：卡片右上角的「⋯」也绑着同一个 begin（见 TaskCard）。
+    // 只覆盖主体的话，「⋯」这条路径的标记若清不掉就没人发现。
+    const more = boardArea().getByRole('button', { name: '「支付对账」的更多操作' });
+
+    fireEvent.pointerDown(more, { button: 0, clientX: 200, clientY: 100 });
+    fireEvent.pointerUp(document, { clientX: 200, clientY: 100 });
+    await act(async () => {});
+
+    fireEvent.click(boardArea().getByRole('button', { name: '在「待办」新建任务' }));
+    const input = boardArea().getByRole('textbox', { name: '在「待办」新建任务' });
+    fireEvent.change(input, { target: { value: '补迁移测试' } });
+    fireEvent.submit(input.closest('form')!);
+
+    expect(await boardArea().findByText('补迁移测试')).toBeTruthy();
+  });
+
+  it('没被推迟过就不补刷：一次没有写操作的按下不该多发一次看板读取', async () => {
+    const api = createFakeApi(fixtures);
+    render(<App />);
+    const card = (await boardArea().findByText('支付对账')).closest('button')!;
+    const boardCalls = () =>
+      api.calls.filter((call) => call.method === 'GET' && call.url === '/api/board').length;
+    const before = boardCalls();
+
+    // 按下再松手，不派发 click（也就不换层）：这段窗口里没有任何写操作落地，
+    // 补刷新必须按兵不动，否则每点一次卡片都会白跑一个 GET。
+    fireEvent.pointerDown(card, { button: 0, clientX: 100, clientY: 100 });
+    fireEvent.pointerUp(document, { clientX: 100, clientY: 100 });
+    await act(async () => {});
+
+    expect(boardCalls()).toBe(before);
+  });
+
+  it('指针还按在卡片上时落地的写操作只是推迟刷新，松手后看板补上新任务', async () => {
+    const api = createFakeApi(fixtures);
+    render(<App />);
+    const card = (await boardArea().findByText('支付对账')).closest('button')!;
+
+    // 按住不放（还没松手），模拟「一次写操作的回包正好落在这段窗口里」。
+    fireEvent.pointerDown(card, { button: 0, clientX: 100, clientY: 100 });
+    fireEvent.click(boardArea().getByRole('button', { name: '在「待办」新建任务' }));
+    const input = boardArea().getByRole('textbox', { name: '在「待办」新建任务' });
+    fireEvent.change(input, { target: { value: '补迁移测试' } });
+    fireEvent.submit(input.closest('form')!);
+
+    // 按下期间不能拿后台 GET 的结果换掉看板（那会把正在拖的卡片打回原位），所以此刻还没显示。
+    await waitFor(() =>
+      expect(api.calls.some((call) => call.method === 'POST' && call.url === '/api/tasks')).toBe(
+        true,
+      ),
+    );
+    expect(boardArea().queryByText('补迁移测试')).toBeNull();
+
+    // 松手：这一次按下以「点击」结束，推迟的那次刷新必须补上，否则看板永远停在旧数据上。
+    fireEvent.pointerUp(document, { clientX: 100, clientY: 100 });
+    expect(await boardArea().findByText('补迁移测试')).toBeTruthy();
+
+    // 而且只补这一次：推迟标记收笔时要清掉，否则下一轮按下（哪怕没有写操作）还会再白跑一次。
+    const boardCalls = () =>
+      api.calls.filter((call) => call.method === 'GET' && call.url === '/api/board').length;
+    const afterFlush = boardCalls();
+    const again = boardArea().getByText('支付对账').closest('button')!;
+    fireEvent.pointerDown(again, { button: 0, clientX: 100, clientY: 100 });
+    fireEvent.pointerUp(document, { clientX: 100, clientY: 100 });
+    await act(async () => {});
+
+    expect(boardCalls()).toBe(afterFlush);
+  });
+
   it('新建任务：Enter 提交后卡片出现，文件树也重取一次', async () => {
     const api = createFakeApi(fixtures);
     render(<App />);

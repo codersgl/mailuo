@@ -52,6 +52,7 @@ function Harness({
         写测试
       </button>
       <span data-testid="dragging">{drag.draggingTaskId ?? ''}</span>
+      <span data-testid="pressed">{String(drag.pressed)}</span>
     </div>
   );
 }
@@ -211,6 +212,50 @@ describe('useCardDrag', () => {
 
     expect(events.start).toEqual([]);
     expect(events.preview).toEqual([]);
+  });
+
+  it('pressed 标记：按下期间为真，松手回到假（这一次按下没进入拖拽也一样）', () => {
+    const { card } = setup();
+
+    expect(screen.getByTestId('pressed').textContent).toBe('false');
+    pointerDown(card);
+    expect(screen.getByTestId('pressed').textContent).toBe('true');
+
+    // 位移在阈值内：这是一次点击，不是拖拽。调用方靠 pressed 变回 false 来补做被推迟的刷新，
+    // 所以这条路径必须也置回 false——老实现只在 draggingTaskId 由非空转空时清标记，
+    // 「按下但不拖」永远清不掉（见 D51）。
+    fireEvent.pointerMove(document, { clientX: 101, clientY: 100 });
+    expect(screen.getByTestId('pressed').textContent).toBe('true');
+    fireEvent.pointerUp(document, { clientX: 101, clientY: 100 });
+    expect(screen.getByTestId('pressed').textContent).toBe('false');
+  });
+
+  it('拖拽被取消（Esc）之后 pressed 也回到假', () => {
+    const { card } = setup();
+
+    pointerDown(card);
+    fireEvent.pointerMove(document, { clientX: 130, clientY: 100 });
+    expect(screen.getByTestId('pressed').textContent).toBe('true');
+
+    fireEvent.keyDown(document, { key: 'Escape' });
+    expect(screen.getByTestId('pressed').textContent).toBe('false');
+  });
+
+  it('指针被浏览器接管（pointercancel）之后 pressed 也回到假', () => {
+    const { card } = setup();
+
+    pointerDown(card);
+    expect(screen.getByTestId('pressed').textContent).toBe('true');
+
+    fireEvent.pointerCancel(document);
+    expect(screen.getByTestId('pressed').textContent).toBe('false');
+  });
+
+  it('不接受的按下（右键）不置 pressed', () => {
+    const { card } = setup();
+
+    fireEvent.pointerDown(card, { button: 2, clientX: 100, clientY: 100 });
+    expect(screen.getByTestId('pressed').textContent).toBe('false');
   });
 
   it('非主键（右键）按下不给拖', () => {

@@ -123,10 +123,14 @@ function BoardPage({
   const { refresh: refreshSchedule } = schedule;
   /** 有指针正按在卡片上（不管是待定的点击还是拖拽中）。用它给静默重取让路。 */
   const pointerActiveRef = useRef(false);
+  /** 按下期间被推迟的那次看板重取。松手后要补上，不能就这么丢掉（见 D51）。 */
+  const deferredBoardRefreshRef = useRef(false);
   const refreshAll = useCallback(() => {
     // 拖拽期间不要重取看板：后台 GET 回来的那一份是拖拽前的顺序，会把正在拖的卡片打回原位。
-    // 松手后本来就会再重取一次，所以跳过这一次不会丢更新。面包屑与文件树不受影响。
-    if (!pointerActiveRef.current) refreshBoard();
+    // 但这次重取只是被推迟，不是被丢掉：写操作已经落到服务端了，丢掉的话看板会一直停在旧数据上
+    // （点过卡片再新建任务时就是这样，界面只剩文件树是新的）。补的时机在下面的 effect。
+    if (pointerActiveRef.current) deferredBoardRefreshRef.current = true;
+    else refreshBoard();
     refreshBreadcrumb();
     // 依赖图也跟着重取：工期、归档、增删任务都会改变关键路径，抽屉里的候选与禁用原因也要跟上。
     refreshSchedule();
@@ -206,6 +210,11 @@ function BoardPage({
         return;
       }
       const move = dropToMove(start.board, taskId, slot);
+      // 落定之后看板一定会再取一次（成功走 refreshAll，失败走 commitMove 里的 board.reload），
+      // 所以按下期间推迟的那次不必再补：补的话它会和这次移动的 PATCH 并发，GET 若先回，
+      // 看板会先闪回按下之前的顺序——正是「让路」本来要防的那一下。取消/落在列外的分支
+      // 没有任何后续请求，推迟的那次仍然要补，所以只在这里清。
+      deferredBoardRefreshRef.current = false;
       void commitMove(taskId, move.columnId, move.position);
     },
     onCancel: () => {
@@ -218,16 +227,26 @@ function BoardPage({
   });
 
   /**
-   * 一次拖拽结束了（或压根没开始，按下就松手）就把标记放下。
+   * 「指针还按在卡片上」的权威来源在 useCardDrag：只有它知道一次按下有没有结束。
+   * 按下从卡片主体或「⋯」开始，可能以拖拽结束，也可能只是一次点击，两条路都要把标记放下。
+   * 这里不再像以前那样在按下处理函数里也写一份：同一个状态有两个写入点，正是这次缺陷的来源。
+   */
+  pointerActiveRef.current = drag.pressed;
+
+  /**
+   * 指针抬起（包括那一次只是点击的按下）之后，把按下期间被推迟的看板重取补上。
+   * 只在真的被推迟过时才取一次，免得每次点卡片都白跑一个请求。
    *
-   * 为什么要有这条兜底：`pointerActiveRef` 正常由 onDrop / onCancel 清掉，但如果 `pointerup`
-   * 根本没派发到 document（指针在窗口外松开、窗口失焦被系统接管），那两个回调都不会来，
-   * 标记会一直为真，之后所有写操作都不再刷新看板。把「没有拖拽在跑」与标记挂钩，
-   * 无论哪条路径结束都能恢复。
+   * 这条 effect 是「推迟」这个做法的另一半：只跳过不补，写操作带来的变化就永远显示不出来。
+   * 它依赖 `pressed` 由真变假，而 `pressed` 只由 useCardDrag 的 stop() 清（pointerup /
+   * pointercancel / 已进入拖拽时的 Escape）。指针若在窗口外松开、浏览器完全没派发 pointerup，
+   * 这一次补刷也等不到——与修复前同样是已知局限，见 D51。
    */
   useEffect(() => {
-    if (drag.draggingTaskId === null) pointerActiveRef.current = false;
-  }, [drag.draggingTaskId]);
+    if (drag.pressed || !deferredBoardRefreshRef.current) return;
+    deferredBoardRefreshRef.current = false;
+    refreshBoard();
+  }, [drag.pressed, refreshBoard]);
 
   async function commitMove(taskId: string, columnId: string, position: number) {
     setActionError(null);
@@ -410,11 +429,7 @@ function BoardPage({
                     onEditTask={setEditing}
                     onSetArchived={setTaskArchived}
                     onDeleteTask={deleteTask}
-                    onDragStart={(task, event) => {
-                      // 按下就上标记：待定的点击期间也不该让静默重取换掉看板（那会重置这次拖拽）。
-                      // begin 返回 false 表示这一次按下不会产生拖拽，标记不能留着自己不放。
-                      if (drag.begin(task, event)) pointerActiveRef.current = true;
-                    }}
+                    onDragStart={drag.begin}
                     create={create}
                   />
                 )}

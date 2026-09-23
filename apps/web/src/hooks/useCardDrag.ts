@@ -40,6 +40,14 @@ export interface CardDragControls {
   draggingTaskId: string | null;
   preview: CardDragPreview | null;
   /**
+   * 有一次按下还没结束：可能是待定的点击，也可能是正在拖。
+   *
+   * 调用方用它决定「写操作成功后的静默重取要不要让路」——重取回来的看板是按下之前那份，
+   * 会在拖拽中途把卡片打回原位。以前调用方自己记这个状态，只在 draggingTaskId 由非空转空时清，
+   * 于是「按下但不拖」（点卡片进下层、点「⋯」开菜单）那条路径永远清不掉（见 D51）。
+   */
+  pressed: boolean;
+  /**
    * 绑到卡片主体与「⋯」按钮上的 onPointerDown。返回 true 表示这一次按下进入了拖拽候选
    * （调用方据此知道后面一定会有 onDrop / onCancel，可以放心地置上自己的状态）。
    */
@@ -119,6 +127,11 @@ export function useCardDrag(options: {
 
   const [draggingTaskId, setDraggingTaskId] = useState<string | null>(null);
   const [preview, setPreview] = useState<CardDragPreview | null>(null);
+  /**
+   * 是否有一次按下还没结束。走 state 而不是 ref：调用方要能依赖它——按下的这一段里被推迟的
+   * 重取，得在它变回 false 的那一刻补上。写它的时机只有按下与松手两次，不产生额外渲染。
+   */
+  const [pressed, setPressed] = useState(false);
 
   /**
    * 一次拖拽的全部可变状态。用 ref 而不是 state：指针移动的每一帧都写它，
@@ -157,6 +170,9 @@ export function useCardDrag(options: {
     }
     setDraggingTaskId(null);
     setPreview(null);
+    // 没有进入拖拽的那一次按下（就是一次点击）也从这里结束：不置回的话，调用方的
+    // 「指针还按着」永远为真，之后所有写操作都不再刷新看板（见 D51）。
+    setPressed(false);
     return drag;
   }, []);
 
@@ -273,12 +289,14 @@ export function useCardDrag(options: {
       slot: null,
     };
     listenersRef.current?.attach();
+    setPressed(true);
     return true;
   }, []);
 
   return {
     draggingTaskId,
     preview,
+    pressed,
     begin,
     canOpen: () => {
       // 窗口过期就作废，免得一个很久之后的点击被上一次拖拽误吞。
