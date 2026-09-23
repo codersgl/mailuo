@@ -2138,7 +2138,9 @@ try renaming your package to '@codersgl/mailuo' and publishing with 'npm publish
 
 - `package.json`：`name` 改成 `@codersgl/mailuo`；`publishConfig` 补 `"access": "public"`。
   后者不是可选装饰——scoped 包默认访问级别是 `restricted`，不写这条发出去的包只有自己和被授权
-  的人装得到，而 npm 只在发布时提示一句「需要 --access public」。
+  的人装得到。而且这件事不能指望「发的时候有人提醒」：`npm publish --dry-run` 对不写 `access`
+  的 scoped 包一个字都不提示（只写 `default access`），真发时要么被 registry 拒，要么在账号有
+  权限建私有包时**静默**发成私有包——别人装不到，发布者却看不到任何异常。
 - 安装命令跟着改的地方：`bin/mailuo.mjs`（头注释与 `--help`）、`README.md` 的快速开始、
   `docs/development.md`、`docs/spec.md` 与 `docs/intend.md`（后两个按项目规则属用户文件，
   本次经用户授权修改）。
@@ -2147,10 +2149,12 @@ try renaming your package to '@codersgl/mailuo' and publishing with 'npm publish
   `~/.mailuo/kanban.db`、`github.com/codersgl/mailuo`），都不跟着改。
 - 版本仍是 `0.1.0`：这个名字从未成功发布过，没有任何已存在的版本要兼容。
 - 用例跟着改：`bin/mailuo.test.mjs` 里那条断言私有 registry 路径拼接的用例，期望值原本写死成
-  `/mailuo/latest`，现在从 `PACKAGE_JSON.name` 算；同时补一条「不带 scope 的包名不被编码」，
-  把那部分覆盖补回来（改名不该让这条用例的覆盖缩水）。进程级那条模拟全局安装布局的用例也改成
+  `/mailuo/latest`，现在从 `PACKAGE_JSON.name` 算。进程级那条模拟全局安装布局的用例也改成
   scoped 形态（`lib/node_modules/@codersgl/mailuo/`）。`bin/package.test.mjs` 补一条：包名带
   scope 时 `publishConfig.access` 必须是 `public`。
+  编码这件事的鉴别力只来自 `@scope/pkg` 那条断言（改名前就有）：合法的不带 scope 包名里没有需要
+  编码的字符，`encodeURIComponent` 对它们是恒等变换，所以拿裸包名去断言「按需编码」与「一律编码」
+  不可区分——审阅指出我一度补的那条就是这种没有鉴别力的用例，已删掉，不是靠它撑覆盖。
 
 ### 为什么不用别的无 scope 名字
 
@@ -2182,6 +2186,26 @@ try renaming your package to '@codersgl/mailuo' and publishing with 'npm publish
   起服务要读 `apps/api/dist`）。改名前有 4 条红：1 条是真的被包名影响（第 17 条写死的期望路径），
   3 条只是因为新 worktree 没构建。
 - 合并后在主仓跑全量（bin 37 / api 273 / web 474）与 `pnpm typecheck`。
+
+### 审阅（子代理，只读）与更正
+
+审阅结论：无阻断，可以合并；D69 的事实性声明逐条独立复现（tarball 名与字节数、安装布局与软链、
+`--version`/`--help`、迁移日志、`/api/health`、静态目录、默认库、37/273/474、typecheck）。抓到
+两条措辞问题与一处清理，已改：
+
+1. **（低，已删）那条「不带 scope 的包名不被编码」的新增断言没有鉴别力**。合法的不带 scope 包名
+   里没有需要编码的字符，`encodeURIComponent` 对它是恒等变换，所以「按需编码」与「一律编码」在
+   这条输入上完全同结果——两种变异都只在 scoped 那条断言上失败。已删掉该断言，并把「覆盖」的
+   出处改写成事实：编码的鉴别力全部来自改名前就存在的 `@scope/pkg` 断言。
+2. **（低，已改）「npm 只在发布时提示一句需要 --access public」偏乐观**：实测 `npm publish
+   --dry-run` 对不写 `access` 的 scoped 包一个字都不提示，只写 `default access`；真发时要么被
+   registry 拒，要么在账号有权限建私有包时静默发成私有包。已按实测改写。
+3. **（低，已清理）**审阅指出 worktree 里还留着 D69 自己的 `.tmp-mut/`（含临时全局安装、npm 缓存
+   与临时库），已删。
+
+另有一条流程提醒（非代码问题）：主仓 `docs/intend.md` 有一份**未提交**的手改，且与本法改动同一
+行（第 12 行），会以 `local changes would be overwritten by merge` 挡住合并。处理方式见下面
+「合并后收尾」。
 
 ### 没做的（可选复杂性）
 

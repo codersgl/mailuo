@@ -415,12 +415,9 @@ test('fetchLatestVersion：带路径的私有 registry 保留路径前缀，包�
   assert.equal(await ask(`${registry.url}/api/npm/npm`, PACKAGE_JSON.name), newer);
   assert.deepEqual(seen, [`/api/npm/npm/${encodedName}/latest`]);
 
-  // 不带 scope 的包名原样进路径，不该被编码。
-  seen.length = 0;
-  assert.equal(await ask(registry.url, 'plain-name'), newer);
-  assert.deepEqual(seen, ['/plain-name/latest']);
-
   // scoped 包名的 `/` 必须编码，否则会被当成又一层路径。
+  // 编码这件事的鉴别力全在这一条上：合法的不带 scope 包名里没有需要编码的字符，
+  // `encodeURIComponent` 对它们是恒等变换，所以「按需编码」与「一律编码」在那种输入上不可区分。
   seen.length = 0;
   assert.equal(await ask(registry.url, '@scope/pkg'), newer);
   assert.deepEqual(seen, ['/%40scope%2Fpkg/latest']);
