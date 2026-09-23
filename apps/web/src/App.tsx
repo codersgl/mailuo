@@ -1,19 +1,22 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { BoardView } from './components/BoardView';
 import type { NewTaskControls } from './components/Column';
 import { Sidebar } from './components/Sidebar';
 import { ErrorNote, LoadingNote } from './components/StatusNote';
 import { TaskEditorPanel } from './components/TaskEditorPanel';
 import { TopBar } from './components/TopBar';
+import { dropToMove, moveTaskInBoard } from './domain/board';
+import type { DropSlot } from './domain/board';
 import { useBoard } from './hooks/useBoard';
 import { useBreadcrumb } from './hooks/useBreadcrumb';
+import { resolveDropSlot, useCardDrag } from './hooks/useCardDrag';
 import { usePersistentState } from './hooks/usePersistentState';
 import { useRoute } from './hooks/useRoute';
 import { useTaskActions } from './hooks/useTaskActions';
 import type { WriteResult } from './hooks/useTaskActions';
 import { SHOW_ARCHIVED_KEY } from './lib/preferences';
 import type { TaskFieldsPatch } from './api/client';
-import type { BoardTask } from './api/types';
+import type { Board, BoardTask } from './api/types';
 
 const isBoolean = (value: unknown): boolean => typeof value === 'boolean';
 
@@ -77,6 +80,76 @@ function BoardPage({
     setCreatingColumnId(null);
     setActionError(null);
   }, [boardId]);
+
+  /**
+   * 拖拽落定之后服务端才是准的，但等它返回再重画会让卡片先弹回原位、再跳到新位置。
+   * 所以落点在指针移动时就换算成 position 并就地重排（乐观），松手时把同一个 position 发给后端；
+   * 失败或取消就整体退回「按下时的看板」（见 docs/decisions.md D42）。
+   */
+  const boardRef = useRef<Board | null>(null);
+  boardRef.current = board.state.status === 'ready' ? board.state.data : null;
+  /** 按下时的看板，用来回滚与换算落点。非空表示一次拖拽还没结束。 */
+  const dragStartRef = useRef<Board | null>(null);
+  /** 被拖的任务 id。落点只描述「哪一列哪张卡片之前」，换算 position 还得知道是谁在动。 */
+  const dragTaskRef = useRef<string | null>(null);
+  /**
+   * 当前落点，只给插入线用。用 state 而不是 ref：它是渲染要用的值，
+   * 而每次变化都对应一次真实的落点切换（不是每帧），不会造成额外渲染。
+   */
+  const [dragSlot, setDragSlot] = useState<DropSlot | null>(null);
+
+  const drag = useCardDrag({
+    resolveDrop: resolveDropSlot,
+    onStart: (taskId) => {
+      const current = boardRef.current;
+      if (current === null) return;
+      dragStartRef.current = current;
+      dragTaskRef.current = taskId;
+    },
+    onPreview: (slot) => {
+      setDragSlot(slot);
+      // 指针在列外：撤销预览，回到刚按下时的样子。
+      if (slot === null) {
+        const restore = dragStartRef.current;
+        if (restore !== null) board.mutate(() => restore);
+        return;
+      }
+      board.mutate((data) => {
+        const taskId = dragTaskRef.current;
+        if (taskId === null) return data;
+        return moveTaskInBoard(data, { taskId, ...dropToMove(data, taskId, slot) });
+      });
+    },
+    onDrop: (slot) => {
+      const restore = dragStartRef.current;
+      const taskId = dragTaskRef.current;
+      dragStartRef.current = null;
+      setDragSlot(null);
+      // 落在列外或状态不全：撤销预览（正常情况下指针移出列时已经撤过一次，这里是兜底）。
+      if (slot === null || restore === null || taskId === null) {
+        if (restore !== null) board.mutate(() => restore);
+        return;
+      }
+      const move = dropToMove(restore, taskId, slot);
+      void commitMove(taskId, move.columnId, move.position);
+    },
+    onCancel: () => {
+      const restore = dragStartRef.current;
+      dragStartRef.current = null;
+      setDragSlot(null);
+      if (restore !== null) board.mutate(() => restore);
+    },
+  });
+
+  async function commitMove(taskId: string, columnId: string, position: number) {
+    setActionError(null);
+    const result = await actions.move(taskId, { columnId, position });
+    if (!result.ok) {
+      setActionError(result.message);
+      // 静默重取可能也失败了，这里再响亮地取一次，保证界面回到服务端状态。
+      board.reload();
+    }
+  }
 
   const closeEditor = useCallback(() => setEditing(null), []);
   const cancelCreate = useCallback(() => setCreatingColumnId(null), []);
@@ -158,10 +231,17 @@ function BoardPage({
           {board.state.status === 'ready' && (
             <BoardView
               board={board.state.data}
-              onOpenTask={onNavigate}
+              dragPreview={drag.preview}
+              dragSlot={dragSlot}
+              draggingTaskId={drag.draggingTaskId}
+              onOpenTask={(taskId) => {
+                // 拖完那一下浏览器仍会补一个 click，不拦就会顺手进入子看板。
+                if (drag.canOpen()) onNavigate(taskId);
+              }}
               onEditTask={setEditing}
               onSetArchived={setTaskArchived}
               onDeleteTask={deleteTask}
+              onDragStart={drag.begin}
               create={create}
             />
           )}

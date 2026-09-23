@@ -1,3 +1,4 @@
+import type { PointerEvent as ReactPointerEvent } from 'react';
 import { DOING_COLUMN_ID } from '../domain/columns';
 import { cx } from '../lib/cx';
 import type { WriteResult } from '../hooks/useTaskActions';
@@ -19,23 +20,30 @@ export interface NewTaskControls {
 /** 看板里的一列：列头（列名 + 任务数 + 新建入口）+ 卡片列表。 */
 export function Column({
   column,
+  draggingTaskId,
   onOpenTask,
   onEditTask,
   onSetArchived,
   onDeleteTask,
+  onDragStart,
   create,
 }: {
   column: BoardColumn;
+  /** 正被拖动的任务 id；它所在的卡片留在原位当占位。 */
+  draggingTaskId: string | null;
   onOpenTask: (taskId: string) => void;
   onEditTask: (task: BoardTask) => void;
   onSetArchived: (task: BoardTask, archived: boolean) => void;
   onDeleteTask: (task: BoardTask) => void;
+  onDragStart: (task: BoardTask, event: ReactPointerEvent<HTMLElement>) => void;
   create: NewTaskControls;
 }) {
   const creating = create.creatingColumnId === column.id;
 
   return (
-    <section className="flex min-w-0 flex-col">
+    // self-stretch 让列体撑满网格行高（外层网格是 items-start）。这不只是好看：
+    // 列尾的空白是「拖到本列末尾」唯一的落点，列只有内容高的话，最后一张卡片下面就没有地方可放。
+    <section data-column-id={column.id} className="flex min-w-0 flex-col self-stretch">
       <div className="sticky top-0 z-[5] flex items-center gap-[7px] border-b border-line bg-canvas px-0.5 pt-3 pb-[9px]">
         <h2 className="text-[12px] font-semibold tracking-[0.3px] text-ink-2">{column.name}</h2>
         <span
@@ -69,7 +77,7 @@ export function Column({
         </button>
       </div>
 
-      <div className="flex flex-col gap-2 pt-2.5">
+      <div data-column-body className="flex flex-col gap-2 pt-2.5">
         {column.tasks.length === 0 && !creating && (
           // 空列在刚建库时是常态，给一行弱提示，避免看起来像加载失败。
           <p className="px-0.5 text-[11px] text-ink-3">暂无任务</p>
@@ -78,10 +86,12 @@ export function Column({
           <TaskCard
             key={task.id}
             task={task}
+            dragging={task.id === draggingTaskId}
             onOpen={onOpenTask}
             onEdit={onEditTask}
             onSetArchived={onSetArchived}
             onDelete={onDeleteTask}
+            onDragStart={onDragStart}
           />
         ))}
         {creating && (

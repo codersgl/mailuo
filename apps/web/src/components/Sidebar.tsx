@@ -1,6 +1,8 @@
-import { useEffect } from 'react';
+import { useCallback, useEffect, useState } from 'react';
+import { ApiError, changeTaskParent } from '../api/client';
 import { usePersistentState } from '../hooks/usePersistentState';
 import { useTree } from '../hooks/useTree';
+import { useTreeDrag } from '../hooks/useTreeDrag';
 import { COLLAPSED_TASKS_KEY } from '../lib/preferences';
 import { ancestorIds, buildTree, expandAncestors, toggleCollapsed } from '../lib/tree';
 import { ErrorNote, LoadingNote } from './StatusNote';
@@ -38,6 +40,38 @@ export function Sidebar({
     isStringArray,
   );
   const { state, reload, refresh } = useTree(showArchived);
+  const [dragError, setDragError] = useState<string | null>(null);
+
+  const tasks = state.status === 'ready' ? state.data : [];
+
+  /**
+   * 落定一次树拖动。新父级下挂到哪一列由后端决定（追加到该列末尾），这里只把任务当前所在列带过去，
+   * 所以这一步只换层级、不换列。成功后只重取树：改父级不影响当前看板的卡片与面包屑。
+   */
+  const commitParentChange = useCallback(
+    async (taskId: string, parentId: string | null) => {
+      const task = tasks.find((candidate) => candidate.id === taskId);
+      if (task === undefined) return;
+      setDragError(null);
+      try {
+        await changeTaskParent(taskId, { parentId, columnId: task.columnId });
+        refresh();
+      } catch (cause: unknown) {
+        setDragError(cause instanceof ApiError ? cause.message : '移动任务失败');
+      }
+    },
+    [tasks, refresh],
+  );
+
+  const treeDrag = useTreeDrag({
+    tasks,
+    onStart: () => setDragError(null),
+    onDrop: (taskId, drop) => {
+      if (drop === null) return;
+      void commitParentChange(taskId, drop.parentId);
+    },
+    onCancel: () => {},
+  });
 
   // 写操作（新建、改名、归档、删除）之后树必须是新的：D34 遗留的那条「写操作那一步必须显式刷新树」。
   // 0 是初始值，挂载时不用多取一次。
@@ -89,6 +123,16 @@ export function Sidebar({
         {boardMissingFromTree && (
           <p className="px-2 py-1 text-[11px] text-ink-3">当前看板不在树里，可能已归档</p>
         )}
+        {dragError !== null && (
+          // 拖动的错误没有表单可以就地报错，在树顶上给一行，点一下就收起。
+          <button
+            type="button"
+            onClick={() => setDragError(null)}
+            className="mb-1 block w-full rounded-[5px] border border-line bg-surface px-2 py-1 text-left text-[11px] text-danger hover:border-line-strong"
+          >
+            {dragError}
+          </button>
+        )}
         {state.status === 'loading' && <LoadingNote />}
         {state.status === 'failed' && <ErrorNote message={state.message} onRetry={reload} />}
         {state.status === 'ready' && roots.length === 0 && (
@@ -105,7 +149,13 @@ export function Sidebar({
                 onToggle={(taskId) =>
                   setCollapsedIds((collapsed) => toggleCollapsed(collapsed, taskId))
                 }
-                onOpen={onNavigate}
+                onOpen={(taskId) => {
+                  // 拖完那一下浏览器仍会补一个 click，不拦就会顺手进入它的看板。
+                  if (treeDrag.canOpen()) onNavigate(taskId);
+                }}
+                onDragStart={treeDrag.begin}
+                drag={treeDrag.state}
+                depth={0}
               />
             ))}
           </ul>

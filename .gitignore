@@ -12,3 +12,6 @@ data/
 .env
 .env.*
 .DS_Store
+
+# 本机 pnpm store（沙箱里 HOME 下的默认 store 不可写，见 D42）
+.pnpm-store/

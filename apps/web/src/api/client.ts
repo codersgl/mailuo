@@ -154,6 +154,32 @@ export function setTaskArchived(id: string, archived: boolean): Promise<TaskReco
   }).then(readWrittenTask);
 }
 
+/**
+ * 移动任务：目标列 + 目标列里的 0 基插入下标。
+ * `position` 的口径是「先把任务移出、再插入」，取值域由 `domain/board.ts` 的
+ * `positionForDrop` 负责换算（列里可能混着不参与重排的归档卡片）。
+ */
+export function moveTask(
+  id: string,
+  input: { columnId: string; position: number },
+): Promise<TaskRecord> {
+  return request<{ task: TaskRecord }>(`/api/tasks/${encodeURIComponent(id)}`, {
+    method: 'PATCH',
+    body: input,
+  }).then(readWrittenTask);
+}
+
+/** 文件树拖动改父级：任务挂到新父级下，并追加到目标列末尾（见 docs/spec.md 的 API 契约）。 */
+export function changeTaskParent(
+  id: string,
+  input: { parentId: string | null; columnId: string },
+): Promise<TaskRecord> {
+  return request<{ task: TaskRecord }>(`/api/tasks/${encodeURIComponent(id)}/parent`, {
+    method: 'PATCH',
+    body: input,
+  }).then(readWrittenTask);
+}
+
 /** 删除任务及其整棵子树。响应只有删除后那一列的任务列表，这里不需要，删掉的id由调用方知道。 */
 export function deleteTask(id: string): Promise<void> {
   return request<unknown>(`/api/tasks/${encodeURIComponent(id)}`, { method: 'DELETE' }).then(

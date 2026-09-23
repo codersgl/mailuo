@@ -1,7 +1,10 @@
+import type { PointerEvent as ReactPointerEvent } from 'react';
 import { DONE_COLUMN_ID, DOING_COLUMN_ID } from '../domain/columns';
 import { cx } from '../lib/cx';
 import { countChildren } from '../lib/tree';
 import type { TreeNode } from '../lib/tree';
+import { TREE_ROW_ATTR } from '../hooks/useTreeDrag';
+import type { TreeDragState } from '../hooks/useTreeDrag';
 
 interface TreeNodeRowProps {
   node: TreeNode;
@@ -10,14 +13,31 @@ interface TreeNodeRowProps {
   collapsedIds: string[];
   onToggle: (taskId: string) => void;
   onOpen: (taskId: string) => void;
+  onDragStart: (taskId: string, event: ReactPointerEvent<HTMLElement>) => void;
+  /** 拖拽状态；null 表示当前没有在拖。 */
+  drag: TreeDragState | null;
+  /** 这一层在树里的深度，从 0 开始。测试与调试用它断言层级真的变了。 */
+  depth: number;
 }
 
 /**
  * 文件树的一行：三角（展开折叠）+ 任务名（进入该任务的看板）+ 右侧状态。
  * 有子节点才画三角，叶子留一个同宽空位保持对齐，所以「有三角」本身就说明有子节点。
  * 子节点用嵌套的 ul 表达层级（缩进靠 ul 的 padding-left），不把层级压成缩进数值。
+ *
+ * 拖动这一行可以改父级，落点由上层换算（见 hooks/useTreeDrag）：
+ * 悬停行上半区 = 成为它的子节点，下半区 = 排到它后面成为兄弟。这里只负责把提示画出来。
  */
-export function TreeNodeRow({ node, selectedId, collapsedIds, onToggle, onOpen }: TreeNodeRowProps) {
+export function TreeNodeRow({
+  node,
+  selectedId,
+  collapsedIds,
+  onToggle,
+  onOpen,
+  onDragStart,
+  drag,
+  depth,
+}: TreeNodeRowProps) {
   const { task, children } = node;
   const selected = task.id === selectedId;
   const collapsed = collapsedIds.includes(task.id);
@@ -25,19 +45,31 @@ export function TreeNodeRow({ node, selectedId, collapsedIds, onToggle, onOpen }
   const { total, done } = countChildren(node);
   const archived = task.archivedAt !== null;
 
+  const dragging = drag?.draggingId === task.id;
+  const dropParentId = drag?.drop?.parentId ?? null;
+  const isDropParent = drag !== null && drag.drop !== null && dropParentId === task.id;
+  const isDropSibling = drag?.drop?.afterTaskId === task.id;
+
   return (
     <li>
       <div
+        {...{ [TREE_ROW_ATTR]: task.id }}
+        data-tree-depth={depth}
+        data-tree-parent={task.parentId ?? ''}
         className={cx(
-          'relative flex h-[26px] items-center gap-1.5 rounded-[5px] py-0 pl-2 pr-2',
+          'relative flex h-[26px] cursor-grab items-center gap-1.5 rounded-[5px] py-0 pl-2 pr-2',
           selected ? 'bg-accent-weak font-semibold text-accent' : 'text-ink-2 hover:bg-track',
           // 归档节点不只靠变灰：虚线边框 + 斜体「归档」标记，和普通节点一眼可分。
           // 选中时让位：text-ink-3 与 text-accent 同时命中同一个元素时，生成 CSS 里 ink-3 在后，
           // 会把选中态的文字颜色吃掉（只剩背景色）。「归档」标记本身不受影响，仍然显示。
           archived && !selected && 'border border-dashed border-line-strong text-ink-3',
+          // 拖动中的节点变淡；候补父级整行高亮（底色同选中态，靠左边的强调色竖条区分）。
+          dragging && 'opacity-40',
+          isDropParent && 'bg-accent-weak',
         )}
+        onPointerDown={(event) => onDragStart(task.id, event)}
       >
-        {selected && (
+        {(selected || isDropParent) && (
           <span
             className="absolute bottom-1 left-0 top-1 w-[2px] rounded-[1px] bg-accent"
             aria-hidden="true"
@@ -121,6 +153,15 @@ export function TreeNodeRow({ node, selectedId, collapsedIds, onToggle, onOpen }
             className={cx('size-1.5 flex-none rounded-full', leafDotClass(task.columnId))}
           />
         ) : null}
+
+        {/* 「排到它后面成为兄弟」的插入线：贴在这一行的下缘。 */}
+        {isDropSibling && (
+          <span
+            data-tree-line
+            className="pointer-events-none absolute inset-x-0 -bottom-[1px] h-0.5 rounded-[1px] bg-accent"
+            aria-hidden="true"
+          />
+        )}
       </div>
 
       {hasChildren && !collapsed && (
@@ -133,6 +174,9 @@ export function TreeNodeRow({ node, selectedId, collapsedIds, onToggle, onOpen }
               collapsedIds={collapsedIds}
               onToggle={onToggle}
               onOpen={onOpen}
+              onDragStart={onDragStart}
+              drag={drag}
+              depth={depth + 1}
             />
           ))}
         </ul>

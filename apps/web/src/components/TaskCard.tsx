@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
+import type { PointerEvent as ReactPointerEvent } from 'react';
 import { DONE_COLUMN_ID } from '../domain/columns';
 import { cx } from '../lib/cx';
 import { formatDuration, formatProgress, isDurationEstimated, progressPercent } from '../lib/format';
@@ -32,20 +33,27 @@ const MENU_HEIGHT = 110;
  */
 export function TaskCard({
   task,
+  dragging,
   onOpen,
   onEdit,
   onSetArchived,
   onDelete,
+  onDragStart,
 }: {
   task: BoardTask;
+  /** 这张卡片正被拖动：留在原位当占位，内容降透明度。 */
+  dragging?: boolean;
   onOpen: (taskId: string) => void;
   onEdit: (task: BoardTask) => void;
   onSetArchived: (task: BoardTask, archived: boolean) => void;
   onDelete: (task: BoardTask) => void;
+  /** 在卡片主体或「⋯」上按下时进入拖拽的候选；位移超过阈值才真的开始拖。 */
+  onDragStart?: (task: BoardTask, event: ReactPointerEvent<HTMLElement>) => void;
 }) {
   const isDone = task.columnId === DONE_COLUMN_ID;
   const estimated = isDurationEstimated(task.durationMinutes);
   const archived = task.archivedAt !== null;
+  const startDrag = onDragStart ?? (() => {});
 
   const [menuOpen, setMenuOpen] = useState(false);
   const [confirmingDelete, setConfirmingDelete] = useState(false);
@@ -96,16 +104,20 @@ export function TaskCard({
 
   return (
     <article
+      data-task-id={task.id}
       className={cx(
         'relative rounded-[5px] border bg-surface hover:border-accent-border',
         // 归档卡片用虚线边框，和文件树里的归档节点同一套语言。
         archived ? 'border-dashed border-line-strong' : 'border-line',
+        // 拖动中的卡片留在原位当占位：内容淡下去，位置不动，免得列里突然空一格。
+        dragging && 'opacity-40',
       )}
     >
       <button
         type="button"
+        onPointerDown={(event) => startDrag(task, event)}
         onClick={() => onOpen(task.id)}
-        className="block w-full rounded-[5px] px-[11px] py-[9px] text-left"
+        className="block w-full cursor-grab rounded-[5px] px-[11px] py-[9px] text-left active:cursor-grabbing"
       >
         {/* pr-5 给右上角的「⋯」让出位置，长标题不会跑到它下面。 */}
         <span
@@ -160,6 +172,7 @@ export function TaskCard({
       <button
         ref={triggerRef}
         type="button"
+        onPointerDown={(event) => startDrag(task, event)}
         onClick={() => (menuOpen ? closeMenu() : setMenuOpen(true))}
         aria-expanded={menuOpen}
         aria-label={`「${task.title}」的更多操作`}
