@@ -3,6 +3,7 @@ import type { PointerEvent as ReactPointerEvent } from 'react';
 import type { Board, BoardTask } from '../api/types';
 import type { DropSlot } from '../domain/board';
 import { CARD_ATTR } from '../hooks/useCardDrag';
+import { useCardFlip } from '../hooks/useCardFlip';
 import type { CardDragPreview } from '../hooks/useCardDrag';
 import { Column } from './Column';
 import type { NewTaskControls } from './Column';
@@ -45,7 +46,7 @@ export function BoardView({
   create: NewTaskControls;
 }) {
   const gridRef = useRef<HTMLDivElement>(null);
-  useBoardCardFlip(gridRef, draggingTaskId !== null, board);
+  useCardFlip(gridRef, draggingTaskId !== null, board);
 
   return (
     <>
@@ -145,71 +146,4 @@ function DropLine({
       aria-hidden="true"
     />
   );
-}
-
-/**
- * 卡片让位动画（FLIP）：拖拽期间每次重渲染后，把位置变了的卡片先按「位移前的位置」摆好，
- * 下一帧再放开过渡，看起来就是其它卡片滑开、给拖动的卡片腾位子。
- *
- * 只在拖拽期间生效：平时新建、归档、换看板也会让卡片换位置，那些场合加了动画只会显得飘。
- * DOM 由 React 渲染，这里只临时读写 transform 与 transition。
- *
- * 两个必须注意的顺序问题：
- * - 量尺寸前先清掉自己上一轮留下的 transform，否则量到的是被平移过的位置，位移会越算越偏。
- * - transition 不能马上清掉，否则这一帧就等于没有过渡；留到下一轮渲染再清。
- */
-function useBoardCardFlip(
-  containerRef: React.RefObject<HTMLElement | null>,
-  enabled: boolean,
-  board: Board,
-) {
-  const previous = useRef<Map<string, DOMRect> | null>(null);
-
-  useEffect(() => {
-    const container = containerRef.current;
-    const cards =
-      container === null ? [] : [...container.querySelectorAll<HTMLElement>(`[${CARD_ATTR}]`)];
-
-    // 清掉上一轮的动画痕迹（那时过渡已经跑完）。
-    for (const card of cards) {
-      card.style.removeProperty('transition');
-      card.style.removeProperty('transform');
-    }
-
-    if (container === null || !enabled) {
-      previous.current = null;
-      return;
-    }
-
-    const before = previous.current;
-    const rects = new Map<string, DOMRect>();
-    for (const card of cards) {
-      const id = card.getAttribute(CARD_ATTR)!;
-      const rect = card.getBoundingClientRect();
-      rects.set(id, rect);
-
-      const old = before?.get(id);
-      if (old === undefined) continue;
-      const dx = old.left - rect.left;
-      const dy = old.top - rect.top;
-      if (dx === 0 && dy === 0) continue;
-
-      // 先把卡片摆回上一帧的位置（此时不带动画），等下一帧再放开。
-      card.style.transition = 'none';
-      card.style.transform = `translate(${dx}px, ${dy}px)`;
-    }
-
-    // 读一次布局，强制浏览器接受上面写下的起点；不读的话两次写会被合并，动画直接从终点开始。
-    void container.getBoundingClientRect();
-
-    for (const card of cards) {
-      if (card.style.transform === '') continue;
-      card.style.transition = 'transform 120ms ease';
-      card.style.transform = '';
-    }
-
-    previous.current = rects;
-    // board 必须在依赖里：拖拽期间每次乐观重排都会换一个 board 对象，effect 才重跑得起来。
-    // 少了它，enabled 只从 false 变到 true 一次，让位动画根本不会执行（审阅发现的缺陷）。
-  }, [containerRef, enabled, board]);
 }
