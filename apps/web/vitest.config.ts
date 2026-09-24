@@ -7,5 +7,7 @@ import { defineConfig } from 'vitest/config';
 export default defineConfig({
   test: {
     environment: 'jsdom',
+    // 统一抬高 Testing Library 的等待上限（为什么需要，见 test/setup.ts）。
+    setupFiles: ['./test/setup.ts'],
   },
 });

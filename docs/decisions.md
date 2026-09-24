@@ -83,7 +83,7 @@
 - D66 第 29 步：README 改为面向使用者（2026-09-23）
 - D67 第 29 步：发布 npm 包前的打包就绪（2026-09-23，分支 chore/npm-package）
 
-**2026-09-24（D68–D73）**
+**2026-09-24（D68–D74）**
 
 - D68 第 30 步：发布元数据 repository / homepage / bugs / publishConfig（2026-09-24，分支 chore/repo-metadata）
 - D69 第 31 步：包名改为 scoped `@codersgl/mailuo`（2026-09-24，分支 chore/scoped-name）
@@ -91,6 +91,7 @@
 - D71 第 33 步：Release 触发 npm 发布（Trusted Publishing / OIDC）（2026-09-24，分支 chore/release-oidc）
 - D72 第 34 步：开发模式与命令行共用同一个默认库（2026-09-24，分支 fix/unify-db-path）
 - D73 第 35 步：整理文档——校准、职责约定、索引与审查报告状态（2026-09-24，分支 docs/quality）
+- D74 第 36 步：修搜索用例的时序假设并统一测试等待上限（2026-09-24，分支 fix/app-search-flake）
 
 ## D1 用 pnpm workspace 管理多应用（2026-09-22）
 
@@ -3030,3 +3031,104 @@ worktree `.worktrees/unify-db-path` 与分支 `fix/unify-db-path` 已删。
 **编号备案**：本步原取 D72，但从 main（`475112c`）切出时并行分支 `fix/unify-db-path` 已在飞并先占了
 D72（它已经合入 main，就是现在的 D72「开发模式与命令行共用同一个默认库」）。本步 rebase 到新 main
 后改为 **D73 第 35 步**，索引里两行都在、编号保持连续。
+
+## D74 第 36 步：修掉搜索选中项的竞态，并统一测试等待上限（2026-09-24，分支 fix/app-search-flake）
+
+### 问题（CI 的真红 + 本地复现）
+
+推送 D73 的 CI 运行 35953542912 上，`apps/web/test/App.test.tsx` 的
+「↓ 换选中项，Enter 进入的是当前选中那条」红：
+
+```
+AssertionError: expected '/board/x' to be '/board/y'
+apps/web test: × ↓ 换选中项，Enter 进入的是当前选中那条 1310ms
+```
+
+`/board/x` 说明 Enter 打开的是**第一条**结果。这条用例的顺序是：输入关键词 → 等「找到 2 个任务」
+→ 按 ↓ → 按 Enter → 断言地址是 `/board/y`。
+
+第一版把成因写成「↓ 引起的重渲染还没落地」——**错的**，审阅用探针复现并把它推翻了。真正的原因是
+`App.tsx` 里「结果换了就把选中项拉回第一条」的实现：
+
+```js
+useEffect(() => { setSelectedIndex(0); }, [search.state]);
+```
+
+这是 **passive effect**，会在结果已经画出来之后才 flush；而用例里的 `findByText('找到 2 个任务')`
+只等 DOM、不等 effect。于是出现这个窗口：结果渲染 → 按下 ↓（选中项 = 1）→ 那次挂起的 effect 这才
+flush，把它覆盖回 0 → Enter 打开第一条。机器越忙窗口越大，所以它在 CI 上偶发、本地难复现。
+
+两条反证：RTL 16.3.3 的 `fireEvent` 被 `eventWrapper` 包在 `act` 里，↓ 的更新在 `fireEvent` 返回前
+就落地了（探针里 ↓ 之后同步读高亮是「对账甲」，50ms 后仍是「对账甲」，是永久 0 而不是慢）；把重置
+effect 停掉后 160 轮 0 失败（审阅做的因果实验）。
+
+也就是说：**这不是「等得不够久」**。选中项被覆盖之后不会再变回来，光把等待上限从 1 秒抬到 3 秒只会
+把 1 秒的地址失败换成 3 秒的高亮超时失败——第一版改动（只加等待 + 等高亮）仍然能被探针打红。
+
+### 做法
+
+**产品侧：把「批次」记进选中项，渲染时判定，去掉 effect 回写。**
+
+- `domain/search.ts`：新增 `ResultSelection { batch, index }` 与 `resolveSelection(selection, batch)`
+  ——批次对不上就当没选过（0），同一批就保留 index。
+- `App.tsx`：选中项从 `selectedIndex: number` 改成 `selection: ResultSelection`，`batch` 直接用
+  `useSearch` 的 state 对象本身；`const selectedIndex = resolveSelection(selection, search.state)`；
+  ↓/↑ 写入 `{ batch: search.state, index: moveSelection(...) }`。
+
+语义与原来一致（结果换了回第一条），但判定发生在渲染时，没有「晚一步的 effect」这个窗口；顺带少了
+一个 effect。这也是它比「测试里 `await act(async () => {})` 冲一下」更好的地方：后者只挡住用例里
+的窗口，产品里那个窗口还在（用户手快就能看到高亮被弹回第一行）。
+
+**测试侧两处：**
+
+- `apps/web/test/setup.ts` + `vitest.config.ts` 的 `setupFiles`：`configure({ asyncUtilTimeout: 3000 })`，
+  把 Testing Library 的 `findBy*`/`waitFor` 从默认 1 秒统一抬到 3 秒（审计 E4 的建议之一：CI 的
+  runner 是 2 核，`pnpm -r test` 又把 api 与 web 并行跑，1 秒在那种负载下会假红）。不动 vitest 自己的
+  `testTimeout`（默认 5 秒）。
+- 用例补上缺的另一半断言：↓ 之后先 `await waitFor(() => expect(selectedResultText()).toContain('对账乙'))`
+  再按 Enter。用例名叫「↓ 换选中项」，原来却只断言最终地址。
+
+### 验证
+
+- **因果对照**（8 路 CPU 忙循环；探针是把这条用例复制成 40 轮循环，跑完即删）：旧代码 **10 次里 6 次红**
+  （失败要么是 `PATH-FAIL /board/x`，要么是高亮一直停在「对账甲」）；改完后 **7 次全过**。
+- **变异检验**：把 ↓ 改成 `setSelectedIndex(0)`（不再移动选中项）→ 用例在**新断言**上红
+  （`expected '对账甲根看板' to contain '对账乙'`，3.4 秒）；再去掉 `setupFiles` 跑同一变异 → 1.4 秒失败，
+  说明 3 秒上限确实被加载。
+- `searchDomain.test.ts` 补 `resolveSelection` 两条确定性用例：同一批保留下标、换了批次回 0——后者
+  就是这条竞态的纯函数版本，不依赖负载。
+- `App.test.tsx` 再补一条端到端用例「换一个关键词之后，选中项回到第一条」：↓ 到乙之后改关键词，
+  新一批结果一到就回甲。这条是第二轮复核要求补的——它构造的变异（把批次身份从 `search.state`
+  对象换成 `search.state.status`，一个看起来同样合理的写法）会让选中项停在乙，而当时 476 条
+  全绿；补上这条后，同一变异让这条用例红（`expected '对账乙根看板' to contain '对账甲'`），
+  其余 54 条仍绿。纯函数单测测不到「接线」，这条补的是接线。
+- 全量门禁：`pnpm lint` 0 error / 5 warning、`pnpm typecheck`、`pnpm build` 通过；
+  `pnpm test` bin 37 / api 275 / web 477 全绿（web 比改动前多 3：两条 `resolveSelection` 单测 + 一条端到端）。
+- 全量 web 套件耗时约 17.7-18.1 秒 → 20.1-20.6 秒（+2.5 秒，来自每个测试文件多加载一次 setup 阶段；
+  逐条对比没有单测变慢，最大 +0.37 秒）。
+
+### 审阅（子代理，只读）与更正
+
+第一轮审阅**阻断**了合并，理由就是上面那条归因错误：它写探针在负载下复现了「带新断言的序列仍然红」，
+指出触发点是 `useEffect([search.state])` 的 passive effect，并给了因果实验（停掉该 effect 后 160 轮
+0 失败，恢复后 120 轮 2 失败）。其余结论：等待上限确实生效（去掉 `setupFiles` 后同一变异的失败耗时
+从 3.4 秒降到 1.4 秒）、没有副作用放大、`li > button` + `bg-accent-weak` 的取法与
+`SearchResults.test.tsx` 一致、`setup.ts` 被 lint 与 typecheck 覆盖、纪律干净（没碰
+`AGENTS.md`/`docs/intend.md`/`docs/spec.md`）。它另指出记录里两处事实要改：那次历史偶发记在 **D48**
+而不是 D43；`App.test.tsx` 的规模写的是审计基线的数（今天实测 1546 行、112 处 `findBy*`、35 处 `waitFor`，含本步新增的那条用例）。都已改。
+
+第二轮复核：**可以合并**（第一轮阻断项解除）。它在同样负载下用探针跑了新实现 5 次 × 40 轮
+= 200 轮，`highlightFailures=0 rebounds=0 pathFailures=0`（还额外查了「高亮出现后 50ms 是否回弹」）；
+旧实现对照 3 次里 2 次红，形状与 CI 一致。语义等价性也逐条核过：`useSearch` 每次真正的新结果都
+造新对象（批次身份必变），唯一保持身份的是防抖窗口里的 bail-out（那正是「还是上一批」，
+保留选中项与旧行为一致），没有「同一批结果被误判成新批次」的路径。它另指出两处要改，都已照做：
+`App.test.tsx` 里那段注释还在讲被推翻的成因（已改写）、「换关键词回第一条」缺端到端用例
+（已补，见上）。
+
+### 没做的（可选复杂性）
+
+- **不改「新结果到达时把选中项拉回第一条」这个产品语义**：只改实现时机（渲染时判定，而不是事后
+  effect），用户看到的行为不变。
+- **不拆分 `App.test.tsx`**（2026-09-24 实测 1546 行、112 处 `findBy*`、35 处 `waitFor`）：审计 E4 的另一个建议，
+  属于独立一步（动的是文件结构）。
+- **不处理 E8 与其余未处理条目**：见审查报告的「仍未处理」表。
