@@ -12,7 +12,8 @@ import { ViewToolbar } from './components/ViewToolbar';
 import type { ViewMode } from './components/ViewToolbar';
 import { dropToMove, moveTaskInBoard } from './domain/board';
 import type { DropSlot } from './domain/board';
-import { flattenGroups, groupByColumn, moveSelection } from './domain/search';
+import { flattenGroups, groupByColumn, moveSelection, resolveSelection } from './domain/search';
+import type { ResultSelection } from './domain/search';
 import { useBoard } from './hooks/useBoard';
 import { useBreadcrumb } from './hooks/useBreadcrumb';
 import { resolveDropSlot, useCardDrag } from './hooks/useCardDrag';
@@ -80,13 +81,14 @@ function BoardPage({
   const trimmedKeyword = keyword.trim();
   const searching = trimmedKeyword !== '';
   const search = useSearch(keyword, showArchived);
-  /** 键盘选中的结果下标（摊平后的顺序，见 domain/search.ts）。结果换了就回到第一条。 */
-  const [selectedIndex, setSelectedIndex] = useState(0);
-
-  // 结果换了（新关键词、新开关、重试）就把选中项拉回第一条，否则选中项可能停在一个已经不存在的下标上。
-  useEffect(() => {
-    setSelectedIndex(0);
-  }, [search.state]);
+  /**
+   * 键盘选中的结果下标（摊平后的顺序，见 domain/search.ts），连同它属于哪一批结果。
+   *
+   * 「结果换了就回到第一条」不用 effect 事后回写：那会在「结果刚画出来、用户已经按了 ↓」的
+   * 窗口里把选中项覆盖回第一条（D74 那条偶发红的成因）。批次对不上时由 `selectedIndex`
+   * 在渲染时直接算出 0。
+   */
+  const [selection, setSelection] = useState<ResultSelection>({ batch: search.state, index: 0 });
 
   const searchResults = search.state.status === 'ready' ? search.state.results : [];
   /**
@@ -98,6 +100,8 @@ function BoardPage({
     search.state.status === 'ready' ? search.state.columns : [],
   );
   const flatResults = flattenGroups(searchGroups);
+  /** 当前这批结果里选中的下标；批次换过了就是 0（见上面 selection 的说明）。 */
+  const selectedIndex = resolveSelection(selection, search.state);
   /**
    * 画面上的结果是不是属于「输入框里这个词 + 当前这个显示已归档开关」。打字与切开关都有 200ms
    * 防抖，这段时间里输入框/开关已经更新、结果还是上一批；Enter 必须等结果跟上再动作，
@@ -287,9 +291,10 @@ function BoardPage({
 
     if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
       event.preventDefault();
-      setSelectedIndex((current) =>
-        moveSelection(current, event.key === 'ArrowDown' ? 1 : -1, flatResults.length),
-      );
+      setSelection({
+        batch: search.state,
+        index: moveSelection(selectedIndex, event.key === 'ArrowDown' ? 1 : -1, flatResults.length),
+      });
       return;
     }
     if (event.key === 'Enter') {

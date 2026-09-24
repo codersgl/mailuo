@@ -66,6 +66,25 @@ export function moveSelection(current: number, delta: number, count: number): nu
   return Math.min(Math.max(current + delta, 0), count - 1);
 }
 
+/** 键盘选中项，以及它属于哪一批结果。 */
+export interface ResultSelection {
+  /** 批次身份：直接用 `useSearch` 的 state 对象本身。 */
+  batch: unknown;
+  index: number;
+}
+
+/**
+ * 选中项在当前这批结果里的下标；批次对不上就当没选过（回到第一条）。
+ *
+ * 「结果换了就把选中项拉回第一条」原来是用 `useEffect([search.state])` 事后把 state 写回 0。
+ * 那是 passive effect，会在结果已经画出来之后才 flush：这段窗口里如果用户（或端到端用例）已经
+ * 按了 ↓，这次写入会把刚选中的第二行覆盖回第一行——偶发，机器越忙窗口越大（D74 的偶发红就是
+ * 这么来的）。把批次记在选中项里、在渲染时判定，就没有这个窗口了。
+ */
+export function resolveSelection(selection: ResultSelection, batch: unknown): number {
+  return selection.batch === batch ? selection.index : 0;
+}
+
 /** 结果行上的层级路径，例如「根看板 / 重构登录 / 前端部分」。路径取不到时是空串。 */
 export function formatResultPath(result: SearchResult): string {
   return result.path.map((item) => item.title).join(' / ');

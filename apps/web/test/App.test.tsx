@@ -1200,6 +1200,19 @@ describe('App 搜索', () => {
     fireEvent.change(searchBox(), { target: { value } });
   }
 
+  /**
+   * 结果页里当前高亮那一行的文字（没高亮时是空串）。
+   *
+   * 选中态只体现在类名上，取法与 `SearchResults.test.tsx` 一致：组件没有给键盘选中态一个语义
+   * 属性（没有 listbox/option + aria-activedescendant 那套），原因见 `docs/decisions.md` D45。
+   */
+  function selectedResultText(): string {
+    const row = Array.from(document.querySelectorAll('li > button')).find((button) =>
+      button.className.includes('bg-accent-weak'),
+    );
+    return row?.textContent ?? '';
+  }
+
   it('输入关键词后主区换成结果页：按列分组、显示路径与工期，看板列消失', async () => {
     createFakeApi([
       task({ id: 'b', title: '支付对账', durationMinutes: 1440 }),
@@ -1252,9 +1265,34 @@ describe('App 搜索', () => {
 
     // 默认选中第一条，按一次 ↓ 落到第二条。
     fireEvent.keyDown(searchBox(), { key: 'ArrowDown' });
+    // 先等选中态真的画出来，再按 Enter。这同时补上原来缺的半个断言：这条用例名叫「↓ 换选中项」，
+    // 却只断言了最终地址，没验高亮。
+    await waitFor(() => expect(selectedResultText()).toContain('对账乙'));
     fireEvent.keyDown(searchBox(), { key: 'Enter' });
 
     await waitFor(() => expect(window.location.pathname).toBe('/board/y'));
+  });
+
+  it('换一个关键词之后，选中项回到第一条', async () => {
+    // 这条钉的是 D74 的语义：选中项属于「某一批结果」，批次换了就当没选过。
+    // 变异检验用的写法——把批次身份换成 `search.state.status`（看起来也合理）——会让选中项
+    // 停在乙，而其余用例全绿，所以必须有这一条。
+    createFakeApi([
+      task({ id: 'x', title: '对账甲' }),
+      task({ id: 'y', title: '对账乙', orders: 2000 }),
+    ]);
+    render(<App />);
+    await boardArea().findByText('对账甲');
+
+    type('对账');
+    await boardArea().findByText('找到 2 个任务');
+    fireEvent.keyDown(searchBox(), { key: 'ArrowDown' });
+    await waitFor(() => expect(selectedResultText()).toContain('对账乙'));
+
+    // 换一个命中同样两条、但属于新一批的关键词：防抖窗口里仍是旧的一批（选中项保留），
+    // 新结果一到就该回到第一条。
+    type('对');
+    await waitFor(() => expect(selectedResultText()).toContain('对账甲'));
   });
 
   it('点结果行进入该任务看板', async () => {

@@ -7,6 +7,7 @@ import {
   groupByColumn,
   groupStarts,
   moveSelection,
+  resolveSelection,
 } from '../src/domain/search';
 
 const columns = [
@@ -107,6 +108,21 @@ describe('moveSelection', () => {
   it('结果为空时返回 -1，Enter 因此不会误开某一条', () => {
     expect(moveSelection(0, 1, 0)).toBe(-1);
     expect(moveSelection(5, -1, 0)).toBe(-1);
+  });
+});
+
+describe('resolveSelection', () => {
+  it('同一批结果里保留选中项', () => {
+    const batch = { status: 'ready' };
+    expect(resolveSelection({ batch, index: 1 }, batch)).toBe(1);
+  });
+
+  it('换了批次就回到第一条，不用等 effect', () => {
+    // 这条钉的是 D74 的偶发：原来「结果换了回第一条」放在 useEffect 里，passive effect 晚于
+    // 结果渲染，会在用户已经按了 ↓ 之后把选中项覆盖掉。现在批次对不上时当次渲染就是 0。
+    const previous = { status: 'ready' };
+    const next = { status: 'ready' };
+    expect(resolveSelection({ batch: previous, index: 1 }, next)).toBe(0);
   });
 });
 
