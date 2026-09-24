@@ -2795,3 +2795,25 @@ README 与 development.md 的「不再被读取」改成「**作为默认值**�
 最终门禁（本步代码的最终形态）：api 275 / bin 37 / web 474 全绿，`typecheck` 与 `pnpm build`
 通过，`pnpm lint` 0 error / 5 warning（与 D70 基线同源）；真实起服务的三段验证重跑过一遍，
 命令行与 `pnpm dev:api` 打印同一个库路径，两边互相看得到对方建的任务。
+
+**合并后收尾（2026-09-24，用户验收之后）**
+
+用户答复「验收合并」，并对 `docs/spec.md` 的改法「授权修改」——所以 spec.md 那两处（删掉
+项目结构里的 `data/kanban.db` 一行、把「命令行用 A、开发用 B」那条反过来写）在本步内完成，
+提交 `b2aa12a`。这是 D55 之后第二次用户单独授权改 spec.md，授权范围仅这两处。
+
+合并：`--no-ff` 得 `32ac12c`（父 `b2aa12a`，基线 `475112c`），分支 `fix/unify-db-path` 共 3 个提交
+（`164ef27` 主改动、`ae8196b` 审阅修复、`b2aa12a` spec 同步）。
+
+主仓复跑：`pnpm build` 通过（D55 的惯例——`dist/` 不入版本库，合并后不重建的话 `pnpm start`
+跑的是上一次的产物）、`pnpm test` bin 37 / api 275 / web 474 全绿。
+
+**最后一次验收刻意用真实数据，而不是临时库**：把搬迁后的 `~/.mailuo/kanban.db` 放进临时 `HOME`，
+走真实默认路径起 `pnpm dev:api`，启动日志打印 `数据库: <那个临时 HOME>/.mailuo/kanban.db`，
+`GET /api/tree` 返回 8 条任务（专利修改、DSA刷题、…），`GET /api/board` 的列是待办/进行中/完成，
+`PRAGMA integrity_check` = ok。没有直接用真实 `HOME` 起服务，是因为 DSH 沙箱对工作区外只读，
+而 SQLite 在 WAL 模式下打开库要在同目录建 `-shm`；业务数据在同一份文件上，换来的是同样的验证。
+搬迁前的家目录库（0 条）备份在 `~/.mailuo/kanban.db.bak-20260924-112436`；`data/kanban.db` 按用户
+口径保留未删。
+
+worktree `.worktrees/unify-db-path` 与分支 `fix/unify-db-path` 已删。
