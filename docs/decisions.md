@@ -2767,6 +2767,7 @@ release 等 45 秒，`GET /actions/runs?event=release` 的 `total_count` 是 0�
 **仍未验证的两件事**：真实 OIDC 交换与真正的 `npm publish`（要等 0.2.0 那次才会走到）；npm 端
 Trusted Publisher 的 Allowed actions 是否勾到 `npm publish`（用户在网页上配好了，但 npm 没有可
 从外部读取该配置的接口，按官方文档它只会在发布那一刻以 ENEEDAUTH 之类暴露）。
+（**已在 D75 验证**：0.2.0 发布成功、OIDC 交换正常、provenance 已生成，说明 Allowed actions 配置正确。）
 
 ## D72 第 34 步：开发模式与命令行共用同一个默认库（2026-09-24，分支 fix/unify-db-path）
 
@@ -3159,10 +3160,24 @@ effect 停掉后 160 轮 0 失败（审阅做的因果实验）。
   预发布不在这条路径上（整段跳过）。
 - 这是这条链路第一次真正做 OIDC 交换：D71 那次只跑到「版本已存在就跳过」的分支。
 
-### 发布结果
+### 发布结果（2026-09-24）
 
-待发布。发布后在这里补：tag 与 target、工作流运行号与耗时、npm 上的版本与 provenance、
-以及有没有踩到 Allowed actions 那个坑。
+- Release：`v0.2.0` → `ef315a9`（merge 版本号 0.2.0 的那个提交），非 draft、非 prerelease。
+- 推送后的 CI（`push` 事件）：运行 35957344341 成功。
+- 发布工作流（`release` 事件）：运行 35957460249 成功，两个作业都绿——`guard` 校验 tag 与
+  `package.json` 一致、并查到 npm 上没有 0.2.0；`npm-publish` 跑完门禁后发布。
+- **这是 `release` 事件路径第一次真正触发**（D71 那次 tag 指向的提交上没有 workflow 文件，
+  一个运行都没有），也是这条链路第一次真正做 OIDC 交换。
+- npm：`0.2.0` 已上线且是 `dist-tags.latest`。发布日志里有
+  「Signed provenance statement with source and build information from GitHub Actions」与
+  「Provenance statement published to transparency log」；版本元数据里
+  `dist.attestations.provenance.predicateType` 是 `https://slsa.dev/provenance/v1`
+  （transparency log：https://search.sigstore.dev/?logIndex=2932018484）。
+- 于是 **D71 记的「仍未验证的两件事」都验证通过了**：真实 OIDC 交换成功，npm 端 Allowed actions
+  也确实勾到了 `npm publish`（整个发布没有任何人工确认）。
+- 一条操作细节：刚发完的几十秒里 `curl .../@codersgl/mailuo/0.2.0` 会回
+  `version not found: 0.2.0`、`npm view` 也可能 404，是 CDN 未同步（`latest` 端点先可用），
+  等一两分钟即恢复——与 D69 记的现象一致，不是发布失败。
 
 ### 没做的（可选复杂性）
 
