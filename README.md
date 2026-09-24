@@ -113,12 +113,13 @@ node bin/mailuo.mjs
 ## 数据存在哪
 
 - 数据都在一个 SQLite 文件里，默认 `~/.mailuo/kanban.db`；目录不存在时自动创建。
+- 命令行启动（`mailuo` / `npx @codersgl/mailuo`）与开发模式（`pnpm dev:api`、`pnpm start`）用的是**同一个**默认文件，两边看到的是同一份任务。
 - 位置与包的安装位置、版本无关，重装或升级不会换掉数据。
 - 备份时先退出进程再复制：服务运行时同一个目录下还会有 `kanban.db-wal` 与 `kanban.db-shm`，只复制 `.db` 会漏掉最近的写入。
 - 用 `--db` 指定别的文件，例如 `mailuo --db ./我的看板.db`。
 - 每次启动自动建表，并执行 `apps/api/migrations/` 下未应用过的迁移。
 
-命令行启动与开发模式用的不是同一个库：命令行启动（`mailuo` / `node bin/mailuo.mjs`）是 `~/.mailuo/kanban.db`，开发模式（`pnpm dev:api`、`pnpm start`）是仓库根的 `data/kanban.db`。程序不会自动搬迁，需要哪边的数据就用 `--db` 指过去。
+仓库根的 `data/kanban.db` 是 0.1.0 及更早版本开发模式的默认位置，**作为默认值**不再被读取（文件还在，不会被删；用 `KANBAN_DB_PATH` 显式指过去仍然能读）。要用那份数据就手动搬一次，步骤见 `docs/development.md`。
 
 ## 常见问题
 

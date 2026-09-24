@@ -78,12 +78,12 @@ mailuo/
   brand/                       品牌图标母版（SVG，唯一手改的地方）
   scripts/                     构建脚本
   package.json                 包元数据：bin / files / 运行时依赖
-  data/kanban.db               SQLite 文件，不入版本库
 ```
 
 - 开发：Vite 跑 5173，`server.proxy` 把 `/api` 代理到后端 3001。
 - 生产：Hono 提供 `/api/*`，并用 `serveStatic` 托管 `apps/web/dist`，只跑一个进程。
 - 迁移：手写编号 SQL 文件，启动时按序执行，已执行的记录在 `schema_migrations` 表。
+- 数据库：所有任务数据在一个 SQLite 文件里，默认 `~/.mailuo/kanban.db`——**在仓库之外**，与包的安装位置、版本无关。开发（`pnpm dev:api` / `pnpm start`）与命令行（`mailuo`）用的是同一个默认文件。
 - 监听与访问控制：默认只绑 `127.0.0.1`（只服务本机）。`HOST` 改监听地址（例如 `0.0.0.0` 供同网段访问），`HOST_ALLOW` 追加 Host 白名单里额外的机器名/域名；用 IP 访问时本机网卡地址自动放行。请求的 Host 不在白名单、或写请求的 Origin 不在白名单时一律拒绝——在没有鉴权的前提下，这是挡 DNS rebinding 的那一层。
 
 ## 命令行运行
@@ -92,11 +92,11 @@ mailuo/
 
 - 参数：`-p/--port`、`--host`、`--db`、`--open` / `--no-open`、`-h/--help`、`-v/--version`；写法支持 `--port 3010`、`--port=3010`、`-p 3010`、`-p3010`。未知参数报错，不静默忽略。
 - 参数与环境变量合成配置的优先级是**命令行 > 环境变量 > 默认值**；合成结果通过 `PORT`/`HOST`/`KANBAN_DB_PATH`/`HOST_ALLOW` 传给服务端入口。
-- 数据库默认 `~/.mailuo/kanban.db`（`HOME` 缺失时退 `USERPROFILE`，目录不存在则创建），与包的安装位置、版本无关——全局安装时包目录是只读的，升级还会整包替换。`--db` 给相对路径时按当前工作目录解析。
+- 数据库默认 `~/.mailuo/kanban.db`（`HOME` 缺失时退 `USERPROFILE`，目录不存在则创建），与包的安装位置、版本无关——全局安装时包目录是只读的，升级还会整包替换。`--db` 给相对路径时按当前工作目录解析。开发与 `pnpm start` 的默认值与之一致：同一个变量在服务端与命令行两边的默认文件、空值口径都相同（见 `docs/decisions.md` D72）。
 - 端口默认 3001；**只有**端口既没来自 `--port` 也没来自 `PORT` 时才自动往后试 20 个，显式指定的端口被占用就直接失败。
 - 服务真正进入监听之后才打印启动地址并打开浏览器；`--host 0.0.0.0` 或 `::` 时浏览器打开的是回环地址。
 - `--help` / `--version` 先于任何校验处理：`mailuo --help --port abc` 仍然打印用法。
-- 库里没有自动搬迁：命令行启动用 `~/.mailuo/kanban.db`，开发与 `pnpm start` 仍用仓库根的 `data/kanban.db`。
+- 默认库只有一个，库里没有自动搬迁。仓库根的 `data/kanban.db` 是 0.1.0 及更早版本开发模式的默认位置，不再作为默认值读取（文件不会被删）；要用那份数据就手动搬一次（步骤见 `docs/development.md`），或用 `--db` / `KANBAN_DB_PATH` 显式指过去。
 
 ## 数据模型
 

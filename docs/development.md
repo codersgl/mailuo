@@ -109,9 +109,12 @@ pnpm start            # 只起一个进程：/api/* 是接口，其余路径由 
   - 若加了反向代理，注意保留原始 `Host`，否则这道校验会被代理改写掉。
   - 通配监听（`0.0.0.0`）时用 IP 访问（`http://192.168.1.5:3003`）直接可用；用机器名或 MagicDNS 名字访问要写进 `HOST_ALLOW`，否则直接访问时 Host 就被拒（读也 403），经 Vite 代理时读能通、写会 403（Origin 不在白名单）。
 - `HOST_ALLOW` 额外放行的 Host 主机名，逗号分隔（例如 `HOST_ALLOW=sgl.local,sgl-1.tailnet.ts.net`）。只影响 Host/Origin 白名单，不改监听地址；不设时为空。IPv6 地址可以写裸形式（`fd7a::1`），也可以写 `[fd7a::1]:3003`。
-- `KANBAN_DB_PATH` SQLite 文件路径，默认 `data/kanban.db`。
+- `KANBAN_DB_PATH` SQLite 文件路径，默认 `~/.mailuo/kanban.db`——与命令行入口 `bin/mailuo.mjs` 的默认值同一个文件，所以 `pnpm dev:api` 与 `mailuo` 看的是同一份任务数据（见 `docs/decisions.md` D72）。做实验时用前缀指到工作树里，避免动到日常库：`KANBAN_DB_PATH=$(pwd)/.tmp-verify/kanban.db pnpm dev:api`（路径要以 `.tmp-` 开头，见 `.gitignore`——`.tmp/` 不在忽略名单里，`git add -A` 会把库副本提交进去，D47 真的发生过）。
+  - 服务端与命令行入口各自实现了这个默认值（服务端在 `apps/api/src/config.ts` 的 `defaultDbPath`，命令行在 `bin/mailuo.mjs` 的 `defaultDbPath`）。`apps/api/test/config.test.ts` 里有一条交叉用例比对两者，改任一侧都会在那里断掉。
   - 变量名与文件名里的 `kanban` 是产品还叫「看板」时留下的（改名经过见 `docs/decisions.md` D57）。
     里面是真实任务数据，跟着改名只会让旧库失联，所以这两处与前端 localStorage 的 `kanban.*` 键一起保持不变。
+  - 旧位置 `data/kanban.db`（0.1.0 及更早的开发默认值）**作为默认值**不再被读取，文件不会被删。要搬过去：退出所有进程 → 备份 `~/.mailuo/kanban.db` → **先删掉目标的 `kanban.db-wal` 与 `kanban.db-shm`** → 覆盖 `kanban.db`（源库还有 `-wal`/`-shm` 就一起拷）。
+    两步都不能省，方向相反：目标残留的旧 `-wal` 会在源库**没有** WAL（正常退出的常态）时把旧库整个「复活」，拷过去的源数据看不见；源库**有** `-wal` 时只拷 `.db` 又会丢掉还没落盘的写入（D41 踩过）。不想手工处理就用 SQLite 的备份接口（`sqlite3 <源> ".backup <目标>"`，或 better-sqlite3 的 `db.backup()`），它读的是一致快照，两边 WAL 状态都不用管——D72 的搬迁就是这么做的。旧数据不想动就留在原地，用 `KANBAN_DB_PATH=...` 指过去。
 - `MAILUO_REGISTRY` / `MAILUO_NO_UPDATE_CHECK` 只被命令行入口的版本提示读（见 `bin/mailuo.mjs` 与
   `docs/decisions.md` D65），服务端不感知；用法见 `README.md` 的命令行参数表。
 
@@ -120,6 +123,9 @@ pnpm start            # 只起一个进程：/api/* 是接口，其余路径由 
 命令行启动（`mailuo` / `node bin/mailuo.mjs`）不看仓库根的 `.env`：它在导入服务端之前就把
 `PORT`/`HOST`/`KANBAN_DB_PATH` 写进了进程环境，而 `process.loadEnvFile` 不覆盖已有的变量。
 `HOST_ALLOW` 是例外——命令行不设它时它是空的，服务端读 `.env` 的那一步就会把它填上。
+
+这条对「两边共用一份数据」没有影响：两边默认值已经相同。它只在你想让 `.env` 把**开发**指到
+别的库时才有区别——那种情况下命令行不会跟着走，要给命令行单独加 `--db` 或 `KANBAN_DB_PATH`。
 
 ## README 截图
 

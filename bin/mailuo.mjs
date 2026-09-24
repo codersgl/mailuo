@@ -165,9 +165,13 @@ export function parsePort(raw, source) {
 /**
  * 本机默认数据库：`~/.mailuo/kanban.db`。
  *
- * 为什么不沿用服务端的 `data/kanban.db`：那个默认值是相对包目录算的，全局安装后落在
- * `node_modules/mailuo/data/` 里——升级或重装包就会换掉那份数据，而且包目录通常是只读的。
- * 用户目录下的固定路径与包的安装位置、版本都无关。
+ * 不放包目录（`<包根>/data/kanban.db`）：那个路径是相对包目录算的，全局安装后落在
+ * `node_modules/@codersgl/mailuo/data/` 里——升级或重装包就会换掉那份数据，而且包目录通常是
+ * 只读的。用户目录下的固定路径与包的安装位置、版本都无关。
+ *
+ * 服务端 `apps/api/src/config.ts` 的 `defaultDbPath` 是同一个默认值的另一份实现，两边必须给出
+ * 同一个结果——否则 `pnpm dev:api` 建的任务在 `mailuo` 里看不见（这正是曾经的缺陷）。
+ * `apps/api/test/config.test.ts` 里有一条交叉用例直接比对两者，改动这里时它必须还是绿的。
  */
 export function defaultDbPath(env = process.env) {
   const home = env.HOME || env.USERPROFILE || homedir();

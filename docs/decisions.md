@@ -2675,3 +2675,123 @@ release 等 45 秒，`GET /actions/runs?event=release` 的 `total_count` 是 0�
 **仍未验证的两件事**：真实 OIDC 交换与真正的 `npm publish`（要等 0.2.0 那次才会走到）；npm 端
 Trusted Publisher 的 Allowed actions 是否勾到 `npm publish`（用户在网页上配好了，但 npm 没有可
 从外部读取该配置的接口，按官方文档它只会在发布那一刻以 ENEEDAUTH 之类暴露）。
+
+## D72 第 34 步：开发模式与命令行共用同一个默认库（2026-09-24，分支 fix/unify-db-path）
+
+### 问题：同一个默认值写了两份，两份指向不同文件
+
+用户反馈「项目启动和 npx 启动的数据不共享」。追踪下来是两处各自的默认值：
+
+- `apps/api/src/config.ts`：`path.join(repoRoot, 'data', 'kanban.db')`，即 `<仓库根>/data/kanban.db`；
+- `bin/mailuo.mjs` 的 `defaultDbPath`：`$HOME/.mailuo/kanban.db`。
+
+本机实测：`data/kanban.db` 有 8 条任务，`~/.mailuo/kanban.db` 有 0 条。于是 `pnpm dev:api` 里建的
+任务在 `mailuo` 里看不见，反过来也一样。两份单测当时**各自全绿**——服务端那条断言
+`dbPath.endsWith('data/kanban.db')`，命令行那条断言 `~/.mailuo/kanban.db`，谁都没觉得矛盾。
+
+这不是谁改错了代码。D64 给命令行定 `~/.mailuo` 有充分理由（装成 npm 包后包目录只读、升级整包
+替换），而服务端那份默认值是「从源码跑」时期写的、相对包目录算的。缺陷在于**同一个默认值有两份
+实现，且没有任何东西盯着它们相等**。`docs/spec.md` 甚至把「两个库」当成规格写下来了。
+
+### 做法：命令行那份是准的，服务端跟着走
+
+`apps/api/src/config.ts` 新增 `defaultDbPath(env)`，与 `bin/mailuo.mjs` 的分支顺序一致
+（`HOME` → `USERPROFILE` → `os.homedir()`），默认值改成 `~/.mailuo/kanban.db`。`repoRoot` 保留，
+它还在给 `.env` 与 `apps/web/dist` 定位。
+
+没有做自动搬迁，也没有「旧文件存在就用旧的」这种回落：那会让「库在哪」取决于文件系统状态，
+两个库的问题会以更难查的形态回来（一半机器走新路径、一半走旧路径）。按项目一贯口径，需要旧数据
+就用 `--db` 指过去；WAL 感知的搬迁步骤写在 `docs/development.md` 的 `KANBAN_DB_PATH` 条目下，
+README 只留一句「旧位置不再读取，要搬见开发文档」——README 是发布给命令行用户的，仓库根的
+`data/` 只是本仓库的历史遗留。
+
+### 挡回归的是「交叉用例」，不是再写一条断言
+
+`apps/api/test/config.test.ts` 新增一条用例，直接 import `bin/mailuo.mjs` 的 `defaultDbPath`，断言
+`loadConfig(env).dbPath === cli.defaultDbPath(env)`（`HOME` 有、无各一组）。它的鉴别力是**双向**
+验证过的，不是推演：
+
+- 把服务端改回 `data/kanban.db`：这条断（`expected '/home/codersgl/.../data/kanban.db' to be
+  '/home/someone/.mailuo/kanban.db'`）；
+- 把命令行改成 `~/.mailuo/other.db` 并同步它自己的单测：同样这条断。
+
+也就是说「两边各写一份断言」这种写法永远挡不住本缺陷，只有比对两个实现才挡得住。这也解释了为
+什么没有把 `defaultDbPath` 抽成一个共享模块：bin 是发布给用户的零依赖纯 JS，服务端是走 tsc 的
+TS，抽公共文件的代价（`files` 清单、`allowJs` 或声明文件、构建耦合）高于两行重复，而重复的风险
+已经由交叉用例覆盖。
+
+代价要说清：这条用例让 `apps/api` 的测试依赖 `bin/` 的文件位置，用一行
+`@ts-expect-error -- 纯 JS 模块没有类型声明（TS7016）` 压掉 tsc 对 `.mjs` 的报错。若哪天 bin 有了
+声明文件，这行压制会因「未使用」自己报错，正好提示删掉。
+
+### 数据搬迁（本机，一次性）
+
+`~/.mailuo/kanban.db` 已有 schema 但 0 条任务，`data/kanban.db` 有 8 条，两边 `schema_migrations`
+集合相同（001/002/003），所以直接覆盖是无损的。做法：
+
+1. 用 better-sqlite3 的 `backup()`（不是 `cp`）从 `data/kanban.db` 生成一致快照——源库有
+   `-wal`/`-shm`，只拷 `.db` 会丢掉 WAL 里未落盘的写入（D41 那次踩过同一个坑）；
+2. `cp -a` 备份成 `~/.mailuo/kanban.db.bak-<时间戳>`；
+3. 快照覆盖 `~/.mailuo/kanban.db`，复查任务数 8、标题与列名都对。
+
+`data/kanban.db` 本身**保留不删**——里面是用户的真实数据，删不删由用户决定。
+
+### 验证
+
+worktree `.worktrees/unify-db-path`（`pnpm install --store-dir ../../.pnpm-store`）：
+
+- `pnpm --filter @mailuo/api test`：274 条全绿（本步前 273 条，新增的那条即交叉用例）。
+- `pnpm --filter @mailuo/api typecheck`、`pnpm build`、`pnpm lint`（0 error / 5 warning，与 D70
+  基线同源）通过；根 `pnpm test`：bin 37 / api 274 / web 474 全绿。
+- **真实起服务，两边同库**（临时 `HOME` 指到工作区内的目录，不动日常库）：
+  - `node bin/mailuo.mjs --port 3220` 与 `PORT=3221 pnpm dev:api` 启动日志里打印的
+    `数据库:` 是同一个 `$HOME/.mailuo/kanban.db`；
+  - 命令行建「命令行建的」→ dev:api 启动即看到它，再建「dev 建的」→ 命令行重启后两条都在；
+  - `$HOME` 下只有一个 `kanban.db`，工作树里没有冒出 `data/`。
+- 这条验证第一次差点是**假绿**，值得记：最开始用 `curl /api/tasks | jq 'length'` 数任务，得到
+  「1」，但 `/api/tasks` 这个路由根本不存在，返回的是 `{"error":"路径不存在"}`——`length` 数的是
+  这个对象的**键数**。换成真实路由 `/api/tree` 并直读 SQLite 复查后才是真结论。断言里出现
+  「解析错误响应也照样通过」的写法时，等于没有断言。
+- 搬迁结果直读 SQLite 复查：`~/.mailuo/kanban.db` 有 8 条任务（专利修改、DSA刷题等），
+  列是「待办 / 进行中 / 完成」。
+- `docs/spec.md` 的对应两条（第 81 行的 `data/kanban.db`、第 99 行的「两个库」）属于用户独占文件，
+  本步不代改，验收时提出改法。
+
+### 审阅（子代理，只读）与修复
+
+只读审阅在隔离副本里跑了真实实验（better-sqlite3、SIGKILL 造 WAL、`npm pack --dry-run`、
+变异检验），结论「修完再合并」，无阻断。它验到的关键一条是**核心改动本身没有正确性缺陷**：
+`loadConfig(env).dbPath === cli.defaultDbPath(env)` 在 `HOME=''`、`HOME=''`+`USERPROFILE`、
+`HOME=' '` 三种输入下都成立；`import bin/mailuo.mjs` 在 vitest 下确实不执行 `main`
+（在守卫块里插日志跑用例，标记没打印过）。它另外指出了三处**我写错或没堵上的**，全部已改：
+
+1. **（中）搬迁步骤原样抄下来会丢数据。** 我原来写「把 `.db`/`-wal`/`-shm` 三个文件一起覆盖」，
+   但源库**正常退出**时 SQLite 会 checkpoint 并删掉 `-wal`/`-shm`，只剩 `.db`——那句话没法执行、
+   也没说清怎么办。审阅实测了更坏的一种组合：源库只剩 `.db`、目标残留旧 `-wal`/`-shm` 时只覆盖
+   `.db`，打开后看到的是**目标旧库**（它造的目标旧库 3 行把源库 50 行整个盖掉）。两个方向相反的
+   坑现在都写进 `docs/development.md`：先删目标的 `-wal`/`-shm` 再覆盖 `.db`，源库有 `-wal` 就一起拷；
+   并给出不必手工处理的替代（`sqlite3 ... ".backup"` 或 better-sqlite3 的 `backup()`，D72 自己用的就是后者）。
+   这条最值得记：**「三个文件一起拷」听起来比「只拷 .db」稳妥，实际在源库干净关闭时是一句无法执行的建议。**
+2. **（中）我引入的临时库路径没被 `.gitignore` 覆盖。** `docs/development.md` 里建议
+   `KANBAN_DB_PATH=$(pwd)/.tmp/kanban.db`，而 `.gitignore` 忽略的是 `.tmp-*/`（D47 就是因为
+   `git add -A` 把库副本提交进去才加的）。已改成 `.tmp-verify/`，并把「路径要以 `.tmp-` 开头」
+   连同 D47 的缘由写进同一句。
+3. **（中）空串 `KANBAN_DB_PATH` 在服务端不报错（非本步引入，本步收口）。** `??` 只挡
+   null/undefined，空串会走到 `new Database('')`——SQLite 对空文件名开的是**私有临时库**：
+   服务能起、能写、不报错，重启后数据全丢。命令行入口早就是报错口径，两边不一致。现在
+   `loadConfig` 与 HOST 同口径拦下 trim 后为空的值，补两条用例（空串、纯空白），并做了变异检验：
+   删掉这段校验，只有这条用例红。
+
+低优先级的也已处理或记录：交叉用例挡不住「两侧一起改成同一个新路径」（可接受，那是刻意变更，
+`config.test.ts` 的字面断言会提醒）；`defaultDbPath` 去掉 `export`（没有外部 importer）；
+README 与 development.md 的「不再被读取」改成「**作为默认值**不再被读取」。
+
+**一个刻意保留的取舍**：交叉用例那行 `@ts-expect-error` 会连「import 路径写错」「导出改名」的
+编译期错误一起压掉（审阅实测这两种情况下 `tsc` 都 exit 0）。没有为此加 `bin/mailuo.d.mts`——
+它是个不进 `files` 清单、只为让一处测试通过 tsc 而存在的额外产物；两种写错在运行期都会立刻炸
+（`Cannot find module` / `cli.defaultDbPath is not a function`），而这条用例本来就每次运行。取舍
+记在这里，免得下次有人以为是漏了声明文件。
+
+最终门禁（本步代码的最终形态）：api 275 / bin 37 / web 474 全绿，`typecheck` 与 `pnpm build`
+通过，`pnpm lint` 0 error / 5 warning（与 D70 基线同源）；真实起服务的三段验证重跑过一遍，
+命令行与 `pnpm dev:api` 打印同一个库路径，两边互相看得到对方建的任务。
