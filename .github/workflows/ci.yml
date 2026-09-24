@@ -21,7 +21,7 @@ concurrency:
 
 jobs:
   verify:
-    name: lint / typecheck / test / build
+    name: lint / typecheck / build / test
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
