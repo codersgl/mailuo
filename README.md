@@ -42,7 +42,7 @@
 
 需要 Node 22 或更高版本。
 
-包发布到 npm 后，可以不安装直接运行，也可以装到全局（scoped 包名，装完命令仍是 `mailuo`）：
+可以不安装直接运行，也可以装到全局（scoped 包名，装完命令仍是 `mailuo`）：
 
 ```sh
 npx @codersgl/mailuo                  # 起服务并自动打开浏览器
@@ -103,7 +103,9 @@ node bin/mailuo.mjs
 
 参数写法四种都认：`--port 3010`、`--port=3010`、`-p 3010`、`-p3010`。未知参数会报错，不会静默忽略。
 
-优先级：命令行 > 环境变量 > 默认值。命令行启动不读仓库根的 `.env`（那份文件是给 `pnpm dev:*` 用的）。
+优先级：命令行 > 环境变量 > 默认值。命令行启动不读仓库根的 `.env`（那份文件是给 `pnpm dev:*` 用的），
+唯一例外是 `HOST_ALLOW`——它没有命令行开关，服务端启动时读 `.env` 会把它填上（见
+[`docs/development.md`](docs/development.md) 的环境变量一节）。
 
 启动最后会查一次 registry 上有没有新版本，有就打印一行升级命令；包还没发布（404）、
 网络不通或超时（1.5 秒）都静默跳过。这一步排在启动横幅与打开浏览器之后，不会拖慢启动。
@@ -158,6 +160,7 @@ node bin/mailuo.mjs
 - 规范：[`docs/spec.md`](docs/spec.md)
 - 需求与待办：[`docs/intend.md`](docs/intend.md)
 - 决策记录：[`docs/decisions.md`](docs/decisions.md)
+- 代码质量与安全审查（2026-09-23 的快照，含未处理条目清单）：[`docs/audit-2026-09-23.md`](docs/audit-2026-09-23.md)
 
 ## 许可
 
