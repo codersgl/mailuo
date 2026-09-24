@@ -2701,7 +2701,9 @@ Trusted Publisher 的 Allowed actions 是否勾到 `npm publish`（用户在网�
 
 没有做自动搬迁，也没有「旧文件存在就用旧的」这种回落：那会让「库在哪」取决于文件系统状态，
 两个库的问题会以更难查的形态回来（一半机器走新路径、一半走旧路径）。按项目一贯口径，需要旧数据
-就用 `--db` 指过去，README 写明了怎么手动搬。
+就用 `--db` 指过去；WAL 感知的搬迁步骤写在 `docs/development.md` 的 `KANBAN_DB_PATH` 条目下，
+README 只留一句「旧位置不再读取，要搬见开发文档」——README 是发布给命令行用户的，仓库根的
+`data/` 只是本仓库的历史遗留。
 
 ### 挡回归的是「交叉用例」，不是再写一条断言
 
@@ -2754,3 +2756,42 @@ worktree `.worktrees/unify-db-path`（`pnpm install --store-dir ../../.pnpm-stor
   列是「待办 / 进行中 / 完成」。
 - `docs/spec.md` 的对应两条（第 81 行的 `data/kanban.db`、第 99 行的「两个库」）属于用户独占文件，
   本步不代改，验收时提出改法。
+
+### 审阅（子代理，只读）与修复
+
+只读审阅在隔离副本里跑了真实实验（better-sqlite3、SIGKILL 造 WAL、`npm pack --dry-run`、
+变异检验），结论「修完再合并」，无阻断。它验到的关键一条是**核心改动本身没有正确性缺陷**：
+`loadConfig(env).dbPath === cli.defaultDbPath(env)` 在 `HOME=''`、`HOME=''`+`USERPROFILE`、
+`HOME=' '` 三种输入下都成立；`import bin/mailuo.mjs` 在 vitest 下确实不执行 `main`
+（在守卫块里插日志跑用例，标记没打印过）。它另外指出了三处**我写错或没堵上的**，全部已改：
+
+1. **（中）搬迁步骤原样抄下来会丢数据。** 我原来写「把 `.db`/`-wal`/`-shm` 三个文件一起覆盖」，
+   但源库**正常退出**时 SQLite 会 checkpoint 并删掉 `-wal`/`-shm`，只剩 `.db`——那句话没法执行、
+   也没说清怎么办。审阅实测了更坏的一种组合：源库只剩 `.db`、目标残留旧 `-wal`/`-shm` 时只覆盖
+   `.db`，打开后看到的是**目标旧库**（它造的目标旧库 3 行把源库 50 行整个盖掉）。两个方向相反的
+   坑现在都写进 `docs/development.md`：先删目标的 `-wal`/`-shm` 再覆盖 `.db`，源库有 `-wal` 就一起拷；
+   并给出不必手工处理的替代（`sqlite3 ... ".backup"` 或 better-sqlite3 的 `backup()`，D72 自己用的就是后者）。
+   这条最值得记：**「三个文件一起拷」听起来比「只拷 .db」稳妥，实际在源库干净关闭时是一句无法执行的建议。**
+2. **（中）我引入的临时库路径没被 `.gitignore` 覆盖。** `docs/development.md` 里建议
+   `KANBAN_DB_PATH=$(pwd)/.tmp/kanban.db`，而 `.gitignore` 忽略的是 `.tmp-*/`（D47 就是因为
+   `git add -A` 把库副本提交进去才加的）。已改成 `.tmp-verify/`，并把「路径要以 `.tmp-` 开头」
+   连同 D47 的缘由写进同一句。
+3. **（中）空串 `KANBAN_DB_PATH` 在服务端不报错（非本步引入，本步收口）。** `??` 只挡
+   null/undefined，空串会走到 `new Database('')`——SQLite 对空文件名开的是**私有临时库**：
+   服务能起、能写、不报错，重启后数据全丢。命令行入口早就是报错口径，两边不一致。现在
+   `loadConfig` 与 HOST 同口径拦下 trim 后为空的值，补两条用例（空串、纯空白），并做了变异检验：
+   删掉这段校验，只有这条用例红。
+
+低优先级的也已处理或记录：交叉用例挡不住「两侧一起改成同一个新路径」（可接受，那是刻意变更，
+`config.test.ts` 的字面断言会提醒）；`defaultDbPath` 去掉 `export`（没有外部 importer）；
+README 与 development.md 的「不再被读取」改成「**作为默认值**不再被读取」。
+
+**一个刻意保留的取舍**：交叉用例那行 `@ts-expect-error` 会连「import 路径写错」「导出改名」的
+编译期错误一起压掉（审阅实测这两种情况下 `tsc` 都 exit 0）。没有为此加 `bin/mailuo.d.mts`——
+它是个不进 `files` 清单、只为让一处测试通过 tsc 而存在的额外产物；两种写错在运行期都会立刻炸
+（`Cannot find module` / `cli.defaultDbPath is not a function`），而这条用例本来就每次运行。取舍
+记在这里，免得下次有人以为是漏了声明文件。
+
+最终门禁（本步代码的最终形态）：api 275 / bin 37 / web 474 全绿，`typecheck` 与 `pnpm build`
+通过，`pnpm lint` 0 error / 5 warning（与 D70 基线同源）；真实起服务的三段验证重跑过一遍，
+命令行与 `pnpm dev:api` 打印同一个库路径，两边互相看得到对方建的任务。

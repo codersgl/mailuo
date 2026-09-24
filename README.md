@@ -119,9 +119,7 @@ node bin/mailuo.mjs
 - 用 `--db` 指定别的文件，例如 `mailuo --db ./我的看板.db`。
 - 每次启动自动建表，并执行 `apps/api/migrations/` 下未应用过的迁移。
 
-仓库根的 `data/kanban.db` 是 0.1.0 及更早版本开发模式的默认位置，现在不再被读取（文件还在，不会被删）。里面有数据就手动搬一次：退出所有进程后把 `data/kanban.db`、`data/kanban.db-wal`、`data/kanban.db-shm` 三个文件一起覆盖到 `~/.mailuo/` 下，或者直接把库挪到别处再用 `--db` 指过去。
-
-开发时想用一个临时库（不影响日常数据），用命令行前缀指过去即可：`KANBAN_DB_PATH=$(pwd)/.tmp/kanban.db pnpm dev:api`。
+仓库根的 `data/kanban.db` 是 0.1.0 及更早版本开发模式的默认位置，**作为默认值**不再被读取（文件还在，不会被删；用 `KANBAN_DB_PATH` 显式指过去仍然能读）。要用那份数据就手动搬一次，步骤见 `docs/development.md`。
 
 ## 常见问题
 

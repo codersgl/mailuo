@@ -25,7 +25,7 @@ export const envFilePath = path.join(repoRoot, '.env');
  * 为什么不用仓库根的 `data/`：装成 npm 包后 `<包根>` 是只读的 `node_modules` 目录，升级或重装
  * 还会整包替换（见 docs/decisions.md D64、D72）。
  */
-export function defaultDbPath(env: NodeJS.ProcessEnv = process.env): string {
+function defaultDbPath(env: NodeJS.ProcessEnv = process.env): string {
   // HOME 缺失时退 USERPROFILE，最后退 os.homedir()——与 bin/mailuo.mjs 的分支顺序一致。
   const home = env.HOME || env.USERPROFILE || os.homedir();
   return path.join(home, '.mailuo', 'kanban.db');
@@ -92,11 +92,19 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
   if (host === '') {
     throw new Error('HOST 不能为空；只服务本机请删掉这一项（默认 127.0.0.1）');
   }
+  // 空串是「设了但没填」，与 HOST 同口径，而且这里不拦的后果比 HOST 更隐蔽：`??` 只挡 null /
+  // undefined，空串会一路走到 `new Database('')`——SQLite 对空文件名开的是一个**私有临时库**，
+  // 服务照常起来、照常能写，重启后数据全没了，且全程不报错。命令行入口早就是报错的口径
+  // （bin/mailuo.mjs 的「数据库路径不能为空」），服务端跟上，同一个变量在两边行为一致。
+  const dbPath = env.KANBAN_DB_PATH ?? defaultDbPath(env);
+  if (dbPath.trim() === '') {
+    throw new Error('KANBAN_DB_PATH 不能为空；想用默认库就删掉这一项');
+  }
   return {
     port,
     host,
     hostAllow: parseHostAllow(env.HOST_ALLOW),
-    dbPath: env.KANBAN_DB_PATH ?? defaultDbPath(env),
+    dbPath,
     migrationsDir: path.join(apiRoot, 'migrations'),
     webDistDir: path.join(repoRoot, 'apps', 'web', 'dist'),
   };

@@ -47,6 +47,16 @@ describe('loadConfig', () => {
     expect(config.dbPath).toBe('/tmp/kanban-test.db');
   });
 
+  it('KANBAN_DB_PATH 是空串时报错，不静默打开临时库', () => {
+    // 不拦的后果比 HOST 隐蔽得多：`??` 只挡 null/undefined，空串会走到 `new Database('')`，
+    // 而 SQLite 对空文件名开的是一个私有临时库——服务能起、能写、不报错，重启后数据全丢。
+    // 命令行入口早就是这个口径（bin/mailuo.mjs：「数据库路径不能为空」）。
+    expect(() => loadConfig({ KANBAN_DB_PATH: '' })).toThrow(/KANBAN_DB_PATH/);
+    expect(() => loadConfig({ KANBAN_DB_PATH: '   ' })).toThrow(/KANBAN_DB_PATH/);
+    // 真实路径不能被这条校验误伤。
+    expect(loadConfig({ KANBAN_DB_PATH: '/tmp/x.db' }).dbPath).toBe('/tmp/x.db');
+  });
+
   it('默认只监听本机，HOST 可显式放开', () => {
     // 默认值就是信任边界：不设 HOST 时 API 只服务本机（见 docs/decisions.md D55）。
     expect(loadConfig({}).host).toBe('127.0.0.1');
