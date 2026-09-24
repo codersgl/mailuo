@@ -83,7 +83,7 @@
 - D66 第 29 步：README 改为面向使用者（2026-09-23）
 - D67 第 29 步：发布 npm 包前的打包就绪（2026-09-23，分支 chore/npm-package）
 
-**2026-09-24（D68–D74）**
+**2026-09-24（D68–D75）**
 
 - D68 第 30 步：发布元数据 repository / homepage / bugs / publishConfig（2026-09-24，分支 chore/repo-metadata）
 - D69 第 31 步：包名改为 scoped `@codersgl/mailuo`（2026-09-24，分支 chore/scoped-name）
@@ -92,6 +92,7 @@
 - D72 第 34 步：开发模式与命令行共用同一个默认库（2026-09-24，分支 fix/unify-db-path）
 - D73 第 35 步：整理文档——校准、职责约定、索引与审查报告状态（2026-09-24，分支 docs/quality）
 - D74 第 36 步：修搜索用例的时序假设并统一测试等待上限（2026-09-24，分支 fix/app-search-flake）
+- D75 第 37 步：发 0.2.0（2026-09-24，分支 chore/release-0.2.0）
 
 ## D1 用 pnpm workspace 管理多应用（2026-09-22）
 
@@ -3132,3 +3133,39 @@ effect 停掉后 160 轮 0 失败（审阅做的因果实验）。
 - **不拆分 `App.test.tsx`**（2026-09-24 实测 1546 行、112 处 `findBy*`、35 处 `waitFor`）：审计 E4 的另一个建议，
   属于独立一步（动的是文件结构）。
 - **不处理 E8 与其余未处理条目**：见审查报告的「仍未处理」表。
+
+## D75 第 37 步：发 0.2.0（2026-09-24，分支 chore/release-0.2.0）
+
+用户要求把 0.1.0 之后进包的改动发出去，并确认版本号走 **0.2.0**。
+
+### 这一版进包的改动（相对 0.1.0 的发布源 `51e37d3`）
+
+- **默认库路径统一**（D72）：`pnpm dev:api` / `pnpm start` 的默认库从仓库根的 `data/kanban.db`
+  改成与命令行同一个 `~/.mailuo/kanban.db`。旧文件不会被删，搬迁步骤写在 `docs/development.md`。
+  这是一条行为变化，也是本步选 0.2.0 而不是 0.1.1 的理由。
+- **搜索选中项竞态修复**（D74）：`↓` 换选中项之后按 Enter 偶发打开第一条而不是选中那条；成因是
+  「结果换了回第一条」走了一个 passive effect，晚于结果渲染落地。
+- 一处无用初值清理（D70 顺带），行为无变化。
+- 不进包但已合入的：ESLint 与 CI 门禁（D70）、Release 触发 npm 发布的工作流（D71、D73 补记）、
+  文档整理（D73）。
+
+### 做法
+
+- 三个 `package.json`（根、`apps/api`、`apps/web`）一起改成 0.2.0。只有根那个会被发布（workspace
+  包不进 tarball），但留着两个版本号说法只会让人下次犹豫以谁为准。lockfile 的 `importers` 不记
+  包版本，所以 `--frozen-lockfile` 不受影响。
+- 用 D71 建好的那条链路发：合并 → 推送 → 建 Release（tag `v0.2.0`，target 必须是含
+  `.github/workflows/release.yml` 的提交，也就是 main 顶端）→ `guard` → 门禁 → `npm publish`。
+  预发布不在这条路径上（整段跳过）。
+- 这是这条链路第一次真正做 OIDC 交换：D71 那次只跑到「版本已存在就跳过」的分支。
+
+### 发布结果
+
+待发布。发布后在这里补：tag 与 target、工作流运行号与耗时、npm 上的版本与 provenance、
+以及有没有踩到 Allowed actions 那个坑。
+
+### 没做的（可选复杂性）
+
+- 不写 CHANGELOG 文件：这一版的改动清单就在上面，仓库还没有「每版一份 changelog」的约定，
+  真要引入是独立一步（README、spec 之类的使用者文档也没有版本历史的位置）。
+- 不引 semantic-release / changesets：见 D72 的「没做的」。
