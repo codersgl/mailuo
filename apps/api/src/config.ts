@@ -1,3 +1,4 @@
+import os from 'node:os';
 import path from 'node:path';
 import { DEFAULT_HOST, parseHostAllow } from './domain/net.js';
 
@@ -7,11 +8,28 @@ import { DEFAULT_HOST, parseHostAllow } from './domain/net.js';
  */
 const apiRoot = path.resolve(import.meta.dirname, '..');
 
-/** 仓库根目录，用于定位 data/ 下的 SQLite 文件。 */
+/** 仓库根目录，用于定位本机配置 `.env` 与前端产物。 */
 export const repoRoot = path.resolve(apiRoot, '..', '..');
 
 /** 本机配置文件：仓库根目录的 .env，不入版本库（见 .gitignore）。 */
 export const envFilePath = path.join(repoRoot, '.env');
+
+/**
+ * 本机默认数据库：`~/.mailuo/kanban.db`。
+ *
+ * 与命令行入口 `bin/mailuo.mjs` 的 `defaultDbPath` 指向**同一个文件**，所以 `pnpm dev:api` /
+ * `pnpm start` 与 `mailuo` / `npx @codersgl/mailuo` 读写同一份任务数据。这两处是同一个默认值
+ * 仅有的两份实现，`test/config.test.ts` 里有一条交叉用例直接比对两者的结果——两份单测各自全绿
+ * 而数据分成两个库，正是这条用例要挡住的形态。
+ *
+ * 为什么不用仓库根的 `data/`：装成 npm 包后 `<包根>` 是只读的 `node_modules` 目录，升级或重装
+ * 还会整包替换（见 docs/decisions.md D64、D72）。
+ */
+export function defaultDbPath(env: NodeJS.ProcessEnv = process.env): string {
+  // HOME 缺失时退 USERPROFILE，最后退 os.homedir()——与 bin/mailuo.mjs 的分支顺序一致。
+  const home = env.HOME || env.USERPROFILE || os.homedir();
+  return path.join(home, '.mailuo', 'kanban.db');
+}
 
 export interface Config {
   port: number;
@@ -78,7 +96,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     port,
     host,
     hostAllow: parseHostAllow(env.HOST_ALLOW),
-    dbPath: env.KANBAN_DB_PATH ?? path.join(repoRoot, 'data', 'kanban.db'),
+    dbPath: env.KANBAN_DB_PATH ?? defaultDbPath(env),
     migrationsDir: path.join(apiRoot, 'migrations'),
     webDistDir: path.join(repoRoot, 'apps', 'web', 'dist'),
   };

@@ -13,13 +13,31 @@ import { DEFAULT_HOST } from '../src/domain/net.js';
 
 describe('loadConfig', () => {
   // 这些用例的入参是显式传的对象，不读进程环境，所以 shell 里已有 PORT 也不影响。
-  it('默认端口是 3001，数据库指向仓库 data/kanban.db', () => {
-    const config = loadConfig({});
+  it('默认端口是 3001，数据库指向 ~/.mailuo/kanban.db', () => {
+    const config = loadConfig({ HOME: '/home/someone' });
 
     expect(config.port).toBe(DEFAULT_PORT);
     expect(DEFAULT_PORT).toBe(3001);
-    expect(config.dbPath.endsWith(path.join('data', 'kanban.db'))).toBe(true);
+    expect(config.dbPath).toBe(path.join('/home/someone', '.mailuo', 'kanban.db'));
     expect(config.migrationsDir.endsWith(path.join('apps', 'api', 'migrations'))).toBe(true);
+  });
+
+  it('默认库与命令行入口 bin/mailuo.mjs 的默认库是同一个文件', async () => {
+    // 这条是「同一个默认值写了两份」的唯一防线。曾经两份单测各自全绿，而命令行用
+    // ~/.mailuo/kanban.db、服务端用 <仓库>/data/kanban.db——用户看到的是「两个库」，
+    // dev 里建的任务在 mailuo 里看不见。任何一侧改了路径，这里必须断。
+    // bin/mailuo.mjs 是发布给命令行用户的纯 JS 文件，没有类型声明，tsc 报 TS7016。本用例只读它
+    // 一个导出的返回值，形状由下面的断言在运行期验证，所以这个压制不会掩盖任何真问题；哪天 bin
+    // 有了声明文件，这行压制会因「未使用」自己报错，正好提示删掉它。
+    // @ts-expect-error -- 纯 JS 模块没有类型声明（TS7016）
+    const cli = await import('../../../bin/mailuo.mjs');
+
+    const withHome = { HOME: '/home/someone' };
+    expect(loadConfig(withHome).dbPath).toBe(cli.defaultDbPath(withHome));
+
+    // HOME 缺失时的回落顺序也要一致，否则「有 HOME」与「只有 USERPROFILE」的机器又各走一边。
+    const withoutHome = { USERPROFILE: 'C:\\Users\\someone' };
+    expect(loadConfig(withoutHome).dbPath).toBe(cli.defaultDbPath(withoutHome));
   });
 
   it('环境变量可覆盖端口与数据库路径', () => {
