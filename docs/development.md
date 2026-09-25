@@ -73,14 +73,14 @@ TypeScript 7，所以根 `devDependencies` 里的 `typescript@6` 只服务 lint�
 
 ## 发布（npm）
 
-发布由 `.github/workflows/release.yml` 完成：在 GitHub 上建 Release（tag 形如 `v0.2.0`）后自动跑
+发布由 `.github/workflows/release.yml` 完成：在 GitHub 上建 Release（tag 形如 `v0.3.0`）后自动跑
 `pnpm lint` / `pnpm typecheck` / `pnpm build` / `pnpm test`，然后 `npm publish`。认证走 npm
 Trusted Publishing（OIDC），仓库里没有任何 npm token，也不需要人工确认。
 
 发一个版本：
 
 1. 在 worktree 里把根 `package.json` 的 `version` 改成新版本，合入 main。
-2. GitHub -> Releases -> Draft a new release，tag 填与版本号一致的（`v0.2.0` 对应 `0.2.0`），
+2. GitHub -> Releases -> Draft a new release，tag 填与版本号一致的（`v0.3.0` 对应 `0.3.0`），
    目标选 main，写好说明后 Publish。
 3. `Release` 工作流跑完后 npm 上就有这个版本，包页面能看到 provenance（自动生成，不用写
    `--provenance`；前提是仓库与包都是 public）。
