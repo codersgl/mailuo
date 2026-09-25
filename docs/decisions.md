@@ -3619,9 +3619,20 @@ D75 为 0.2.0 说过同类理由（行为变化所以不走补丁号），但这
 lint 0 error / 5 warning（与 0.2.0 发布时同一条基线）、typecheck 通过、build 通过；
 bin 37 / api 320 / web 501 全绿。
 
-### 发布结果
+### 发布结果（2026-09-25）
 
-待发布。发布后在这里补：tag 与 target 提交、CI 与发布工作流的运行号、npm 上的版本与 provenance。
+- Release：`v0.3.0` → `11af888`（merge 版本号 0.3.0 的那个提交），非 draft、非 prerelease，
+  https://github.com/codersgl/mailuo/releases/tag/v0.3.0
+- 推送 main 的 CI（`push` 事件）：运行 36110454046 成功，66 秒。这是 D76–D78 第一次上远端，
+  所以远端 CI 也是第一次跑这三步的终态（tag 上那次发布门禁另算，它跑同一串命令）。
+- 发布工作流（`release` 事件）：运行 36110486903（本仓库 Release workflow 的第 3 次）成功，
+  69 秒，两个作业都绿——`guard`（8 秒）校验 tag 与 `package.json` 一致、并查到 npm 上没有 0.3.0；
+  `npm-publish`（53 秒）跑完门禁后发布。
+- npm：`0.3.0` 已上线且是 `dist-tags.latest`；两条 attestation 都在，npm publish v0.1 的 tlog
+  logIndex 是 2952436415、SLSA provenance v1 的是 2952424896。与 D75 记的现象一致：刚发完的几十秒里
+  `npm view @codersgl/mailuo@0.3.0` 会 404（CDN 未同步，`latest` 端点先可用），本次实测约 80 秒恢复。
+- 一条与 D75 不同的操作细节：本机 `gh` 是 Ubuntu 源里的 2.4.0，没有 `gh release create --latest`
+  这个开关；不写它也能得到「最新 release」（GitHub 按版本号自己排）。
 
 ### 没做的（可选复杂性）
 
