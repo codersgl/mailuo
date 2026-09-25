@@ -1,5 +1,6 @@
 import type { PointerEvent as ReactPointerEvent } from 'react';
 import { DOING_COLUMN_ID } from '../domain/columns';
+import type { SubtreeTime } from '../domain/subtreeTime';
 import { cx } from '../lib/cx';
 import type { WriteResult } from '../hooks/useTaskActions';
 import type { BoardColumn, BoardTask } from '../api/types';
@@ -22,6 +23,7 @@ export function Column({
   column,
   draggingTaskId,
   nowMs,
+  subtreeTimes,
   onOpenTask,
   onEditTask,
   onSetArchived,
@@ -34,6 +36,8 @@ export function Column({
   draggingTaskId: string | null;
   /** 当前时刻，卡片上的工期提醒标记要它（见 hooks/useNow）。 */
   nowMs: number;
+  /** 每个任务的子树时间汇总，父任务的分支胶囊用它（见 domain/subtreeTime.ts）。 */
+  subtreeTimes: Map<string, SubtreeTime>;
   onOpenTask: (taskId: string) => void;
   onEditTask: (task: BoardTask) => void;
   onSetArchived: (task: BoardTask, archived: boolean) => void;
@@ -96,6 +100,7 @@ export function Column({
             task={task}
             dragging={task.id === draggingTaskId}
             nowMs={nowMs}
+            subtree={subtreeTimes.get(task.id) ?? null}
             onOpen={onOpenTask}
             onEdit={onEditTask}
             onSetArchived={onSetArchived}

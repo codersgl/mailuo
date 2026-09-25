@@ -2,6 +2,7 @@ import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react
 import type { PointerEvent as ReactPointerEvent } from 'react';
 import type { Board, BoardTask } from '../api/types';
 import type { DropSlot } from '../domain/board';
+import type { SubtreeTime } from '../domain/subtreeTime';
 import { CARD_ATTR, COLUMN_ATTR } from '../hooks/useCardDrag';
 import { useCardFlip } from '../hooks/useCardFlip';
 import type { CardDragPreview } from '../hooks/useCardDrag';
@@ -27,6 +28,7 @@ export function BoardView({
   dragPreview,
   dragSlot,
   draggingTaskId,
+  subtreeTimes,
   onOpenTask,
   onEditTask,
   onSetArchived,
@@ -40,6 +42,8 @@ export function BoardView({
   /** 当前落点；指针在列外时为 null，此时不画插入线。 */
   dragSlot: DropSlot | null;
   draggingTaskId: string | null;
+  /** 每个任务的子树时间汇总，父任务的分支胶囊用它（见 domain/subtreeTime.ts）。 */
+  subtreeTimes: Map<string, SubtreeTime>;
   onOpenTask: (taskId: string) => void;
   onEditTask: (task: BoardTask) => void;
   onSetArchived: (task: BoardTask, archived: boolean) => void;
@@ -72,6 +76,7 @@ export function BoardView({
             column={column}
             draggingTaskId={draggingTaskId}
             nowMs={nowMs}
+            subtreeTimes={subtreeTimes}
             onOpenTask={onOpenTask}
             onEditTask={onEditTask}
             onSetArchived={onSetArchived}

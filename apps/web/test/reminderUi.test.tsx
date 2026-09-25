@@ -2,6 +2,8 @@ import { cleanup, render, screen } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { TaskCardFace } from '../src/components/TaskCardFace';
 import { TreeNodeRow } from '../src/components/TreeNodeRow';
+import { buildSubtreeTimes } from '../src/domain/subtreeTime';
+import type { SubtreeTime } from '../src/domain/subtreeTime';
 import type { TreeNode } from '../src/lib/tree';
 import type { BoardTask, TreeTask } from '../src/api/types';
 
@@ -49,12 +51,26 @@ function treeTask(overrides: Partial<TreeTask> = {}): TreeTask {
 }
 
 /** 渲染卡片正面。只看标记，不需要卡片外壳的菜单与拖拽。 */
-function renderFace(overrides: Partial<BoardTask> = {}, nowMs = T0_MS): HTMLElement {
+function renderFace(
+  overrides: Partial<BoardTask> = {},
+  nowMs = T0_MS,
+  subtreeTimes: Map<string, SubtreeTime> = new Map(),
+): HTMLElement {
   const task = boardTask(overrides);
   const { container } = render(
-    <TaskCardFace task={task} archived={task.archivedAt !== null} nowMs={nowMs} />,
+    <TaskCardFace
+      task={task}
+      archived={task.archivedAt !== null}
+      nowMs={nowMs}
+      subtree={subtreeTimes.get(task.id) ?? null}
+    />,
   );
   return container;
+}
+
+/** 从一棵平铺的树算出汇总表（与 App 里 BoardPage 的做法一致）。 */
+function timesOf(tasks: TreeTask[]): Map<string, SubtreeTime> {
+  return buildSubtreeTimes(tasks);
 }
 
 /** 渲染任务树的一行。`drag` 传 null：这些用例与拖拽无关。children 用来构造「有子任务的父任务」。 */
@@ -62,6 +78,7 @@ function renderTreeRow(
   overrides: Partial<TreeTask> = {},
   nowMs = T0_MS,
   children: TreeNode[] = [],
+  subtreeTimes: Map<string, SubtreeTime> = new Map(),
 ): HTMLElement {
   const node: TreeNode = { task: treeTask(overrides), children };
   const { container } = render(
@@ -74,6 +91,7 @@ function renderTreeRow(
       onDragStart={vi.fn()}
       drag={null}
       nowMs={nowMs}
+      subtreeTimes={subtreeTimes}
       depth={0}
     />,
   );
@@ -172,15 +190,51 @@ describe('卡片上的工期提醒', () => {
     expect(anyTrack(archived)).toBeNull();
   });
 
-  it('有子任务的卡片只有子任务进度条，不画工期提醒条', () => {
-    // 改这条用例的口径：父任务的列由子任务推导、表是停的（见 D76），它自己的工期提醒只会误导人。
-    // 「两条不同的条互不顶替」在旧口径下靠这张卡片成立，现在两条根本不会同时出现。
-    const container = renderFace({ spentMinutes: 240, runningSince: T0, childTotal: 2, childDone: 1 });
+  it('有子任务的卡片画的是子树聚合：Σ 叶子已用 / Σ 叶子工期', () => {
+    // 父任务自己的列由子任务推导、表也是停的（D76），所以它的口径是子树求和（D77）。
+    // 两片叶子 8 小时 + 4 小时，已用 2 小时 + 1 小时 → 3 小时 / 12 小时。
+    const subtreeTimes = timesOf([
+      treeTask({ id: 'p', durationMinutes: null }),
+      treeTask({ id: 'c1', parentId: 'p', durationMinutes: 480, spentMinutes: 120, runningSince: T0 }),
+      treeTask({ id: 'c2', parentId: 'p', durationMinutes: 240, spentMinutes: 60 }),
+    ]);
+    const container = renderFace(
+      { id: 'p', childTotal: 2, childDone: 1, durationMinutes: null },
+      T0_MS,
+      subtreeTimes,
+    );
+
+    expect(screen.getByText('已用 3 小时 / 1 天 4 小时')).toBeTruthy();
+    expect(bar(container, 'weak')).not.toBeNull();
+    // 子任务那条照旧在 meta 行里。
+    expect(screen.getByText('1/2 子任务')).toBeTruthy();
+  });
+
+  it('子树里有叶子未估工期：只报已用，不画条也不给临近/超期', () => {
+    const subtreeTimes = timesOf([
+      treeTask({ id: 'p', durationMinutes: null }),
+      treeTask({ id: 'c1', parentId: 'p', durationMinutes: 480, spentMinutes: 120 }),
+      // 这一片没估：分母不可信，按 0 计入会让比率自己往上飘，所以整条让位给「未估」。
+      treeTask({ id: 'c2', parentId: 'p', durationMinutes: null, spentMinutes: 60 }),
+    ]);
+    const container = renderFace(
+      { id: 'p', childTotal: 2, childDone: 0, durationMinutes: 480 },
+      T0_MS,
+      subtreeTimes,
+    );
+
+    expect(screen.getByText('已用 3 小时 / 未估')).toBeTruthy();
+    expect(anyTrack(container)).toBeNull();
+  });
+
+  it('子树汇总还没到（树没取回来）时，父卡片宁可不画，也不拿自己的工期顶上', () => {
+    // 这一步守的是「拿不到真数据就不要退回假数据」：父任务自己的工期与已用正是 D76 摘掉的那条假条。
+    const container = renderFace({ id: 'p', childTotal: 2, childDone: 1, durationMinutes: 480 });
 
     expect(anyTrack(container)).toBeNull();
-    // 子任务那条在 meta 行里，仍然画着 1/2 的宽度。
-    expect(screen.getByText('1/2 子任务')).toBeTruthy();
-    expect(container.querySelectorAll('i[style]')).toHaveLength(1);
+    // 自己的工期（480 分 = 工期 1 天）与自己的已用都不能顶上来：那正是 D76 摘掉的那条假数据。
+    expect(container.textContent).not.toContain('工期 1 天');
+    expect(container.textContent).not.toContain('已用');
   });
 
   it('时间往前走会让卡片自己从弱填充走到临近', () => {
@@ -223,20 +277,49 @@ describe('任务树节点上的工期提醒', () => {
     expect(anyTrack(done)).toBeNull();
   });
 
-  it('有子任务的父节点不画条，叶子节点照画', () => {
-    // 子行的节点设成未估工期（不画条），并把查询范围收到父节点自己那一行上：
+  it('有子任务的父节点画聚合条与比例，叶子节点照自己的条', () => {
+    // 子行设成已完成（它自己不画条），并把查询范围收到父节点自己那一行上：
     // TreeNodeRow 会把子节点递归渲染在同一个容器里，不这样收窄会把子行的条算成父节点的。
     const child: TreeNode = {
-      task: treeTask({ id: 'c', parentId: 'p', durationMinutes: null }),
+      task: treeTask({
+        id: 'c',
+        parentId: 'p',
+        columnId: 'done',
+        durationMinutes: 480,
+        spentMinutes: 432,
+      }),
       children: [],
     };
-    const parent = renderTreeRow({ id: 'p', spentMinutes: 432, runningSince: T0 }, T0_MS, [child]);
+    const subtreeTimes = timesOf([treeTask({ id: 'p', durationMinutes: null }), child.task]);
+    const parent = renderTreeRow(
+      { id: 'p', durationMinutes: null },
+      T0_MS,
+      [child],
+      subtreeTimes,
+    );
     const parentRow = parent.querySelector<HTMLElement>('[data-tree-row="p"]')!;
-    expect(parentRow.querySelector('[data-duration-track]')).toBeNull();
+
+    // 252px 的面板放不下「已用 7 小时 12 分 / 8 小时」，只给比例；完整文案在条的 title 上。
+    expect(bar(parentRow, 'weak')).not.toBeNull();
+    expect(parentRow.textContent).toContain('90%');
 
     cleanup();
     const leaf = renderTreeRow({ id: 'leaf', spentMinutes: 432, runningSince: T0 });
     expect(anyTrack(leaf)).not.toBeNull();
+  });
+
+  it('子树里有叶子未估工期：树上标「未估」，不画条也不给比例', () => {
+    const child: TreeNode = {
+      task: treeTask({ id: 'c', parentId: 'p', durationMinutes: null, spentMinutes: 60 }),
+      children: [],
+    };
+    const subtreeTimes = timesOf([treeTask({ id: 'p', durationMinutes: null }), child.task]);
+    const container = renderTreeRow({ id: 'p', durationMinutes: null }, T0_MS, [child], subtreeTimes);
+    const parentRow = container.querySelector<HTMLElement>('[data-tree-row="p"]')!;
+
+    expect(parentRow.textContent).toContain('未估');
+    expect(parentRow.querySelector('[data-duration-track]')).toBeNull();
+    expect(parentRow.textContent).not.toContain('%');
   });
 });
 

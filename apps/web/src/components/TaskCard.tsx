@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import type { PointerEvent as ReactPointerEvent } from 'react';
 import { cx } from '../lib/cx';
 import { canDragCard } from '../domain/board';
+import type { SubtreeTime } from '../domain/subtreeTime';
 import type { BoardTask } from '../api/types';
 import { TaskCardFace } from './TaskCardFace';
 
@@ -35,6 +36,7 @@ export function TaskCard({
   task,
   dragging,
   nowMs,
+  subtree,
   onOpen,
   onEdit,
   onSetArchived,
@@ -46,6 +48,8 @@ export function TaskCard({
   dragging?: boolean;
   /** 当前时刻，卡片上的工期提醒标记要它（见 hooks/useNow）。 */
   nowMs: number;
+  /** 这棵子树的时间汇总，父任务画分支胶囊用它（见 domain/subtreeTime.ts）。 */
+  subtree?: SubtreeTime | null;
   onOpen: (taskId: string) => void;
   onEdit: (task: BoardTask) => void;
   onSetArchived: (task: BoardTask, archived: boolean) => void;
@@ -125,7 +129,7 @@ export function TaskCard({
           draggable ? 'cursor-grab active:cursor-grabbing' : 'cursor-pointer',
         )}
       >
-        <TaskCardFace task={task} archived={archived} nowMs={nowMs} />
+        <TaskCardFace task={task} archived={archived} nowMs={nowMs} subtree={subtree} />
       </button>
 
       <button
