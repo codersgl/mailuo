@@ -73,7 +73,8 @@ export function createTaskRoutes(db: Db): Hono {
     const id = c.req.param('id');
     const patch = c.req.valid('json');
 
-    // 顺序固定为：任务存在（404）→ 任务未归档（400）→ 目标列存在（400）→ 有子任务不可手动换列（400）。
+    // 顺序固定为：任务存在（404）→ 任务未归档（400）→ 目标列存在（400）→ 有子任务不可手动换列（400）
+    // → 有子任务不可单独设工期（400）。
     const precheck = precheckTaskWritable(db, id);
     if (!precheck.ok) {
       return c.json({ error: precheck.error }, precheck.status);
@@ -81,8 +82,14 @@ export function createTaskRoutes(db: Db): Hono {
     if (patch.columnId !== undefined && !columnExists(db, patch.columnId)) {
       return c.json({ error: `列不存在: ${patch.columnId}` }, 400);
     }
-    if (patch.columnId !== undefined && countActiveChildren(db, id) > 0) {
+    const hasChildren = countActiveChildren(db, id) > 0;
+    if (patch.columnId !== undefined && hasChildren) {
       return c.json({ error: MANUAL_COLUMN_MOVE_REJECTED }, 400);
+    }
+    // 父任务的工期是子树叶子的汇总，写进去也没有任何地方会读它（见 domain/subtreeDuration.ts），
+    // 所以在入口就拒掉，而不是留一个能写但没用的字段。与上一条同一个理由、同一种做法。
+    if (patch.durationMinutes !== undefined && hasChildren) {
+      return c.json({ error: DERIVED_DURATION_REJECTED }, 400);
     }
 
     const updated = requireTask(applyTaskUpdate(db, id, patch));
@@ -223,6 +230,14 @@ export function createTaskRoutes(db: Db): Hono {
  * 所以这里要写成「用户看完知道为什么卡片不动」的一句话，而不是「非法请求」。
  */
 const MANUAL_COLUMN_MOVE_REJECTED = '任务有子任务，所在列由子任务决定，不能手动移动';
+
+/**
+ * 拒绝给一个有子任务的父任务单独设工期时用的文案。
+ *
+ * 父任务的工期是子树叶子的汇总（见 domain/subtreeDuration.ts），写进去没有任何地方会读它。
+ * 与上面那条同一个形状：前端对父任务把工期显示成只读并带上「按子任务汇总」，后端这条是权威兜底。
+ */
+const DERIVED_DURATION_REJECTED = '任务有子任务，工期由子任务的工期汇总，不能单独设置';
 
 /**
  * 写接口的前置校验：任务存在（404）→ 任务未归档（400）。

@@ -1,9 +1,15 @@
 import type { Db } from '../db/client.js';
 import { SEARCH_LIMIT, toLikePattern } from '../domain/search.js';
+import { subtreeLeafDurations } from '../domain/subtreeDuration.js';
 import type { ColumnRecord } from './columns.js';
 import { listColumns } from './columns.js';
 import type { BreadcrumbItem } from './tasks.js';
-import { TaskCycleError, TaskParentMissingError, readBreadcrumb } from './tasks.js';
+import {
+  TaskCycleError,
+  TaskParentMissingError,
+  listActiveDurationNodes,
+  readBreadcrumb,
+} from './tasks.js';
 
 /** 一条搜索结果。字段是按「结果列表怎么画」定的，不是任务记录的子集。 */
 export interface SearchResult {
@@ -82,20 +88,30 @@ export function searchTasks(db: Db, keyword: string, includeArchived = false): S
       limit: SEARCH_LIMIT + 1,
     }) as SearchRow[];
 
+  // 父任务的工期汇总只算一次，别放进 map 里——那会变成每条结果一次全表扫描。
+  const derived = subtreeLeafDurations(listActiveDurationNodes(db));
+
   return {
     columns: listColumns(db),
-    results: rows.slice(0, SEARCH_LIMIT).map((row) => toSearchResult(db, row, keyword)),
+    results: rows.slice(0, SEARCH_LIMIT).map((row) => toSearchResult(db, row, keyword, derived)),
     truncated: rows.length > SEARCH_LIMIT,
   };
 }
 
-function toSearchResult(db: Db, row: SearchRow, keyword: string): SearchResult {
+function toSearchResult(
+  db: Db,
+  row: SearchRow,
+  keyword: string,
+  derived: Map<string, number | null>,
+): SearchResult {
   return {
     id: row.id,
     title: row.title,
     snippet: buildSnippet(row.description, keyword),
     columnId: row.column_id,
-    durationMinutes: row.duration_minutes,
+    // 有未归档子任务的父任务：工期是子树叶子的汇总，与看板卡片、抽屉、依赖图同一份口径（见 D78）。
+    // 不带这一手，搜索结果行会继续画父任务那个已经退休的 duration_minutes，与卡片打架。
+    durationMinutes: derived.has(row.id) ? (derived.get(row.id) ?? null) : row.duration_minutes,
     archivedAt: row.archived_at,
     path: readPath(db, row.id),
   };

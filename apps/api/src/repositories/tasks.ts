@@ -4,6 +4,7 @@ import { ROOT_BOARD_TITLE } from '../domain/board.js';
 import { settleClock, shouldRun } from '../domain/clock.js';
 import { deriveColumns } from '../domain/derive.js';
 import { ORDERS_STEP } from '../domain/orders.js';
+import type { DurationNode } from '../domain/subtreeDuration.js';
 
 /** 任务的完整字段。数据库列名保持 snake_case，对外统一 camelCase（见 docs/decisions.md D4）。 */
 export interface TaskRecord {
@@ -508,6 +509,25 @@ export function countActiveChildren(db: Db, id: string): number {
     .prepare('SELECT COUNT(*) AS count FROM tasks WHERE parent_id = ? AND archived_at IS NULL')
     .get(id) as { count: number };
   return row.count;
+}
+
+/**
+ * 全库未归档任务的 id / 父子 / 工期，喂给 `domain/subtreeDuration.ts` 算父任务的工期汇总。
+ *
+ * 为什么是整表：父任务的叶子在更深的层里，任何「只看这一层」的查询都看不到它们。个人规模
+ * （几百个任务）下这条 SELECT 的成本可以忽略——与 reconcileDerivedStatus 每次写都全表重算
+ * 同一个取舍。归档任务不进来：它们整支不参与汇总（见 docs/decisions.md D77/D78）。
+ */
+export function listActiveDurationNodes(db: Db): DurationNode[] {
+  const rows = db
+    .prepare('SELECT id, parent_id, duration_minutes FROM tasks WHERE archived_at IS NULL')
+    .all() as Array<{ id: string; parent_id: string | null; duration_minutes: number | null }>;
+
+  return rows.map((row) => ({
+    id: row.id,
+    parentId: row.parent_id,
+    durationMinutes: row.duration_minutes,
+  }));
 }
 
 /**

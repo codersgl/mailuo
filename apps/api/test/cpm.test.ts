@@ -312,6 +312,93 @@ describe('GET /api/board/cpm', () => {
     expect(layer.edges).toEqual([{ predecessorId: xId, successorId: yId, critical: true }]);
   });
 
+  it('有子任务的父节点用叶子汇总的工期，它自己那个字段退休了', async () => {
+    // 父任务库里存着 9999（旧数据/旧前端写的），两个叶子是 10 + 20：图上必须是 30。
+    const db = createTestDb();
+    const parentId = insertTask(db, {
+      title: '父任务',
+      columnId: 'todo',
+      orders: 1000,
+      durationMinutes: 9999,
+    });
+    insertTask(db, { title: 'X', columnId: 'todo', orders: 1000, parentId, durationMinutes: 10 });
+    insertTask(db, { title: 'Y', columnId: 'doing', orders: 1000, parentId, durationMinutes: 20 });
+    const api = createApp(db);
+
+    const root = await readJson<CpmBody>(await api.request('/api/board/cpm'));
+
+    expect(node(root, parentId)).toMatchObject({ durationMinutes: 30, earliestFinish: 30 });
+    expect(root.projectDuration).toBe(30);
+  });
+
+  it('父节点的汇总按子树算，孙子层的叶子也算进来', async () => {
+    const db = createTestDb();
+    const rootId = insertTask(db, { title: '根任务', columnId: 'todo', orders: 1000 });
+    const midId = insertTask(db, { title: '中间层', columnId: 'todo', orders: 1000, parentId: rootId });
+    insertTask(db, { title: '叶子一', columnId: 'todo', orders: 1000, parentId: midId, durationMinutes: 10 });
+    insertTask(db, { title: '叶子二', columnId: 'todo', orders: 2000, parentId: rootId, durationMinutes: 20 });
+    const api = createApp(db);
+
+    const root = await readJson<CpmBody>(await api.request('/api/board/cpm'));
+    expect(node(root, rootId).durationMinutes).toBe(30);
+
+    // 中间层那一层里，它自己那片叶子是 10。
+    const layer = await readJson<CpmBody>(await api.request(`/api/board/${rootId}/cpm`));
+    expect(node(layer, midId).durationMinutes).toBe(10);
+  });
+
+  it('叶子未估会让整个父节点在图上也是未估，并按 0 参与计算', async () => {
+    const db = createTestDb();
+    const parentId = insertTask(db, {
+      title: '父任务',
+      columnId: 'todo',
+      orders: 1000,
+      durationMinutes: 600,
+    });
+    insertTask(db, { title: 'X', columnId: 'todo', orders: 1000, parentId, durationMinutes: 10 });
+    insertTask(db, { title: 'Y', columnId: 'doing', orders: 1000, parentId });
+    const api = createApp(db);
+
+    const root = await readJson<CpmBody>(await api.request('/api/board/cpm'));
+
+    expect(node(root, parentId)).toMatchObject({ durationMinutes: null, earliestFinish: 0 });
+    expect(root.projectDuration).toBe(0);
+  });
+
+  it('归档的叶子不进父节点的汇总', async () => {
+    const db = createTestDb();
+    const parentId = insertTask(db, {
+      title: '父任务',
+      columnId: 'todo',
+      orders: 1000,
+      durationMinutes: 9999,
+    });
+    insertTask(db, { title: '在的', columnId: 'todo', orders: 1000, parentId, durationMinutes: 10 });
+    insertTask(db, {
+      title: '归档的',
+      columnId: 'todo',
+      orders: 2000,
+      parentId,
+      durationMinutes: 20,
+      archived: true,
+    });
+    const api = createApp(db);
+
+    const root = await readJson<CpmBody>(await api.request('/api/board/cpm'));
+
+    expect(node(root, parentId).durationMinutes).toBe(10);
+  });
+
+  it('叶子节点仍然用自己那个字段（汇总只对父节点生效）', async () => {
+    const db = createTestDb();
+    const leafId = insertTask(db, { title: '叶子', columnId: 'todo', orders: 1000, durationMinutes: 45 });
+    const api = createApp(db);
+
+    const root = await readJson<CpmBody>(await api.request('/api/board/cpm'));
+
+    expect(node(root, leafId)).toMatchObject({ durationMinutes: 45, earliestFinish: 45 });
+  });
+
   it('归档任务与连着它的边默认不出现，includeArchived=1 时出现', async () => {
     const db = createTestDb();
     const aId = insertTask(db, { title: 'A', columnId: 'todo', orders: 1000, durationMinutes: 10 });

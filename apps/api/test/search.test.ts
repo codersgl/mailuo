@@ -224,6 +224,59 @@ describe('GET /api/search', () => {
     expect(byId.get(unestimatedId)).toBeNull();
   });
 
+  it('有子任务的父任务给的是叶子汇总，不是它自己那个已经退休的工期', async () => {
+    // 父任务库里存着 999（旧数据），两片叶子 30 + 60：结果行要跟卡片、抽屉、依赖图一致，给 90。
+    const db = createTestDb();
+    const parentId = insertTask(db, {
+      title: '登录页 父任务',
+      columnId: 'todo',
+      orders: 1000,
+      durationMinutes: 999,
+    });
+    insertTask(db, {
+      title: '登录页 子一',
+      columnId: 'todo',
+      orders: 1000,
+      parentId,
+      durationMinutes: 30,
+    });
+    insertTask(db, {
+      title: '登录页 子二',
+      columnId: 'doing',
+      orders: 1000,
+      parentId,
+      durationMinutes: 60,
+    });
+
+    const { body } = await search(db, { q: '登录页' });
+
+    const found = body.results.find((result: { id: string }) => result.id === parentId);
+    expect(found?.durationMinutes).toBe(90);
+  });
+
+  it('父任务有一片叶子未估时，搜索行也给 null（与卡片的「未估」一致）', async () => {
+    const db = createTestDb();
+    const parentId = insertTask(db, {
+      title: '登录页 父任务',
+      columnId: 'todo',
+      orders: 1000,
+      durationMinutes: 999,
+    });
+    insertTask(db, {
+      title: '登录页 子一',
+      columnId: 'todo',
+      orders: 1000,
+      parentId,
+      durationMinutes: 30,
+    });
+    insertTask(db, { title: '登录页 子二', columnId: 'doing', orders: 1000, parentId });
+
+    const { body } = await search(db, { q: '登录页' });
+
+    const found = body.results.find((result: { id: string }) => result.id === parentId);
+    expect(found?.durationMinutes).toBeNull();
+  });
+
   it('命中描述时给出以关键词为中心的摘要，两端带省略号', async () => {
     const db = createTestDb();
     const description = `${'前'.repeat(40)}目标${'后'.repeat(40)}`;

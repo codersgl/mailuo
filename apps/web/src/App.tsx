@@ -493,6 +493,8 @@ function BoardPage({
             task={editing}
             onClose={closeEditor}
             onSave={saveTask}
+            // 父任务的工期只读地显示子树汇总，所以抽屉也要吃这张表（见 D78）。
+            subtree={subtreeTimes.get(editing.id) ?? null}
             dependency={{
               schedule: schedule.state,
               onRetry: schedule.reload,

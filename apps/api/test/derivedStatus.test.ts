@@ -9,6 +9,7 @@ import {
   type BoardBody,
   type ErrorBody,
   type TaskBody,
+  type TaskMutationBody,
 } from './helpers.js';
 
 type App = ReturnType<typeof createApp>;
@@ -27,12 +28,21 @@ function columnOf(db: Db, id: string): string {
     .column_id;
 }
 
-/** 计时两列，用来断言父任务真的没有在走表。 */
+/** 计时的两列，用来断言父任务真的没有在走表。 */
 function clockOf(db: Db, id: string): { spent_minutes: number; running_since: string | null } {
   return db.prepare('SELECT spent_minutes, running_since FROM tasks WHERE id = ?').get(id) as {
     spent_minutes: number;
     running_since: string | null;
   };
+}
+
+/** 库里存的工期（分钟）；null 表示未估。 */
+function durationOf(db: Db, id: string): number | null {
+  return (
+    db.prepare('SELECT duration_minutes FROM tasks WHERE id = ?').get(id) as {
+      duration_minutes: number | null;
+    }
+  ).duration_minutes;
 }
 
 /** 把「正在计时的这一段」改成 minutes 分钟前开始，让结算结果可预期。 */
@@ -178,6 +188,72 @@ describe('状态推导：手动移动的边界', () => {
     // 拒绝之后这一列一个字都没动。
     expect(await columnTitles(api, null, 'todo')).toEqual(['父', '别的根任务']);
     expect(columnOf(db, other)).toBe('todo');
+  });
+
+  it('有子任务的父任务不能单独设工期：返回 400，库里那个值原样不动', async () => {
+    // 父任务的工期是子树叶子的汇总（D78），写进去没有任何地方会读它，所以在入口就拒掉。
+    const db = createTestDb();
+    const api = createApp(db);
+    const parent = insertTask(db, {
+      title: '父',
+      columnId: 'todo',
+      orders: 1000,
+      durationMinutes: 120,
+    });
+    insertTask(db, { title: '子', columnId: 'todo', orders: 1000, parentId: parent, durationMinutes: 60 });
+
+    const response = await jsonRequest(api, 'PATCH', `/api/tasks/${parent}`, {
+      durationMinutes: 999,
+    });
+
+    expect(response.status).toBe(400);
+    expect((await readJson<ErrorBody>(response)).error).toContain('汇总');
+    expect(durationOf(db, parent)).toBe(120);
+  });
+
+  it('把父任务的工期清回未估也拒绝：不能借这一步绕过那条限制', async () => {
+    const db = createTestDb();
+    const api = createApp(db);
+    const parent = insertTask(db, {
+      title: '父',
+      columnId: 'todo',
+      orders: 1000,
+      durationMinutes: 120,
+    });
+    insertTask(db, { title: '子', columnId: 'todo', orders: 1000, parentId: parent });
+
+    const response = await jsonRequest(api, 'PATCH', `/api/tasks/${parent}`, {
+      durationMinutes: null,
+    });
+
+    expect(response.status).toBe(400);
+    expect(durationOf(db, parent)).toBe(120);
+  });
+
+  it('叶子照旧可以设工期，也可以清回未估', async () => {
+    const db = createTestDb();
+    const api = createApp(db);
+    const leaf = insertTask(db, { title: '叶子', columnId: 'todo', orders: 1000 });
+
+    const set = await jsonRequest(api, 'PATCH', `/api/tasks/${leaf}`, { durationMinutes: 90 });
+    expect(set.status).toBe(200);
+    expect(durationOf(db, leaf)).toBe(90);
+
+    const cleared = await jsonRequest(api, 'PATCH', `/api/tasks/${leaf}`, { durationMinutes: null });
+    expect(cleared.status).toBe(200);
+    expect(durationOf(db, leaf)).toBeNull();
+  });
+
+  it('改别的字段不受影响：父任务照旧能改标题', async () => {
+    const db = createTestDb();
+    const api = createApp(db);
+    const parent = insertTask(db, { title: '父', columnId: 'todo', orders: 1000 });
+    insertTask(db, { title: '子', columnId: 'todo', orders: 1000, parentId: parent });
+
+    const response = await jsonRequest(api, 'PATCH', `/api/tasks/${parent}`, { title: '父改名' });
+
+    expect(response.status).toBe(200);
+    expect((await readJson<TaskMutationBody>(response)).task.title).toBe('父改名');
   });
 
   it('叶子任务照旧可以手动换列', async () => {

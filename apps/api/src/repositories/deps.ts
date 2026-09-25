@@ -1,8 +1,9 @@
 import type { Db } from '../db/client.js';
 import type { EdgeSchedule, ScheduleNodeInput, TaskSchedule } from '../domain/cpm.js';
 import { computeSchedule } from '../domain/cpm.js';
+import { subtreeLeafDurations } from '../domain/subtreeDuration.js';
 import type { TaskRecord } from './tasks.js';
-import { findTask } from './tasks.js';
+import { findTask, listActiveDurationNodes } from './tasks.js';
 
 /** 一条依赖边：predecessor 完成后 successor 才能开始。 */
 export interface DependencyEdge {
@@ -45,6 +46,10 @@ interface ScheduleTaskRow {
  * `includeArchived` 沿用所有读接口的开关语义：关着时归档任务与连着它的边都不出现。
  * 已知取舍：归档一个被别人依赖的任务不会清理依赖记录，于是关着开关时那些边看不见；
  * 打开开关就能看到完整的图。要彻底解决得在归档时改依赖，属于产品决策，这一步不做。
+ *
+ * 节点的工期：叶子用任务自己的 `duration_minutes`；**有未归档子任务的父任务用子树叶子的
+ * 汇总**（有叶子未估即为未估，见 domain/subtreeDuration.ts 与 docs/decisions.md D78）。
+ * 父任务自己那个字段因此退休了——四处（卡片、任务树、抽屉、依赖图）显示的是同一个数。
  */
 export function readLayerSchedule(
   db: Db,
@@ -53,9 +58,12 @@ export function readLayerSchedule(
 ): LayerSchedule {
   const rows = listLayerTaskRows(db, parentId, includeArchived);
   const edges = listLayerDeps(db, parentId, includeArchived);
+  const derived = subtreeLeafDurations(listActiveDurationNodes(db));
+  const durationOf = (row: ScheduleTaskRow): number | null =>
+    derived.has(row.id) ? (derived.get(row.id) ?? null) : row.duration_minutes;
   const inputs: ScheduleNodeInput[] = rows.map((row) => ({
     id: row.id,
-    durationMinutes: row.duration_minutes,
+    durationMinutes: durationOf(row),
   }));
   const schedule = computeSchedule(inputs, edges);
   const timingById = new Map(schedule.tasks.map((task) => [task.id, task]));
@@ -72,7 +80,7 @@ export function readLayerSchedule(
         ...timing,
         title: row.title,
         columnId: row.column_id,
-        durationMinutes: row.duration_minutes,
+        durationMinutes: durationOf(row),
         archivedAt: row.archived_at,
       };
     }),
@@ -80,7 +88,8 @@ export function readLayerSchedule(
   };
 }
 
-/** 该层的任务行，按列序 + 列内 orders 排，方便前端按看板顺序排布节点。 */
+/**
+ * 该层的任务行，按列序 + 列内 orders 排，方便前端按看板顺序排布节点。 */
 function listLayerTaskRows(
   db: Db,
   parentId: string | null,
