@@ -1,11 +1,13 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import type { FormEvent } from 'react';
 import { buildCandidateGroups, readDependencyEditing, sameDependencySet } from '../domain/layerDeps';
+import type { SubtreeTime } from '../domain/subtreeTime';
 import { cx } from '../lib/cx';
 import {
   MAX_DURATION_MINUTES,
   MINUTES_PER_DAY,
   formatDuration,
+  formatScheduleMinutes,
   readDurationInput,
   splitDuration,
 } from '../lib/format';
@@ -62,11 +64,17 @@ export function TaskEditorPanel({
   onClose,
   onSave,
   dependency,
+  subtree,
 }: {
   task: BoardTask;
   onClose: () => void;
   onSave: (patch: TaskFieldsPatch) => Promise<WriteResult>;
   dependency: DependencyEditor;
+  /**
+   * 这棵子树的时间汇总（domain/subtreeTime.ts）。父任务的工期只读地显示它算出来的数；
+   * null 表示任务树还没取到，那时这里显示一个破折号而不是拿任务自己的工期顶上。
+   */
+  subtree: SubtreeTime | null;
 }) {
   const [title, setTitle] = useState(task.title);
   const [description, setDescription] = useState(task.description);
@@ -75,6 +83,19 @@ export function TaskEditorPanel({
   const [error, setError] = useState<string | null>(null);
   const [saved, setSaved] = useState(false);
   const panelRef = useRef<HTMLElement>(null);
+  /**
+   * 有未归档子任务的父任务：工期是子树叶子的汇总，用户不能改（见 docs/decisions.md D78）。
+   *
+   * 判据是 `childTotal`（未归档的直接子任务数），与看板卡片、后端 countActiveChildren 同一个口径；
+   * 「最后一片子任务被归档/删除之后又能改」这条因此自动成立，不需要额外记状态。
+   */
+  const isParent = task.childTotal > 0;
+  /**
+   * 只读值。undefined 表示汇总还没到位（任务树没取到或这份数据里没有它），null 表示有叶子未估。
+   * 两者不能混成一个：一个是「还不知道」，一个是「知道它是未估」。
+   */
+  const derivedDuration: number | null | undefined =
+    isParent && subtree !== null && subtree.leafCount > 0 ? subtree.durationMinutes : undefined;
 
   const schedule = dependency.schedule;
   /**
@@ -113,7 +134,8 @@ export function TaskEditorPanel({
 
   const durationInput = readDurationInput(duration);
   const trimmedTitle = title.trim();
-  const canSave = trimmedTitle !== '' && durationInput.kind !== 'invalid' && !busy;
+  // 父任务的工期是只读的、草稿里也没有它，所以那一段不可能出现的非法值不该拦住保存。
+  const canSave = trimmedTitle !== '' && (isParent || durationInput.kind !== 'invalid') && !busy;
 
   /** 用户一动表单，上一条「已保存」或错误就不再成立。 */
   function markEdited() {
@@ -182,17 +204,26 @@ export function TaskEditorPanel({
     return result.ok ? null : `标题、描述、工期已保存；依赖未保存：${result.message}`;
   }
 
+  /**
+   * 字段那一次写的入参。
+   *
+   * 父任务不发 `durationMinutes`：它的工期由子树叶子的汇总决定，后端也会拒绝（见 D78）。
+   * 叶子这一侧 `invalid` 到不了这里——`canSave` 已经挡住了，这个分支只是让类型收窄。
+   */
+  function fieldsPatch(): TaskFieldsPatch {
+    const patch: TaskFieldsPatch = { title: trimmedTitle, description };
+    if (isParent || durationInput.kind === 'invalid') return patch;
+    // 三段全空表示改回「未估工期」（见 docs/decisions.md D32）。
+    patch.durationMinutes = durationInput.kind === 'unset' ? null : durationInput.value;
+    return patch;
+  }
+
   async function handleSave() {
-    if (durationInput.kind === 'invalid' || !canSave) return;
+    if (!canSave) return;
 
     setBusy(true);
     markEdited();
-    const result = await onSave({
-      title: trimmedTitle,
-      description,
-      // 三段全空表示改回「未估工期」（见 docs/decisions.md D32）。
-      durationMinutes: durationInput.kind === 'unset' ? null : durationInput.value,
-    });
+    const result = await onSave(fieldsPatch());
     if (!result.ok) {
       setBusy(false);
       setError(result.message);
@@ -296,59 +327,95 @@ export function TaskEditorPanel({
             </label>
 
             {/*
-              工期用三个输入框而不是「一个数字 + 单位下拉」：3 天 4 小时这种值在单个输入框里
-              只能四舍五入，保存时会悄悄改掉工期。空着表示未估，填 0 表示瞬时。
+              父任务：工期只读，显示子树叶子的汇总（定版原型 B2）。
+              一行值 + 一个极小的「按子任务汇总」标记，连解释句都不需要——标记本身就说明这个数
+              不是从这里填的。它自己那个 duration_minutes 从此不再有任何出口（见 D78）。
             */}
-            <fieldset className="mt-3">
-              <legend className={FIELD_LABEL}>工期</legend>
-              <div className="mt-1 flex items-center gap-2">
-                <DurationField
-                  label="天"
-                  value={duration.days}
-                  onChange={(value) => updateDuration('days', value)}
-                />
-                <DurationField
-                  label="小时"
-                  value={duration.hours}
-                  onChange={(value) => updateDuration('hours', value)}
-                />
-                <DurationField
-                  label="分"
-                  value={duration.minutes}
-                  onChange={(value) => updateDuration('minutes', value)}
-                />
-              </div>
-              <div className="mt-1.5 flex items-center gap-1.5">
-                <button
-                  type="button"
-                  onClick={() => {
-                    markEdited();
-                    setDuration({ days: '', hours: '', minutes: '' });
-                  }}
-                  className={QUICK_BUTTON}
+            {isParent ? (
+              <div className="mt-3">
+                <div
+                  data-duration-derived
+                  className="flex items-baseline gap-[10px]"
+                  // 只有「汇总还没取到」这一种情形需要解释；破折号也可能来自脏数据（有子任务
+                  // 却汇总不出叶子），那种情况给不出一句准确的话，就不给 title。
+                  title={subtree === null ? '任务树还没取到，暂时算不出汇总' : undefined}
                 >
-                  未估工期
-                </button>
-                <button
-                  type="button"
-                  onClick={() => {
-                    markEdited();
-                    setDuration({ days: '', hours: '', minutes: '0' });
-                  }}
-                  className={QUICK_BUTTON}
-                >
-                  瞬时
-                </button>
-                <span className="ml-auto text-[11px] tabular-nums text-ink-3">
-                  {durationInput.kind === 'invalid'
-                    ? DURATION_INVALID_HINT
-                    : durationInput.kind === 'unset'
-                      ? '未估工期'
-                      : formatDuration(durationInput.value)}
-                </span>
+                  <span className={FIELD_LABEL}>工期</span>
+                  <span
+                    className={cx(
+                      'text-[13px]',
+                      derivedDuration === undefined || derivedDuration === null
+                        ? 'text-ink-2'
+                        : 'text-ink',
+                    )}
+                  >
+                    {derivedDuration === undefined
+                      ? '—'
+                      : derivedDuration === null
+                        ? '未估'
+                        : derivedDuration <= 0
+                          ? '瞬时'
+                          : formatScheduleMinutes(derivedDuration)}
+                  </span>
+                  <span className="text-[11px] text-ink-3">按子任务汇总</span>
+                </div>
               </div>
-              <p className="mt-1 text-[11px] text-ink-3">1 天 = 480 分钟（8 小时工作制）</p>
-            </fieldset>
+            ) : (
+              /*
+                工期用三个输入框而不是「一个数字 + 单位下拉」：3 天 4 小时这种值在单个输入框里
+                只能四舍五入，保存时会悄悄改掉工期。空着表示未估，填 0 表示瞬时。
+              */
+              <fieldset className="mt-3">
+                <legend className={FIELD_LABEL}>工期</legend>
+                <div className="mt-1 flex items-center gap-2">
+                  <DurationField
+                    label="天"
+                    value={duration.days}
+                    onChange={(value) => updateDuration('days', value)}
+                  />
+                  <DurationField
+                    label="小时"
+                    value={duration.hours}
+                    onChange={(value) => updateDuration('hours', value)}
+                  />
+                  <DurationField
+                    label="分"
+                    value={duration.minutes}
+                    onChange={(value) => updateDuration('minutes', value)}
+                  />
+                </div>
+                <div className="mt-1.5 flex items-center gap-1.5">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      markEdited();
+                      setDuration({ days: '', hours: '', minutes: '' });
+                    }}
+                    className={QUICK_BUTTON}
+                  >
+                    未估工期
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      markEdited();
+                      setDuration({ days: '', hours: '', minutes: '0' });
+                    }}
+                    className={QUICK_BUTTON}
+                  >
+                    瞬时
+                  </button>
+                  <span className="ml-auto text-[11px] tabular-nums text-ink-3">
+                    {durationInput.kind === 'invalid'
+                      ? DURATION_INVALID_HINT
+                      : durationInput.kind === 'unset'
+                        ? '未估工期'
+                        : formatDuration(durationInput.value)}
+                  </span>
+                </div>
+                <p className="mt-1 text-[11px] text-ink-3">1 天 = 480 分钟（8 小时工作制）</p>
+              </fieldset>
+            )}
 
             {/*
               依赖区块。加载中与失败只影响这一块：上面的字段照样能改、能保存，依赖那一次写会被跳过

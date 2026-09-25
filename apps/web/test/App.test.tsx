@@ -735,10 +735,12 @@ describe('App 增删改', () => {
   it('编辑任务：抽屉保存改标题与工期，看板与抽屉跟着更新', async () => {
     const api = createFakeApi(fixtures);
     render(<App />);
-    await boardArea().findByText('支付对账');
+    // 用「重构登录」而不是「支付对账」：后者有子任务，工期那一栏现在是只读的（见 D78），
+    // 这条用例要守的是叶子那一侧照旧能改、改完卡片跟着变。
+    await boardArea().findByText('重构登录');
 
-    await openEditor('支付对账');
-    fireEvent.change(dialog().getByDisplayValue('支付对账'), { target: { value: '支付对账 v2' } });
+    await openEditor('重构登录');
+    fireEvent.change(dialog().getByDisplayValue('重构登录'), { target: { value: '重构登录 v2' } });
     fireEvent.change(dialog().getByLabelText('天'), { target: { value: '2' } });
     fireEvent.change(dialog().getByLabelText('分'), { target: { value: '30' } });
     // 三段换算的实时预览：2 天 30 分 = 990 分钟。
@@ -748,16 +750,16 @@ describe('App 增删改', () => {
 
     expect(await dialog().findByText('已保存')).toBeTruthy();
     const patch = api.calls.find((call) => call.method === 'PATCH' && !call.url.endsWith('/archive'));
-    expect(patch?.url).toBe('/api/tasks/b');
+    expect(patch?.url).toBe('/api/tasks/a');
     expect(patch?.body).toEqual({
-      title: '支付对账 v2',
+      title: '重构登录 v2',
       description: '',
       durationMinutes: 990,
     });
 
-    // 看板被静默重取，卡片上新标题到位，抽屉仍然开着。
-    expect(await boardArea().findByText('支付对账 v2')).toBeTruthy();
-    // 工期不再画在卡片上（支付对账有子任务，见 D76），所以核对抽屉里的回填值来说明它落了库。
+    // 看板被静默重取，卡片上新标题与新工期到位，抽屉仍然开着。
+    expect(await boardArea().findByText('重构登录 v2')).toBeTruthy();
+    expect(boardArea().getByText('工期 2 天 30 分')).toBeTruthy();
     expect((dialog().getByLabelText('天') as HTMLInputElement).value).toBe('2');
     expect((dialog().getByLabelText('分') as HTMLInputElement).value).toBe('30');
     expect(screen.getByRole('dialog')).toBeTruthy();
@@ -766,18 +768,46 @@ describe('App 增删改', () => {
   it('保存后草稿换成服务端归一化后的值（标题 trim、工期折算）', async () => {
     createFakeApi(fixtures);
     render(<App />);
-    await boardArea().findByText('支付对账');
+    await boardArea().findByText('重构登录');
 
-    await openEditor('支付对账');
-    fireEvent.change(dialog().getByDisplayValue('支付对账'), { target: { value: '  支付对账  ' } });
+    await openEditor('重构登录');
+    fireEvent.change(dialog().getByDisplayValue('重构登录'), { target: { value: '  重构登录  ' } });
     fireEvent.change(dialog().getByLabelText('小时'), { target: { value: '9' } });
     fireEvent.click(dialog().getByRole('button', { name: '保存' }));
 
     expect(await dialog().findByText('已保存')).toBeTruthy();
     // 后端把标题 trim 了、9 小时折成 1 天 1 小时：输入框不能还留着原始输入。
-    expect((dialog().getByDisplayValue('支付对账') as HTMLInputElement).value).toBe('支付对账');
+    expect((dialog().getByDisplayValue('重构登录') as HTMLInputElement).value).toBe('重构登录');
     expect((dialog().getByLabelText('天') as HTMLInputElement).value).toBe('1');
     expect((dialog().getByLabelText('小时') as HTMLInputElement).value).toBe('1');
+  });
+
+  it('有子任务的父任务：工期那一栏是只读的汇总，保存时根本不带这个字段', async () => {
+    // 工期是叶子的属性；父任务显示的是子树叶子的汇总（见 D78）。b 有一片叶子 b1（未估工期）。
+    const api = createFakeApi(fixtures);
+    render(<App />);
+    await boardArea().findByText('支付对账');
+
+    await openEditor('支付对账');
+
+    // 没有输入框，只有一行只读值与那个「按子任务汇总」标记。
+    expect(dialog().queryByLabelText('天')).toBeNull();
+    expect(dialog().queryByRole('button', { name: '未估工期' })).toBeNull();
+    // 只在这条只读行里找「未估」：前置候选行也会写「未估」，用整屏查询会撞上它们。
+    const derivedRow = document.querySelector('[data-duration-derived]');
+    expect(derivedRow?.textContent).toContain('未估');
+    expect(derivedRow?.textContent).toContain('按子任务汇总');
+
+    fireEvent.change(dialog().getByDisplayValue('支付对账'), { target: { value: '支付对账 v2' } });
+    fireEvent.click(dialog().getByRole('button', { name: '保存' }));
+
+    expect(await dialog().findByText('已保存')).toBeTruthy();
+    // 关键：patch 里没有 durationMinutes（后端对有子任务的任务也会 400）。
+    expect(api.calls.find((call) => call.method === 'PATCH')?.body).toEqual({
+      title: '支付对账 v2',
+      description: '',
+    });
+    expect(await boardArea().findByText('支付对账 v2')).toBeTruthy();
   });
 
   it('抽屉整体是 form：标题框按 Enter 与点「保存」走同一条路', async () => {
