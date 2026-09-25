@@ -1,7 +1,9 @@
-import { StrictMode } from 'react';
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { StrictMode, useMemo } from 'react';
+import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { Sidebar } from '../src/components/Sidebar';
+import { buildSubtreeTimes } from '../src/domain/subtreeTime';
+import { useTree } from '../src/hooks/useTree';
 import type { TreeTask } from '../src/api/types';
 
 /**
@@ -75,9 +77,29 @@ function jsonResponse(body: unknown, status = 200): Response {
   });
 }
 
+type SidebarProps = Parameters<typeof Sidebar>[0];
+
+/**
+ * 树的数据现在由 BoardPage 取（Sidebar 只渲染，因为看板卡片上的分支投入要按同一棵树汇总），
+ * 所以这里装一个最小的宿主把 useTree 接回来：用例仍然只关心 Sidebar 的行为，
+ * 但「取树 → 算汇总 → 渲染」这条真实链路一起被覆盖，而不是喂一份假数据进去。
+ * 重取由上层触发，宿主把它暴露到 `refreshTree` 上供用例调用。
+ */
+let refreshTree: () => void = () => {};
+
+function SidebarHost(props: Omit<SidebarProps, 'tree' | 'subtreeTimes'>) {
+  const tree = useTree(props.showArchived);
+  const subtreeTimes = useMemo(
+    () => buildSubtreeTimes(tree.state.status === 'ready' ? tree.state.data : []),
+    [tree.state],
+  );
+  refreshTree = tree.refresh;
+  return <Sidebar {...props} tree={tree} subtreeTimes={subtreeTimes} />;
+}
+
 function renderSidebar(
   boardId: string | null = null,
-  options: { showArchived?: boolean; refreshToken?: number; strict?: boolean } = {},
+  options: { showArchived?: boolean; strict?: boolean } = {},
 ) {
   const onNavigate = vi.fn();
   const onShowArchivedChange = vi.fn();
@@ -87,7 +109,6 @@ function renderSidebar(
     onNavigate,
     showArchived: options.showArchived ?? false,
     onShowArchivedChange,
-    refreshToken: options.refreshToken ?? 0,
     onParentChanged,
   };
   /**
@@ -97,10 +118,10 @@ function renderSidebar(
   const view = render(
     options.strict ? (
       <StrictMode>
-        <Sidebar {...props} />
+        <SidebarHost {...props} />
       </StrictMode>
     ) : (
-      <Sidebar {...props} />
+      <SidebarHost {...props} />
     ),
   );
   return { onNavigate, onShowArchivedChange, onParentChanged, props, ...view };
@@ -288,7 +309,7 @@ describe('Sidebar', () => {
     expect(window.localStorage.getItem('kanban.tree.showArchived')).toBeNull();
   });
 
-  it('refreshToken 变化时静默重取：旧树留在屏幕上，不闪「加载中」', async () => {
+  it('上层要求重取时静默重取：旧树留在屏幕上，不闪「加载中」', async () => {
     const resolvers: Array<(tasks: TreeTask[]) => void> = [];
     requested = [];
     vi.stubGlobal('fetch', (input: string) => {
@@ -298,12 +319,13 @@ describe('Sidebar', () => {
       });
     });
 
-    const { props, rerender } = renderSidebar();
+    renderSidebar();
     await waitFor(() => expect(resolvers).toHaveLength(1));
     resolvers[0]?.(visibleOf(treeTasks));
     expect(await screen.findByText('重构登录')).toBeTruthy();
 
-    rerender(<Sidebar {...props} refreshToken={1} />);
+    // 写操作成功后由 BoardPage 触发（这里直接调宿主暴露出来的那个 refresh）。
+    act(() => refreshTree());
     await waitFor(() => expect(resolvers).toHaveLength(2));
 
     // 第二次请求还在飞：树不能被清成加载态，否则改一次标题、任务树就会闪一下。

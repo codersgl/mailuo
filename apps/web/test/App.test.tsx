@@ -1546,3 +1546,33 @@ describe('App 依赖图', () => {
     expect(await boardArea().findByText('支付对账')).toBeTruthy();
   });
 });
+
+describe('App 子树聚合', () => {
+  it('父任务卡片上画的是子树的 Σ 已用 / Σ 工期，数字来自同一棵任务树', async () => {
+    // 父任务自己的 durationMinutes 是 null（它不再是展示口径），聚合只能从子任务树算出来：
+    // 两片叶子 8 小时 + 4 小时（= 1 天 4 小时）、已用 2 小时 + 1 小时 → 「已用 3 小时 / 1 天 4 小时」。
+    // 这条同时守着「BoardPage 把任务树算出来的汇总交给了看板卡片」这段接线。
+    createFakeApi([
+      task({ id: 'p', title: '重构登录' }),
+      task({
+        id: 'c1',
+        parentId: 'p',
+        title: '抽出鉴权中间件',
+        columnId: 'done',
+        durationMinutes: 480,
+        spentMinutes: 120,
+      }),
+      task({
+        id: 'c2',
+        parentId: 'p',
+        title: '前端表单改造',
+        columnId: 'doing',
+        durationMinutes: 240,
+        spentMinutes: 60,
+      }),
+    ]);
+    render(<App />);
+
+    expect(await boardArea().findByText('已用 3 小时 / 1 天 4 小时')).toBeTruthy();
+  });
+});

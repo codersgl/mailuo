@@ -1,12 +1,14 @@
 import { useCallback, useEffect, useId, useRef, useState } from 'react';
 import { ApiError, changeTaskParent } from '../api/client';
+import type { TreeTask } from '../api/types';
 import { usePersistentState } from '../hooks/usePersistentState';
 import { useNow } from '../hooks/useNow';
-import { useTree } from '../hooks/useTree';
+import type { AsyncResult } from '../hooks/useAsync';
 import { useTreeDrag } from '../hooks/useTreeDrag';
 import { cx } from '../lib/cx';
 import { COLLAPSED_TASKS_KEY, TREE_COLLAPSED_KEY } from '../lib/preferences';
 import { ancestorIds, buildTree, expandAncestors, toggleCollapsed } from '../lib/tree';
+import type { SubtreeTime } from '../domain/subtreeTime';
 import { ErrorNote, LoadingNote } from './StatusNote';
 import { TreeNodeRow } from './TreeNodeRow';
 
@@ -29,13 +31,17 @@ const isBoolean = (value: unknown): boolean => typeof value === 'boolean';
  * （看板列也要认同一个开关，见 docs/decisions.md D35），这里只做受控显示与回调。
  *
  * 整个面板的收起/展开是这一层自己的事：顶栏、看板都不需要知道，收起只是把宽度让出去。
+ *
+ * 树的数据由 BoardPage 取（它是页面数据的唯一持有者），这里只渲染：
+ * 看板卡片上的分支投入要按同一棵树算子树汇总，两处各取一次就会得到两份可能不同的数据。
  */
 export function Sidebar({
   boardId,
   onNavigate,
   showArchived,
   onShowArchivedChange,
-  refreshToken,
+  tree,
+  subtreeTimes,
   onParentChanged,
 }: {
   /** 当前看板对应的任务 id；根看板为 null。 */
@@ -43,8 +49,10 @@ export function Sidebar({
   onNavigate: (taskId: string) => void;
   showArchived: boolean;
   onShowArchivedChange: (showArchived: boolean) => void;
-  /** 写操作成功后由上层加一，用来让树静默重取一次（树的数据获取仍在 Sidebar 内部）。 */
-  refreshToken: number;
+  /** 整棵任务树的读取状态。重取由上层在写操作成功后触发（见 BoardPage 的 refreshAll）。 */
+  tree: AsyncResult<TreeTask[]>;
+  /** 每个任务的子树时间汇总，父任务那一行用它（见 domain/subtreeTime.ts）。 */
+  subtreeTimes: Map<string, SubtreeTime>;
   /**
    * 树拖动改父级成功后调用，由看板页统一静默重取。
    *
@@ -64,7 +72,7 @@ export function Sidebar({
   /** 收起按钮的 aria-controls 要指向被它控制的那块。用 useId 而不是写死字符串：写死的话
    *  同一个页面里出现第二个 Sidebar（例如将来的分屏）就会撞 id。 */
   const panelId = useId();
-  const { state, reload, refresh } = useTree(showArchived);
+  const { state, reload } = tree;
   const [dragError, setDragError] = useState<string | null>(null);
   // 树节点上的工期进度条会随时间变档。与看板各挂一个 tick：两个视图各自渲染自己的那份数据，
   // 共用一个会让其中一边在另一边的重渲染里白跑（见 hooks/useNow）。
@@ -116,13 +124,6 @@ export function Sidebar({
     if (collapsed && !wasCollapsed.current) toggleRef.current?.focus();
     wasCollapsed.current = collapsed;
   }, [collapsed]);
-
-  // 写操作（新建、改名、归档、删除）之后树必须是新的：D34 遗留的那条「写操作那一步必须显式刷新树」。
-  // 0 是初始值，挂载时不用多取一次。
-  useEffect(() => {
-    if (refreshToken === 0) return;
-    refresh();
-  }, [refreshToken, refresh]);
 
   // 当前看板的节点若被折叠在某个祖先里，用户就看不到自己在哪：自动展开那一条祖先链。
   // 只展开祖先、不展开自己，否则会覆盖用户「把这一支折起来」的操作。
@@ -266,6 +267,7 @@ export function Sidebar({
                   onDragStart={treeDrag.begin}
                   drag={treeDrag.state}
                   nowMs={nowMs}
+                  subtreeTimes={subtreeTimes}
                   depth={0}
                 />
               ))}

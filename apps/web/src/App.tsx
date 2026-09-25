@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { KeyboardEvent } from 'react';
 import { BoardView } from './components/BoardView';
 import type { NewTaskControls } from './components/Column';
@@ -23,6 +23,8 @@ import { useRoute } from './hooks/useRoute';
 import { useSearch } from './hooks/useSearch';
 import { useTaskActions } from './hooks/useTaskActions';
 import type { WriteResult } from './hooks/useTaskActions';
+import { useTree } from './hooks/useTree';
+import { buildSubtreeTimes } from './domain/subtreeTime';
 import { SHOW_ARCHIVED_KEY } from './lib/preferences';
 import type { TaskFieldsPatch } from './api/client';
 import type { Board, BoardTask } from './api/types';
@@ -47,8 +49,9 @@ export function App() {
 /**
  * 一个看板页：顶栏 + 左侧任务树 + 右侧看板 + 任务详情抽屉。
  *
- * 这一层是「页面数据」的唯一持有者：看板、任务树（数据在 Sidebar 内部取，靠 refreshToken 触发）、
- * 面包屑都在这里被安排重取，写操作因此只有一个刷新入口。
+ * 这一层是「页面数据」的唯一持有者：看板、任务树、面包屑、依赖图都在这里被安排重取，
+ * 写操作因此只有一个刷新入口（见 refreshAll）。任务树与看板认同一个「显示已归档」开关，
+ * 卡片上的子树汇总也按这同一棵树算，所以树必须在这一层取（见 D77）。
  */
 function BoardPage({
   boardId,
@@ -67,6 +70,20 @@ function BoardPage({
   const [view, setView] = useState<ViewMode>('board');
   const board = useBoard(boardId, showArchived);
   const breadcrumb = useBreadcrumb(boardId);
+  /**
+   * 整个任务树。以前由 Sidebar 自己取，现在提到这一层：看板卡片上的「分支投入」要按同一棵树
+   * 算子树汇总（见 domain/subtreeTime.ts），两处各取一次就会拿到两份可能不同步的数据。
+   * 树与看板认同一个「显示已归档」开关，所以两者的口径天然一致。
+   */
+  const tree = useTree(showArchived);
+  /**
+   * 每个任务的子树时间汇总。依赖只有树本身：里面不含「现在几点」，正在跑的那一段由
+   * 各自的视图用自己的 now 现算，所以每 30 秒的 tick 不会让这张表重算一遍。
+   */
+  const subtreeTimes = useMemo(
+    () => buildSubtreeTimes(tree.state.status === 'ready' ? tree.state.data : []),
+    [tree.state],
+  );
   /**
    * 这一层的依赖图。抽屉里的「前置任务」用它，后续的图上标记也用它（见 D49）。
    * 固定取含归档的完整图：关着「显示已归档」时丢掉归档节点会让「已归档的前置」变成看不见的脏数据。
@@ -111,8 +128,6 @@ function BoardPage({
     search.state.status === 'ready' &&
     (search.state.keyword !== trimmedKeyword || search.state.includeArchived !== showArchived);
 
-  /** 写操作成功后自增，让 Sidebar 静默重取一次任务树（D34 遗留的那条待办）。 */
-  const [treeRefreshToken, setTreeRefreshToken] = useState(0);
   /** 正在编辑的任务快照。抽屉的字段与保存后的归一化都以它起步。 */
   const [editing, setEditing] = useState<BoardTask | null>(null);
   const [creatingColumnId, setCreatingColumnId] = useState<string | null>(null);
@@ -125,6 +140,7 @@ function BoardPage({
   const { refresh: refreshBoard } = board;
   const { refresh: refreshBreadcrumb } = breadcrumb;
   const { refresh: refreshSchedule } = schedule;
+  const { refresh: refreshTree } = tree;
   /** 有指针正按在卡片上（不管是待定的点击还是拖拽中）。用它给静默重取让路。 */
   const pointerActiveRef = useRef(false);
   /** 按下期间被推迟的那次看板重取。松手后要补上，不能就这么丢掉（见 D51）。 */
@@ -138,11 +154,13 @@ function BoardPage({
     refreshBreadcrumb();
     // 依赖图也跟着重取：工期、归档、增删任务都会改变关键路径，抽屉里的候选与禁用原因也要跟上。
     refreshSchedule();
-    setTreeRefreshToken((token) => token + 1);
+    // 树也要跟着刷新（D34 遗留的那条「写操作那一步必须显式刷新树」），走的是静默重取：
+    // 改个标题不该让整棵树闪回「加载中」。看板卡片上的分支投入就是从这棵树上算的。
+    refreshTree();
     // 搜索态下写操作也会让结果里的东西过期：任务树拖动会改层级路径，归档会改「已归档」标记。
     // 这种情况下唯一的写入口就是任务树，看板本身被结果页盖着。
     if (searching) search.retry();
-  }, [refreshBoard, refreshBreadcrumb, refreshSchedule, searching, search.retry]);
+  }, [refreshBoard, refreshBreadcrumb, refreshSchedule, refreshTree, searching, search.retry]);
 
   const actions = useTaskActions(refreshAll);
 
@@ -377,7 +395,8 @@ function BoardPage({
           onNavigate={onNavigate}
           showArchived={showArchived}
           onShowArchivedChange={setShowArchived}
-          refreshToken={treeRefreshToken}
+          tree={tree}
+          subtreeTimes={subtreeTimes}
           // 树拖动改级也是一次写：走同一个刷新入口，看板与依赖图才会跟着更新。
           onParentChanged={refreshAll}
         />
@@ -434,6 +453,7 @@ function BoardPage({
                     dragPreview={drag.preview}
                     dragSlot={dragSlot}
                     draggingTaskId={drag.draggingTaskId}
+                    subtreeTimes={subtreeTimes}
                     onOpenTask={(taskId) => {
                       // 拖完那一下浏览器仍会补一个 click，不拦就会顺手进入子看板。
                       if (drag.canOpen()) onNavigate(taskId);

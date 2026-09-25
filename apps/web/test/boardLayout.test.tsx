@@ -61,6 +61,8 @@ function renderBoard() {
       dragPreview={null}
       dragSlot={null}
       draggingTaskId={null}
+      // 这张卡片没有子任务，汇总表用不上；空表就是「树还没取回来」那一种状态。
+      subtreeTimes={new Map()}
       onOpenTask={() => {}}
       onEditTask={() => {}}
       onSetArchived={() => {}}

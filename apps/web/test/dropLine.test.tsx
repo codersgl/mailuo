@@ -74,6 +74,8 @@ function boardView(dragging: boolean) {
       }
       dragSlot={dragging ? { columnId: TARGET_COLUMN_ID, beforeTaskId: TARGET_TASK_ID } : null}
       draggingTaskId={null}
+      // 这些卡片没有子任务，汇总表用不上；空表就是「树还没取回来」那一种状态。
+      subtreeTimes={new Map()}
       onOpenTask={() => {}}
       onEditTask={() => {}}
       onSetArchived={() => {}}
@@ -153,6 +155,7 @@ describe('卡片插入线', () => {
         }}
         dragSlot={{ columnId: TARGET_COLUMN_ID, beforeTaskId: '已经不在列表里' }}
         draggingTaskId={null}
+        subtreeTimes={new Map()}
         onOpenTask={() => {}}
         onEditTask={() => {}}
         onSetArchived={() => {}}
