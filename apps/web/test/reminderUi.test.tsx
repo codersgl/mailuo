@@ -57,9 +57,13 @@ function renderFace(overrides: Partial<BoardTask> = {}, nowMs = T0_MS): HTMLElem
   return container;
 }
 
-/** 渲染任务树的一行。`drag` 传 null：这些用例与拖拽无关。 */
-function renderTreeRow(overrides: Partial<TreeTask> = {}, nowMs = T0_MS): HTMLElement {
-  const node: TreeNode = { task: treeTask(overrides), children: [] };
+/** 渲染任务树的一行。`drag` 传 null：这些用例与拖拽无关。children 用来构造「有子任务的父任务」。 */
+function renderTreeRow(
+  overrides: Partial<TreeTask> = {},
+  nowMs = T0_MS,
+  children: TreeNode[] = [],
+): HTMLElement {
+  const node: TreeNode = { task: treeTask(overrides), children };
   const { container } = render(
     <TreeNodeRow
       node={node}
@@ -168,13 +172,15 @@ describe('卡片上的工期提醒', () => {
     expect(anyTrack(archived)).toBeNull();
   });
 
-  it('工期提醒的条与子任务进度条是两条不同的条，互不顶替', () => {
+  it('有子任务的卡片只有子任务进度条，不画工期提醒条', () => {
+    // 改这条用例的口径：父任务的列由子任务推导、表是停的（见 D76），它自己的工期提醒只会误导人。
+    // 「两条不同的条互不顶替」在旧口径下靠这张卡片成立，现在两条根本不会同时出现。
     const container = renderFace({ spentMinutes: 240, runningSince: T0, childTotal: 2, childDone: 1 });
 
-    expect(container.querySelector('[data-duration-bar="weak"]')).not.toBeNull();
+    expect(anyTrack(container)).toBeNull();
     // 子任务那条在 meta 行里，仍然画着 1/2 的宽度。
     expect(screen.getByText('1/2 子任务')).toBeTruthy();
-    expect(container.querySelectorAll('i[style]')).toHaveLength(2);
+    expect(container.querySelectorAll('i[style]')).toHaveLength(1);
   });
 
   it('时间往前走会让卡片自己从弱填充走到临近', () => {
@@ -215,6 +221,22 @@ describe('任务树节点上的工期提醒', () => {
     cleanup();
     const done = renderTreeRow({ columnId: 'done', spentMinutes: 9999 });
     expect(anyTrack(done)).toBeNull();
+  });
+
+  it('有子任务的父节点不画条，叶子节点照画', () => {
+    // 子行的节点设成未估工期（不画条），并把查询范围收到父节点自己那一行上：
+    // TreeNodeRow 会把子节点递归渲染在同一个容器里，不这样收窄会把子行的条算成父节点的。
+    const child: TreeNode = {
+      task: treeTask({ id: 'c', parentId: 'p', durationMinutes: null }),
+      children: [],
+    };
+    const parent = renderTreeRow({ id: 'p', spentMinutes: 432, runningSince: T0 }, T0_MS, [child]);
+    const parentRow = parent.querySelector<HTMLElement>('[data-tree-row="p"]')!;
+    expect(parentRow.querySelector('[data-duration-track]')).toBeNull();
+
+    cleanup();
+    const leaf = renderTreeRow({ id: 'leaf', spentMinutes: 432, runningSince: T0 });
+    expect(anyTrack(leaf)).not.toBeNull();
   });
 });
 

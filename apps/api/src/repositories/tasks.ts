@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 import type { Db } from '../db/client.js';
 import { ROOT_BOARD_TITLE } from '../domain/board.js';
 import { settleClock, shouldRun } from '../domain/clock.js';
+import { deriveColumns } from '../domain/derive.js';
 import { ORDERS_STEP } from '../domain/orders.js';
 
 /** 任务的完整字段。数据库列名保持 snake_case，对外统一 camelCase（见 docs/decisions.md D4）。 */
@@ -265,11 +266,15 @@ export function createTask(db: Db, input: CreateTaskInput): TaskRecord {
       columnId: input.columnId,
       title: input.title,
       // 直接建在「进行中」列的任务从建立那一刻起计时，与拖进去同义。
-      runningSince: shouldRun(input.columnId, null) ? now : null,
+      // 新任务还没有子任务，一定是叶子，所以 isLeaf 传 true。
+      runningSince: shouldRun(input.columnId, null, true) ? now : null,
       orders: maxRow.max_orders + ORDERS_STEP,
       createdAt: now,
       updatedAt: now,
     });
+
+    // 新建的子任务会把父任务从「叶子」变成「有子任务」：父任务的列要重新推导，计时也要停掉。
+    reconcileDerivedStatus(db, now);
 
     const created = findTask(db, id);
     if (!created) {
@@ -341,6 +346,8 @@ export function applyTaskUpdate(db: Db, id: string, patch: UpdateTaskInput): Tas
     if (targetColumnId !== undefined && targetPosition !== undefined) {
       moveTask(db, id, { columnId: targetColumnId, position: targetPosition });
     }
+    // 移动会改到列，列是计时与父任务推导的输入，所以最后对一次账。
+    reconcileDerivedStatus(db, new Date().toISOString());
     return findTask(db, id);
   });
 
@@ -348,7 +355,7 @@ export function applyTaskUpdate(db: Db, id: string, patch: UpdateTaskInput): Tas
 }
 
 /**
- * 让一个任务的计时跟上它「接下来」的列与归档状态，需要时写库。
+ * 让一个任务的计时跟上它「接下来」的状态，需要时写库。
  *
  * `next` 传的是**将要生效**的状态，所以调用方可以把「归档」表达成传一个非空的 archivedAt。
  * 只在时钟真的变了才发 UPDATE：这两列是派生状态、不是用户编辑，因此不动 updated_at
@@ -358,11 +365,11 @@ export function applyTaskUpdate(db: Db, id: string, patch: UpdateTaskInput): Tas
 function settleTaskClock(
   db: Db,
   task: Pick<TaskRecord, 'id' | 'spentMinutes' | 'runningSince'>,
-  next: { columnId: string; archivedAt: string | null },
+  next: { columnId: string; archivedAt: string | null; isLeaf: boolean },
   now: string,
 ): void {
   const current = { spentMinutes: task.spentMinutes, runningSince: task.runningSince };
-  const settled = settleClock(current, shouldRun(next.columnId, next.archivedAt), now);
+  const settled = settleClock(current, shouldRun(next.columnId, next.archivedAt, next.isLeaf), now);
   if (settled === current) return;
 
   db.prepare(
@@ -371,38 +378,136 @@ function settleTaskClock(
 }
 
 /**
- * 让一批任务的计时跟上它们**当前**的列与归档状态。
- * 归档与取消归档会一次性改掉整棵子树，两处都先改完行、再调这里：归档后 archived_at 已非空，
- * 计时中的任务会被结算停表；取消归档后处于「进行中」的任务重新开始计时。
+ * 让一批任务停表（只用在归档路径）。
  *
- * 一条 SELECT 取回整批，而不是逐个 findTask（子树可能几十个节点，取消归档时还要带上祖先链）。
- * 分钟换算仍然只走 domain/clock.ts 那一份实现，没有搬进 SQL。
+ * 已归档的行不在 reconcileDerivedStatus 的扫描范围里——整棵归档子树都不显示，列与计时都留着
+ * 原样，取消归档时才有依据——所以归档后要在这里把它们的表停掉，不能指望对账。
+ * 一条 SELECT 取回整批，而不是逐个 findTask；分钟换算仍然只走 domain/clock.ts 那一份实现。
  */
-function settleSubtreeClocks(db: Db, ids: string[], now: string): void {
+function stopSubtreeClocks(db: Db, ids: string[], now: string): void {
   if (ids.length === 0) return;
 
   const placeholders = ids.map(() => '?').join(', ');
   const rows = db
     .prepare(
-      `SELECT id, column_id, archived_at, spent_minutes, running_since
-       FROM tasks WHERE id IN (${placeholders})`,
+      `SELECT id, spent_minutes, running_since FROM tasks WHERE id IN (${placeholders})`,
     )
-    .all(...ids) as Array<{
-    id: string;
-    column_id: string;
-    archived_at: string | null;
-    spent_minutes: number;
-    running_since: string | null;
-  }>;
+    .all(...ids) as Array<{ id: string; spent_minutes: number; running_since: string | null }>;
+
+  const update = db.prepare(
+    'UPDATE tasks SET spent_minutes = @spentMinutes, running_since = @runningSince WHERE id = @id',
+  );
+  for (const row of rows) {
+    const current = { spentMinutes: row.spent_minutes, runningSince: row.running_since };
+    const settled = settleClock(current, false, now);
+    if (settled === current) continue;
+    update.run({
+      id: row.id,
+      spentMinutes: settled.spentMinutes,
+      runningSince: settled.runningSince,
+    });
+  }
+}
+
+/** reconcileDerivedStatus 扫描出来的一行。 */
+interface ReconcileRow {
+  id: string;
+  parent_id: string | null;
+  column_id: string;
+  spent_minutes: number;
+  running_since: string | null;
+}
+
+/**
+ * 把「列」与「计时」对齐到子任务的实际状态（规则见 domain/derive.ts 与 docs/spec.md 的「状态语义」）。
+ *
+ * 每个会改到父子关系、列或归档状态的写入口，都在自己的事务里、写完之后调一次。刻意做成
+ * **全表重算**而不是逐个入口推算「这次影响了哪些祖先」：个人规模下全表扫描的成本可以忽略，
+ * 而那种推演只要漏一处，看板上就会出现一个与子任务矛盾的父任务——最常漏的正是归档，
+ * 把一个子任务收起来会让父任务从「有子任务」变回叶子。状态本来就一致时它一个字节都不写，
+ * 所以重复调用是幂等的，服务启动时也拿它给老库兜一次底（见 apps/api/src/index.ts）。
+ *
+ * 已归档的任务整棵不参与：它们不显示，列与计时都留着原样。
+ */
+export function reconcileDerivedStatus(db: Db, now: string): void {
+  const rows = db
+    .prepare(
+      `SELECT id, parent_id, column_id, spent_minutes, running_since
+       FROM tasks WHERE archived_at IS NULL`,
+    )
+    .all() as ReconcileRow[];
+
+  const derived = deriveColumns(
+    rows.map((row) => ({ id: row.id, parentId: row.parent_id, columnId: row.column_id })),
+  );
+
+  // 未归档子任务数量：0 表示叶子。推导与计时（叶子才走表）都要用它。
+  const childCount = new Map<string, number>();
+  for (const row of rows) {
+    if (row.parent_id === null) continue;
+    childCount.set(row.parent_id, (childCount.get(row.parent_id) ?? 0) + 1);
+  }
+
+  // 同一批里多个任务被推导进同一个 (父任务, 列) 时，orders 要依次往后排。
+  const nextOrders = readMaxOrders(db);
+  const move = db.prepare(
+    'UPDATE tasks SET column_id = @columnId, orders = @orders, updated_at = @updatedAt WHERE id = @id',
+  );
 
   for (const row of rows) {
+    const columnId = derived.get(row.id) ?? row.column_id;
+    const isLeaf = (childCount.get(row.id) ?? 0) === 0;
+
+    if (columnId !== row.column_id) {
+      const key = ordersKey(row.parent_id, columnId);
+      const orders = (nextOrders.get(key) ?? 0) + ORDERS_STEP;
+      nextOrders.set(key, orders);
+      move.run({ id: row.id, columnId, orders, updatedAt: now });
+    }
+
     settleTaskClock(
       db,
       { id: row.id, spentMinutes: row.spent_minutes, runningSince: row.running_since },
-      { columnId: row.column_id, archivedAt: row.archived_at },
+      // 未归档行（扫描条件已保证）：archivedAt 固定传 null。
+      { columnId, archivedAt: null, isLeaf },
       now,
     );
   }
+}
+
+/**
+ * 每个 `(parent_id, column_id)` 里现有的最大 orders。
+ *
+ * 统计**不排除已归档行**，与 createTask 的 MAX 同一个理由：归档行保留着自己的 orders，
+ * 被推导过来的任务不该插到它前面，否则取消归档时顺序就乱了。
+ */
+function readMaxOrders(db: Db): Map<string, number> {
+  const rows = db
+    .prepare(
+      `SELECT parent_id, column_id, MAX(orders) AS max_orders
+       FROM tasks GROUP BY parent_id, column_id`,
+    )
+    .all() as Array<{ parent_id: string | null; column_id: string; max_orders: number }>;
+
+  const maxOrders = new Map<string, number>();
+  for (const row of rows) maxOrders.set(ordersKey(row.parent_id, row.column_id), row.max_orders);
+  return maxOrders;
+}
+
+/** `(parent_id, column_id)` 的映射键。根层用空串代替 NULL——id 是 UUID，不会与它撞。 */
+function ordersKey(parentId: string | null, columnId: string): string {
+  return `${parentId ?? ''}\u0000${columnId}`;
+}
+
+/**
+ * 未归档的直接子任务数量。0 表示这是叶子——只有叶子能被手动拖动（见 domain/derive.ts）。
+ * 路由层用它决定要不要拒绝一次手动移动，判定口径与看板卡片的 childTotal 相同。
+ */
+export function countActiveChildren(db: Db, id: string): number {
+  const row = db
+    .prepare('SELECT COUNT(*) AS count FROM tasks WHERE parent_id = ? AND archived_at IS NULL')
+    .get(id) as { count: number };
+  return row.count;
 }
 
 /**
@@ -454,8 +559,9 @@ function moveTask(db: Db, id: string, input: MoveTaskInput): void {
     update.run({ id: taskId, columnId: input.columnId, orders, updatedAt: now });
   });
 
-  // 同一列里的其余任务本来就在目标列，列没变；只有被移动的任务自己的列可能变，所以只结算它一个。
-  settleTaskClock(db, task, { columnId: input.columnId, archivedAt: task.archivedAt }, now);
+  // 计时不在这里结算：调用方（applyTaskUpdate）随后会跑一次 reconcileDerivedStatus，
+  // 它按「叶子且未归档且在进行中」的统一判据重算全表，比在这里单独算被移动的这一个更靠得住
+  // （拖动会同时改变它的父任务是不是叶子，两个任务的计时都可能变）。
 }
 
 /**
@@ -499,9 +605,9 @@ export function changeTaskParent(
       updatedAt: now,
     });
 
-    // 改父级同时可能换列，计时要跟着走。时钟状态取事务开头读到的那份（上面的 UPDATE 没动这两列），
-    // 列状态传新值；最后重新读一次，保证返回给前端的是结算后的数据。
-    settleTaskClock(db, task, { columnId: input.columnId, archivedAt: task.archivedAt }, now);
+    // 改父级同时可能换列，还会改变新旧父任务的叶子状态，两边的列与计时都要跟着走。
+    // 统一交给对账：它按「叶子且未归档且在进行中」重算全表，最后重新读一次返回结算后的数据。
+    reconcileDerivedStatus(db, now);
     return findTask(db, id);
   });
 
@@ -533,8 +639,9 @@ export function setTaskArchived(db: Db, id: string, archived: boolean): TaskReco
         `UPDATE tasks SET archived_at = ?, updated_at = ?
          WHERE archived_at IS NULL AND id IN (${placeholders})`,
       ).run(now, now, ...ids);
-      // 归档之后整棵子树都不该再计时；此时行的 archived_at 已非空，settleClock 会把表停掉。
-      settleSubtreeClocks(db, ids, now);
+      // 归档之后整棵子树都不该再计时。这些行随即落到对账的扫描范围之外（它只看未归档行），
+      // 所以这里必须显式停表。
+      stopSubtreeClocks(db, ids, now);
     } else {
       // 祖先链：从任务的 parent_id 起逐层向上，遇到 NULL 停止。
       const ancestors = db
@@ -556,10 +663,12 @@ export function setTaskArchived(db: Db, id: string, archived: boolean): TaskReco
         `UPDATE tasks SET archived_at = NULL, updated_at = ?
          WHERE archived_at IS NOT NULL AND id IN (${placeholders})`,
       ).run(now, ...ids);
-      // 恢复出来的任务里，处在「进行中」的那些要重新开始计时：不变式要求
-      // 「进行中且未归档」必须有 running_since，否则它下次被拖出这一列时不会被结算。
-      settleSubtreeClocks(db, ids, now);
     }
+
+    // 两个方向都要对账：归档会把某个父任务变回叶子，取消归档会给它带回子任务，
+    // 两种情况下列与计时都变；取消归档还负责让「进行中」的叶子重新开始计时
+    // （它被归档时停了表，恢复后 running_since 是空的，正是不变式要求补上的那一半）。
+    reconcileDerivedStatus(db, now);
 
     return findTask(db, id);
   });
@@ -592,6 +701,9 @@ export function deleteTaskSubtree(db: Db, id: string): TaskRecord | undefined {
        WHERE predecessor_id IN (${placeholders}) OR successor_id IN (${placeholders})`,
     ).run(...ids, ...ids);
     db.prepare(`DELETE FROM tasks WHERE id IN (${placeholders})`).run(...ids);
+
+    // 删掉最后一个子任务会把父任务变回叶子（计时该重新开始），父任务的列也可能随之改变。
+    reconcileDerivedStatus(db, new Date().toISOString());
 
     return task;
   });

@@ -7,9 +7,9 @@ import { DOING_COLUMN_ID } from './columns.js';
  *   spent_minutes  已结算的累计用时（分钟）
  *   running_since  当前这一段的开始时刻；非空表示正在计时
  *
- * 不变式：running_since IS NOT NULL  ⟺  (column_id = 'doing' AND archived_at IS NULL)。
- * 仓储层每个会改到列或归档状态的写入口，都要调 settleClock 维持它；
- * 恢复归档这种「绕过 settleClock 直接改行」的路径，也要在 SQL 里把 running_since 补上。
+ * 不变式：running_since IS NOT NULL  ⟺  (column_id = 'doing' AND archived_at IS NULL AND 是叶子)。
+ * 仓储层每个会改到列或归档状态的写入口，最后都走 reconcileDerivedStatus 维持它；
+ * 恢复归档这种「绕过结算直接改行」的路径，也由它补上 running_since。
  * 测试直接按这条不变式断言，而不是逐条断言调用点。
  *
  * 这里刻意**只做计时，不做提醒判定**。「临近 / 超期」是随时间的流逝自己会变的状态，
@@ -24,9 +24,20 @@ export interface TaskClock {
 /** 以毫秒为单位的分钟数。 */
 const MS_PER_MINUTE = 60_000;
 
-/** 该不该计时：只有未归档且处在「进行中」列的任务在跑。 */
-export function shouldRun(columnId: string, archivedAt: string | null): boolean {
-  return columnId === DOING_COLUMN_ID && archivedAt === null;
+/**
+ * 该不该计时：只有未归档、处在「进行中」列、且是叶子（没有未归档子任务）的任务在跑。
+ *
+ * 父任务不走表是有意的。它的列由子任务推导（见 domain/derive.ts），只要子树里有活在干，
+ * 它就一直是「进行中」——让它跟着走表，项目根会把整棵子树的干活时间都记在自己头上，
+ * 而它自己的工期估算与那个数字无法对照（一个 5 天的项目，子任务干了一周它就「超期 7 天」）。
+ * 父任务的时间要表达的是「这个分支投入了多少」，那要从叶子汇总，不是自己计时。
+ */
+export function shouldRun(
+  columnId: string,
+  archivedAt: string | null,
+  isLeaf: boolean,
+): boolean {
+  return isLeaf && columnId === DOING_COLUMN_ID && archivedAt === null;
 }
 
 /**

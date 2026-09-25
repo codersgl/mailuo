@@ -36,7 +36,11 @@ export interface ReminderInput {
 
 const MS_PER_MINUTE = 60_000;
 
-const NO_REMINDER: ReminderView = {
+/**
+ * 「什么都不画」的那一档。除了完成列与归档任务，视图层也会直接用它：有子任务的父任务
+ * 不显示工期提醒，而那个判断（是不是叶子）属于视图层——判定要用的字段里没有 childTotal。
+ */
+export const NO_REMINDER: ReminderView = {
   fill: null,
   percent: 0,
   note: null,

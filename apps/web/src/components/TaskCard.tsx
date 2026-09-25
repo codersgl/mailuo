@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type { PointerEvent as ReactPointerEvent } from 'react';
 import { cx } from '../lib/cx';
+import { canDragCard } from '../domain/board';
 import type { BoardTask } from '../api/types';
 import { TaskCardFace } from './TaskCardFace';
 
@@ -54,6 +55,8 @@ export function TaskCard({
 }) {
   const archived = task.archivedAt !== null;
   const startDrag = onDragStart ?? (() => {});
+  // 拖不动的卡片不给抓手光标：光标是「这里能拖」的承诺，落空比不显示更糟。
+  const draggable = canDragCard(task);
 
   const [menuOpen, setMenuOpen] = useState(false);
   const [confirmingDelete, setConfirmingDelete] = useState(false);
@@ -117,7 +120,10 @@ export function TaskCard({
         type="button"
         onPointerDown={(event) => startDrag(task, event)}
         onClick={() => onOpen(task.id)}
-        className="block w-full cursor-grab rounded-[5px] px-[11px] py-[9px] text-left active:cursor-grabbing"
+        className={cx(
+          'block w-full rounded-[5px] px-[11px] py-[9px] text-left',
+          draggable ? 'cursor-grab active:cursor-grabbing' : 'cursor-pointer',
+        )}
       >
         <TaskCardFace task={task} archived={archived} nowMs={nowMs} />
       </button>

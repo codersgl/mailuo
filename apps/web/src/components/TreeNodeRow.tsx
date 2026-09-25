@@ -1,6 +1,6 @@
 import type { PointerEvent as ReactPointerEvent } from 'react';
 import { DONE_COLUMN_ID, DOING_COLUMN_ID } from '../domain/columns';
-import { reminderView } from '../domain/reminder';
+import { NO_REMINDER, reminderView } from '../domain/reminder';
 import { cx } from '../lib/cx';
 import { countChildren } from '../lib/tree';
 import type { TreeNode } from '../lib/tree';
@@ -49,7 +49,13 @@ export function TreeNodeRow({
   const hasChildren = children.length > 0;
   const { total, done } = countChildren(node);
   const archived = task.archivedAt !== null;
-  const reminder = reminderView(task, nowMs);
+  /**
+   * 与卡片同一条口径：有未归档子任务的父任务不画工期提醒（见 D76）。
+   * 判据用 `total` 而不是 `hasChildren`——前者只数未归档子任务，正是「叶子」的定义；
+   * 一个只有归档子任务的节点是叶子，它的表照常走，提醒也该照常画。
+   * 树里这两者是同一个来源（lib/tree.ts 的 countChildren），与看板的 childTotal 口径一致。
+   */
+  const reminder = total === 0 ? reminderView(task, nowMs) : NO_REMINDER;
 
   const dragging = drag?.draggingId === task.id;
   /**

@@ -22,6 +22,20 @@ const ORDERS_STEP = 1000;
  */
 
 /**
+ * 这张卡片能不能拖。两种不能拖的情形：
+ *
+ * - 已归档：后端对归档任务的 PATCH 一律拒绝（见 D16）。
+ * - 有未归档子任务：父任务的列完全由子任务推导（见 docs/spec.md 的「状态语义」），
+ *   后端会直接 400，前端先拦住。
+ *
+ * 判据只有这一处：光标样式（TaskCard）与拖拽准入（hooks/useCardDrag）必须同源，
+ * 否则会出现「光标是抓手但拖不动」，或者反过来「能拖但光标看不出来」。
+ */
+export function canDragCard(task: BoardTask): boolean {
+  return task.archivedAt === null && task.childTotal === 0;
+}
+
+/**
  * 界面上的落点：哪一列的哪张卡片之前。`beforeTaskId` 为 null 表示落在列尾。
  * 由 hooks/useCardDrag 的命中测试产出，比后端要的 position 更贴近用户看到的东西——
  * 中间那次换算由 `positionForDrop` 完成。

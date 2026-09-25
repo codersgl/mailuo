@@ -7,6 +7,7 @@ import { loadConfig, loadEnvFileIfPresent } from './config.js';
 import { openDatabase } from './db/client.js';
 import { runMigrations } from './db/migrate.js';
 import { collectLocalAddresses, formatHostForUrl, isLoopbackListenHost, isWildcardHost } from './domain/net.js';
+import { reconcileDerivedStatus } from './repositories/tasks.js';
 
 // 先读本机 .env（可选），再读配置：这样 `pnpm dev:api` 不带前缀也能拿到 .env 里的 PORT。
 loadEnvFileIfPresent();
@@ -29,6 +30,17 @@ const applied = runMigrations(db, config.migrationsDir);
 if (applied.length > 0) {
   console.log(`已应用迁移: ${applied.join(', ')}`);
 }
+
+/**
+ * 启动时给老库兜一次底：父任务的列由子任务推导（见 domain/derive.ts），而 0.2.0 及更早的库里
+ * 没有这条规则，历史数据大概率与子任务矛盾。每个写入口都会对账，但只读不写的库会一直不自洽，
+ * 所以这里先跑一遍。
+ *
+ * 刻意不做成一条迁移：这个功能没有任何 schema 变化，而推导规则要留在 TypeScript 里
+ * （domain/derive.ts 一份实现），搬一份 SQL 进迁移文件就是两份实现，迟早分叉——这与
+ * domain/clock.ts 的分钟换算「没有搬进 SQL」是同一条理由。对账是幂等的，状态一致时不写一个字节。
+ */
+reconcileDerivedStatus(db, new Date().toISOString());
 
 /**
  * 有没有前端产物可托管：只看 `index.html` 在不在。

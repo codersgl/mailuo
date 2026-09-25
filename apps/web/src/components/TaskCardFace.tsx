@@ -1,5 +1,5 @@
 import { DONE_COLUMN_ID } from '../domain/columns';
-import { reminderView } from '../domain/reminder';
+import { NO_REMINDER, reminderView } from '../domain/reminder';
 import { cx } from '../lib/cx';
 import { formatDuration, formatProgress, isDurationEstimated, progressPercent } from '../lib/format';
 import type { BoardTask } from '../api/types';
@@ -27,7 +27,16 @@ export function TaskCardFace({
 }) {
   const isDone = task.columnId === DONE_COLUMN_ID;
   const estimated = isDurationEstimated(task.durationMinutes);
-  const reminder = reminderView(task, nowMs);
+  /**
+   * 有子任务的父任务不显示工期胶囊与提醒条。
+   *
+   * 它的列由子任务推导（见 docs/spec.md 的「状态语义」），只要子树里有活在干就一直是「进行中」，
+   * 但表是停的（api 的 domain/clock.ts 只让叶子计时）——于是自己的工期估算与一个永远不动的已用
+   * 凑成的提醒条只会误导人。它自己的工期在界面上暂时没有出口；「整个分支投入了多少」要用子树
+   * 聚合来表达，那是下一步（见 docs/decisions.md D76）。进度条与「1/2 子任务」照常显示。
+   */
+  const hasChildren = task.childTotal > 0;
+  const reminder = hasChildren ? NO_REMINDER : reminderView(task, nowMs);
 
   return (
     <>
@@ -60,19 +69,28 @@ export function TaskCardFace({
         <span className={cx('text-[11px] tabular-nums', isDone ? 'text-accent' : 'text-ink-3')}>
           {formatProgress(task.childDone, task.childTotal)}
         </span>
-        <span
-          className={cx(
-            'ml-auto flex-none whitespace-nowrap rounded-[4px] border px-1.5 text-[11px] leading-4',
-            estimated
-              ? 'border-line bg-surface-2 text-ink-2'
-              : 'border-dashed border-line-strong bg-transparent text-ink-3',
-          )}
-        >
-          {formatDuration(task.durationMinutes)}
-        </span>
-        {/* 归档标记跟在工期后面（与任务树一样靠右），不挤占标题那一行和右上角的「⋯」。 */}
+        {/* 工期胶囊只画给叶子：父任务的那个估算不再有展示口径（见上面 hasChildren 的说明）。 */}
+        {!hasChildren && (
+          <span
+            className={cx(
+              'ml-auto flex-none whitespace-nowrap rounded-[4px] border px-1.5 text-[11px] leading-4',
+              estimated
+                ? 'border-line bg-surface-2 text-ink-2'
+                : 'border-dashed border-line-strong bg-transparent text-ink-3',
+            )}
+          >
+            {formatDuration(task.durationMinutes)}
+          </span>
+        )}
+        {/* 归档标记跟在工期后面（与任务树一样靠右），不挤占标题那一行和右上角的「⋯」。
+            没有工期胶囊时它自己顶到右边。 */}
         {archived && (
-          <span className="flex-none rounded-[4px] border border-dashed border-line-strong px-1 text-[10px] italic leading-[14px] text-ink-3">
+          <span
+            className={cx(
+              'flex-none rounded-[4px] border border-dashed border-line-strong px-1 text-[10px] italic leading-[14px] text-ink-3',
+              hasChildren && 'ml-auto',
+            )}
+          >
             归档
           </span>
         )}

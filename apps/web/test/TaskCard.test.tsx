@@ -185,7 +185,7 @@ describe('TaskCard', () => {
     expect(isOpen()).toBe(false);
   });
 
-  it('标题、描述、进度与工期三态都照口径渲染', () => {
+  it('标题、描述与进度照口径渲染；有子任务的卡片不画工期胶囊', () => {
     renderCard({
       title: '前端表单改造',
       description: '拆分校验逻辑',
@@ -197,6 +197,13 @@ describe('TaskCard', () => {
     expect(screen.getByText('前端表单改造')).toBeTruthy();
     expect(screen.getByText('拆分校验逻辑')).toBeTruthy();
     expect(screen.getByText('0/2 子任务')).toBeTruthy();
+    // 父任务的列由子任务推导、表也是停的，它自己的工期估算没有展示口径（见 D76）。
+    expect(screen.queryByText('工期 3 小时')).toBeNull();
+  });
+
+  it('叶子卡片照旧显示工期胶囊', () => {
+    renderCard({ durationMinutes: 180 });
+
     expect(screen.getByText('工期 3 小时')).toBeTruthy();
   });
 
@@ -218,6 +225,20 @@ describe('TaskCard', () => {
 
     expect(screen.queryByText('归档')).toBeNull();
     expect(screen.getByText('灰度开关').closest('article')?.className).not.toContain('border-dashed');
+  });
+
+  it('能拖的卡片给抓手光标', () => {
+    renderCard();
+
+    expect(screen.getByText('灰度开关').closest('button')?.className).toContain('cursor-grab');
+  });
+
+  it('有子任务的卡片不给抓手光标：拖不动的卡片不做「这里能拖」的承诺', () => {
+    renderCard({ childTotal: 2, childDone: 0 });
+
+    const body = screen.getByText('灰度开关').closest('button')!;
+    expect(body.className).toContain('cursor-pointer');
+    expect(body.className).not.toContain('cursor-grab');
   });
 
   it('卡片根元素不能加 overflow-hidden：右上角的「⋯」菜单要能伸出卡片', () => {

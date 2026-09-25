@@ -88,8 +88,15 @@ describe('POST /api/tasks', () => {
     const board = await readJson<BoardBody>(await api.request(`/api/board/${parent.id}`));
     expect(board.parentId).toBe(parent.id);
     expect(board.columns[2]!.tasks.map((task: { id: string }) => task.id)).toEqual([child.id]);
+
+    // 父任务的唯一子任务已完成，所以它自己也推导成「完成」（见 docs/spec.md 的「状态语义」），
+    // 卡片跟着出现在根看板的完成列。进度计数跟着卡片走，不跟着它建的时候那一列。
     const rootBoard = await readJson<BoardBody>(await api.request('/api/board'));
-    expect(rootBoard.columns[0]!.tasks[0]!).toMatchObject({ childTotal: 1, childDone: 1 });
+    expect(rootBoard.columns[2]!.tasks[0]!).toMatchObject({
+      id: parent.id,
+      childTotal: 1,
+      childDone: 1,
+    });
   });
 
   it('orders 只在自己父任务的目标列内计算', async () => {
