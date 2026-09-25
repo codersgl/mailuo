@@ -346,6 +346,35 @@ describe('useCardDrag', () => {
     expect(events.preview).toEqual([]);
   });
 
+  it('有子任务的父任务不给拖：它的列由子任务推导，后端会 400', () => {
+    const parent: BoardTask = { ...task(), childTotal: 2, childDone: 1 };
+    const events: Record<string, unknown[]> = { start: [], preview: [], drop: [], cancel: [], open: [] };
+    const drag = { current: null as null | ReturnType<typeof useCardDrag> };
+
+    function ParentHarness() {
+      const controls = useCardDrag({
+        resolveDrop: () => null,
+        onStart: (taskId) => events.start!.push(taskId),
+        onPreview: (drop) => events.preview!.push(drop),
+        onDrop: (drop) => events.drop!.push(drop),
+        onCancel: () => events.cancel!.push(true),
+      });
+      drag.current = controls;
+      return (
+        <button data-testid="parent" onPointerDown={(event) => controls.begin(parent, event)}>
+          有子任务
+        </button>
+      );
+    }
+
+    render(<ParentHarness />);
+    pointerDown(screen.getByTestId('parent'));
+    fireEvent.pointerMove(document, { clientX: 200, clientY: 100 });
+
+    expect(events.start).toEqual([]);
+    expect(events.preview).toEqual([]);
+  });
+
   it('pressed 标记：按下期间为真，松手回到假（这一次按下没进入拖拽也一样）', () => {
     const { card } = setup();
 

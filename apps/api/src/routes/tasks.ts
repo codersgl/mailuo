@@ -7,6 +7,7 @@ import { findDependencyCycle, listPredecessorIds, setTaskDeps } from '../reposit
 import {
   applyTaskUpdate,
   changeTaskParent,
+  countActiveChildren,
   createTask,
   deleteTaskSubtree,
   findTask,
@@ -72,13 +73,16 @@ export function createTaskRoutes(db: Db): Hono {
     const id = c.req.param('id');
     const patch = c.req.valid('json');
 
-    // 顺序固定为：任务存在（404）→ 任务未归档（400）→ 目标列存在（400）。顺序写进测试。
+    // 顺序固定为：任务存在（404）→ 任务未归档（400）→ 目标列存在（400）→ 有子任务不可手动换列（400）。
     const precheck = precheckTaskWritable(db, id);
     if (!precheck.ok) {
       return c.json({ error: precheck.error }, precheck.status);
     }
     if (patch.columnId !== undefined && !columnExists(db, patch.columnId)) {
       return c.json({ error: `列不存在: ${patch.columnId}` }, 400);
+    }
+    if (patch.columnId !== undefined && countActiveChildren(db, id) > 0) {
+      return c.json({ error: MANUAL_COLUMN_MOVE_REJECTED }, 400);
     }
 
     const updated = requireTask(applyTaskUpdate(db, id, patch));
@@ -92,7 +96,8 @@ export function createTaskRoutes(db: Db): Hono {
       const id = c.req.param('id');
       const input = c.req.valid('json');
 
-      // 与 PATCH /api/tasks/:id 保持同一顺序：任务存在 → 任务未归档 → 列存在 → 父级检查。
+      // 与 PATCH /api/tasks/:id 保持同一顺序：任务存在 → 任务未归档 → 列存在 → 父级检查
+      // → 有子任务时列必须不变（排在最后，让父级本身的问题优先报出来）。
       const precheck = precheckTaskWritable(db, id);
       if (!precheck.ok) {
         return c.json({ error: precheck.error }, precheck.status);
@@ -112,6 +117,13 @@ export function createTaskRoutes(db: Db): Hono {
         if (parent.archivedAt !== null) {
           return c.json({ error: '父任务已归档' }, 400);
         }
+      }
+
+      // 改父级本身允许（任务树里拖动）；但顺带换列对有子任务的父任务同样没有意义——
+      // 它的列由子任务推导。任务树拖动发过来的就是它当前的列，正常路径不会撞上这条。
+      // 排在校验链最后：父级本身的问题（成环、不存在、已归档）优先报出来。
+      if (input.columnId !== precheck.task.columnId && countActiveChildren(db, id) > 0) {
+        return c.json({ error: MANUAL_COLUMN_MOVE_REJECTED }, 400);
       }
 
       const updated = requireTask(changeTaskParent(db, id, input));
@@ -202,6 +214,15 @@ export function createTaskRoutes(db: Db): Hono {
 
   return routes;
 }
+
+/**
+ * 拒绝手动改一个「有子任务」的父任务的列时用的文案。
+ *
+ * 两条写路由（`PATCH /api/tasks/:id` 的移动、`PATCH /api/tasks/:id/parent` 的顺带换列）
+ * 共用同一句，前端把 `error` 直接显示给用户（见 apps/web/src/api/client.ts），
+ * 所以这里要写成「用户看完知道为什么卡片不动」的一句话，而不是「非法请求」。
+ */
+const MANUAL_COLUMN_MOVE_REJECTED = '任务有子任务，所在列由子任务决定，不能手动移动';
 
 /**
  * 写接口的前置校验：任务存在（404）→ 任务未归档（400）。

@@ -7,17 +7,21 @@ const T0 = '2024-01-01T00:00:00.000Z';
 const at = (minutes: number) => new Date(Date.parse(T0) + minutes * 60_000).toISOString();
 
 describe('shouldRun', () => {
-  it('只有「进行中」且未归档的任务计时', () => {
-    expect(shouldRun('doing', null)).toBe(true);
+  it('只有「进行中」且未归档的叶子任务计时', () => {
+    expect(shouldRun('doing', null, true)).toBe(true);
   });
 
   it('待办与完成列都不计时', () => {
-    expect(shouldRun('todo', null)).toBe(false);
-    expect(shouldRun('done', null)).toBe(false);
+    expect(shouldRun('todo', null, true)).toBe(false);
+    expect(shouldRun('done', null, true)).toBe(false);
   });
 
   it('归档会盖过列：进行中的归档任务也不计时', () => {
-    expect(shouldRun('doing', T0)).toBe(false);
+    expect(shouldRun('doing', T0, true)).toBe(false);
+  });
+
+  it('有子任务的父任务不计时：它自己的工期估算与「子树干了多久」对不上', () => {
+    expect(shouldRun('doing', null, false)).toBe(false);
   });
 });
 

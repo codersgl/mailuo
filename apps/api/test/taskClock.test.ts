@@ -39,17 +39,25 @@ function clockOf(db: Db, id: string): { spent_minutes: number; running_since: st
 }
 
 /**
- * 违反不变式（running_since 非空 ⟺ 进行中且未归档）的任务 id。
+ * 违反不变式（running_since 非空 ⟺ 进行中、未归档、且是叶子）的任务 id。
  *
  * 每个用例都查一次，而不是逐条断言调用点：会改到列或归档状态的写入口有好几处
  * （新建、移动、改父级、归档、取消归档），漏掉任何一个都会留下「永远不计时的任务」
  * 或者「停不下来的表」，而这两种毛病都不会让别的断言变红。
+ *
+ * 「是叶子」这一条与 domain/clock.ts 的 shouldRun 同口径：父任务的列由子任务推导，
+ * 它只要子树里有活在干就一直处在「进行中」，所以它的表必须是停的。
  */
 function clockViolations(db: Db): Array<{ id: string }> {
   return db
     .prepare(
-      `SELECT id FROM tasks
-        WHERE (running_since IS NOT NULL) <> (column_id = 'doing' AND archived_at IS NULL)`,
+      `SELECT t.id FROM tasks t
+        WHERE (t.running_since IS NOT NULL) <> (
+          t.column_id = 'doing' AND t.archived_at IS NULL
+          AND NOT EXISTS (
+            SELECT 1 FROM tasks c WHERE c.parent_id = t.id AND c.archived_at IS NULL
+          )
+        )`,
     )
     .all() as Array<{ id: string }>;
 }

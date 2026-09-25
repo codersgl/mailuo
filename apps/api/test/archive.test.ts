@@ -56,7 +56,9 @@ describe('PATCH /api/tasks/:id/archive', () => {
     const db = createTestDb();
     const aId = insertTask(db, { title: 'A', columnId: 'todo', orders: 1000 });
     const bId = insertTask(db, { title: 'B', columnId: 'todo', orders: 1000, parentId: aId });
-    const cId = insertTask(db, { title: 'C', columnId: 'doing', orders: 1000, parentId: bId });
+    // C 停在待办而不是进行中：它若在进行中，整条祖先链（B、A）会被状态推导成进行中，
+    // 而这两个用例守的是归档/取消归档的列与位置，不是推导（推导见 derive.test.ts 与 api 用例）。
+    const cId = insertTask(db, { title: 'C', columnId: 'todo', orders: 1000, parentId: bId });
     const dId = insertTask(db, { title: 'D', columnId: 'todo', orders: 2000 });
     const api = createApp(db);
 
@@ -157,7 +159,9 @@ describe('PATCH /api/tasks/:id/archive', () => {
     const db = createTestDb();
     const aId = insertTask(db, { title: 'A', columnId: 'todo', orders: 1000 });
     const bId = insertTask(db, { title: 'B', columnId: 'todo', orders: 1000, parentId: aId });
-    const cId = insertTask(db, { title: 'C', columnId: 'doing', orders: 1000, parentId: bId });
+    // C 停在待办而不是进行中：它若在进行中，整条祖先链（B、A）会被状态推导成进行中，
+    // 而这两个用例守的是归档/取消归档的列与位置，不是推导（推导见 derive.test.ts 与 api 用例）。
+    const cId = insertTask(db, { title: 'C', columnId: 'todo', orders: 1000, parentId: bId });
     insertTask(db, { title: 'D', columnId: 'todo', orders: 2000 });
     const api = createApp(db);
 
@@ -179,7 +183,9 @@ describe('PATCH /api/tasks/:id/archive', () => {
     const db = createTestDb();
     const aId = insertTask(db, { title: 'A', columnId: 'todo', orders: 1000 });
     const bId = insertTask(db, { title: 'B', columnId: 'todo', orders: 1000, parentId: aId });
-    const cId = insertTask(db, { title: 'C', columnId: 'doing', orders: 1000, parentId: bId });
+    // C 停在待办而不是进行中：它若在进行中，整条祖先链（B、A）会被状态推导成进行中，
+    // 而这两个用例守的是归档/取消归档的列与位置，不是推导（推导见 derive.test.ts 与 api 用例）。
+    const cId = insertTask(db, { title: 'C', columnId: 'todo', orders: 1000, parentId: bId });
     // 另一棵独立子树，用来验证父链恢复不会波及无关分支。
     const eId = insertTask(db, { title: 'E', columnId: 'todo', orders: 2000 });
     const fId = insertTask(db, { title: 'F', columnId: 'todo', orders: 1000, parentId: eId });

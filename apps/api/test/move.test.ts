@@ -87,11 +87,14 @@ describe('PATCH /api/tasks/:id 移动', () => {
     const rootA = insertTask(db, { title: '根A', columnId: 'todo', orders: 1000 });
     const rootB = insertTask(db, { title: '根B', columnId: 'todo', orders: 2000 });
     const parentId = insertTask(db, { title: '父任务', columnId: 'doing', orders: 1000 });
-    insertTask(db, { title: '子一', columnId: 'todo', orders: 1000, parentId });
-    const childTwoId = insertTask(db, { title: '子二', columnId: 'todo', orders: 2000, parentId });
+    // 子一留在「进行中」：父任务的列由子任务推导（见 docs/spec.md 的「状态语义」），
+    // 得有一个在干的子任务，父任务才会留在它建的时候那一列，本用例要守的「其他层不动」才成立。
+    insertTask(db, { title: '子一', columnId: 'doing', orders: 1000, parentId });
+    const childTwoId = insertTask(db, { title: '子二', columnId: 'todo', orders: 1000, parentId });
+    insertTask(db, { title: '子三', columnId: 'todo', orders: 2000, parentId });
     const api = createApp(db);
 
-    await patchJson(api, `/api/tasks/${childTwoId}`, { columnId: 'todo', position: 0 });
+    await patchJson(api, `/api/tasks/${childTwoId}`, { columnId: 'todo', position: 1 });
 
     // 根层的两个任务 orders 不变
     const board = await readJson<BoardBody>(await api.request('/api/board'));
@@ -100,7 +103,7 @@ describe('PATCH /api/tasks/:id 移动', () => {
       [rootA, 1000],
       [rootB, 2000],
     ]);
-    expect(await columnTitles(api, parentId, 'todo')).toEqual(['子二', '子一']);
+    expect(await columnTitles(api, parentId, 'todo')).toEqual(['子三', '子二']);
   });
 
   it('已归档任务不参与重排，保留原 orders', async () => {

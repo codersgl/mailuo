@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { moveTaskInBoard, positionForDrop } from '../src/domain/board';
+import { moveTaskInBoard, canDragCard, positionForDrop } from '../src/domain/board';
 import type { Board, BoardColumn, BoardTask } from '../src/api/types';
 
 /** 让每个 fixture 的 createdAt 严格递增，见 task() 里的说明。 */
@@ -177,5 +177,19 @@ describe('positionForDrop', () => {
 
     // 拖到归档卡片 a 之前（渲染顺序第一格），a 前面没有未归档卡片，所以是 0。
     expect(positionForDrop(withArchived, 'c', { columnId: 'todo', beforeTaskId: 'a' })).toBe(0);
+  });
+});
+
+describe('canDragCard', () => {
+  it('未归档的叶子卡片能拖', () => {
+    expect(canDragCard(task('a', 'todo'))).toBe(true);
+  });
+
+  it('已归档的卡片不能拖（后端对归档任务的 PATCH 一律拒绝）', () => {
+    expect(canDragCard(task('a', 'todo', { archived: true }))).toBe(false);
+  });
+
+  it('有子任务的父任务不能拖（它的列由子任务推导）', () => {
+    expect(canDragCard({ ...task('a', 'todo'), childTotal: 2 })).toBe(false);
   });
 });

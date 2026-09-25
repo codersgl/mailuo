@@ -2,6 +2,7 @@ import { useCallback, useState } from 'react';
 import type { PointerEvent as ReactPointerEvent } from 'react';
 import type { BoardTask } from '../api/types';
 import type { DropSlot } from '../domain/board';
+import { canDragCard } from '../domain/board';
 import { usePointerDrag } from './usePointerDrag';
 
 /**
@@ -131,8 +132,9 @@ export function useCardDrag(options: {
     resolveSlot: (clientX, clientY) => options.resolveDrop(clientX, clientY),
     // 同一列的同一张卡片之前算同一个落点：不去重的话每一帧都会触发一次乐观重排。
     isSameSlot: (a, b) => a.columnId === b.columnId && a.beforeTaskId === b.beforeTaskId,
-    // 已归档的卡片不能改（后端对归档任务的 PATCH 一律拒绝，见 D16），干脆不给拖。
-    canBegin: (payload) => payload.task.archivedAt === null,
+    // 已归档、以及有子任务的父任务都不给拖（后者后端会 400，见 domain/board.ts 的 canDragCard）。
+    // 前端先拦住，用户看到的是「这张卡片拖不动」而不是拖完弹一句错误、卡片又跳回去。
+    canBegin: (payload) => canDragCard(payload.task),
     onStart: (payload) => options.onStart(payload.task.id),
     onSlotChange: (slot) => options.onPreview(slot),
     onMove: (event, _slot, payload) =>

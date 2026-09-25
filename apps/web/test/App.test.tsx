@@ -732,7 +732,7 @@ describe('App 增删改', () => {
     );
   });
 
-  it('编辑任务：抽屉保存改标题与工期，卡片跟着更新', async () => {
+  it('编辑任务：抽屉保存改标题与工期，看板与抽屉跟着更新', async () => {
     const api = createFakeApi(fixtures);
     render(<App />);
     await boardArea().findByText('支付对账');
@@ -755,9 +755,11 @@ describe('App 增删改', () => {
       durationMinutes: 990,
     });
 
-    // 看板被静默重取，卡片上新标题与工期都到位，抽屉仍然开着。
+    // 看板被静默重取，卡片上新标题到位，抽屉仍然开着。
     expect(await boardArea().findByText('支付对账 v2')).toBeTruthy();
-    expect(boardArea().getByText('工期 2 天 30 分')).toBeTruthy();
+    // 工期不再画在卡片上（支付对账有子任务，见 D76），所以核对抽屉里的回填值来说明它落了库。
+    expect((dialog().getByLabelText('天') as HTMLInputElement).value).toBe('2');
+    expect((dialog().getByLabelText('分') as HTMLInputElement).value).toBe('30');
     expect(screen.getByRole('dialog')).toBeTruthy();
   });
 
