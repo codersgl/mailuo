@@ -8,7 +8,7 @@ const T0_MS = Date.parse(T0);
 /** T0 之后 minutes 分钟的时刻（毫秒）。 */
 const at = (minutes: number) => T0_MS + minutes * 60_000;
 
-/** 造一个「进行中、工期 1 天（480 分）」的任务，各用例只覆盖自己关心的字段。 */
+/** 造一个「进行中、工期 480 分（8 小时）」的任务，各用例只覆盖自己关心的字段。 */
 function task(overrides: Partial<ReminderInput> = {}): ReminderInput {
   return {
     durationMinutes: 480,
@@ -130,9 +130,12 @@ describe('reminderView 的进度比例与文案', () => {
     expect(reminderView(task({ spentMinutes: 9999 }), at(0)).percent).toBe(100);
   });
 
-  it('完整文案用 groupMinutes 口径（1 天 = 480 分）', () => {
-    const view = reminderView(task({ durationMinutes: 480, spentMinutes: 420, runningSince: null }), at(0));
-    expect(view.detail).toBe('工期 1 天，已用 7 小时，剩 1 小时');
+  it('完整文案用 groupMinutes 口径（1 天 = 1440 分）', () => {
+    const view = reminderView(
+      task({ durationMinutes: 1440, spentMinutes: 1380, runningSince: null }),
+      at(0),
+    );
+    expect(view.detail).toBe('工期 1 天，已用 23 小时，剩 1 小时');
   });
 
   it('时刻往前走会自己从弱填充走到临近再到超期', () => {

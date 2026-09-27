@@ -38,7 +38,7 @@ describe('DependencySection', () => {
   it('按列分组列出候选，并显示已选数量与工期', () => {
     renderSection(
       [
-        group('doing', '进行中', [row('a', '重构登录', { durationMinutes: 540 })]),
+        group('doing', '进行中', [row('a', '重构登录', { durationMinutes: 1500 })]),
         group('todo', '待办', [row('b', '支付对账')]),
       ],
       { selectedCount: 1 },

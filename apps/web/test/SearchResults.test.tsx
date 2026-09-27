@@ -120,7 +120,7 @@ describe('SearchResults', () => {
   it('工期只在估过时显示', () => {
     renderResults(
       ready([
-        result({ id: 't1', title: '登录甲', durationMinutes: 1440 }),
+        result({ id: 't1', title: '登录甲', durationMinutes: 4320 }),
         result({ id: 't2', title: '登录乙', durationMinutes: null }),
       ]),
     );

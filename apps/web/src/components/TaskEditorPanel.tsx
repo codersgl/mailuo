@@ -413,7 +413,9 @@ export function TaskEditorPanel({
                         : formatDuration(durationInput.value)}
                   </span>
                 </div>
-                <p className="mt-1 text-[11px] text-ink-3">1 天 = 480 分钟（8 小时工作制）</p>
+                <p className="mt-1 text-[11px] text-ink-3">
+                  {`1 天 = ${MINUTES_PER_DAY / 60} 小时（自然日）`}
+                </p>
               </fieldset>
             )}
 
