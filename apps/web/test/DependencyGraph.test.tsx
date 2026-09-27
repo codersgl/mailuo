@@ -131,7 +131,7 @@ describe('依赖图视图', () => {
 
     const card = graphNode(container, 't1');
     expect(within(card).getByText('梳理旧登录流程')).toBeTruthy();
-    expect(within(card).getByText('工期 1 天')).toBeTruthy();
+    expect(within(card).getByText('工期 8 小时')).toBeTruthy();
     for (const label of ['最早开始', '最晚开始', '松弛']) {
       expect(within(card).getByText(label)).toBeTruthy();
     }
@@ -171,9 +171,9 @@ describe('依赖图视图', () => {
     ]);
     expect(rows).toEqual([
       ['最早开始', '0 分'],
-      ['最早结束', '1 天'],
+      ['最早结束', '8 小时'],
       ['最晚开始', '0 分'],
-      ['最晚结束', '3 天'],
+      ['最晚结束', '1 天'],
       ['松弛时间', '0 分'],
     ]);
     // 列名来自看板列字典，详情卡里显示的是「进行中」而不是 columnId。

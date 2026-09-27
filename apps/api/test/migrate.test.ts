@@ -32,6 +32,7 @@ describe('runMigrations', () => {
       '001_init.sql',
       '002_duration_minutes.sql',
       '003_task_clock.sql',
+      '004_duration_natural_day.sql',
     ]);
 
     const columns = db.prepare('SELECT id, name, orders FROM columns ORDER BY orders').all();
@@ -40,14 +41,14 @@ describe('runMigrations', () => {
       { id: 'doing', name: '进行中', orders: 2000 },
       { id: 'done', name: '完成', orders: 3000 },
     ]);
-    expect(db.prepare('SELECT COUNT(*) AS count FROM schema_migrations').get()).toEqual({ count: 3 });
+    expect(db.prepare('SELECT COUNT(*) AS count FROM schema_migrations').get()).toEqual({ count: 4 });
   });
 
   it('重复执行不重复应用', () => {
     const db = createTestDb();
 
     expect(runMigrations(db, migrationsDir)).toEqual([]);
-    expect(db.prepare('SELECT COUNT(*) AS count FROM schema_migrations').get()).toEqual({ count: 3 });
+    expect(db.prepare('SELECT COUNT(*) AS count FROM schema_migrations').get()).toEqual({ count: 4 });
   });
 
   it('新增的迁移只应用新增的那一个', () => {
@@ -195,6 +196,61 @@ describe('runMigrations', () => {
     expect(filled.running_since).toMatch(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/);
     expect(new Date(filled.running_since!).toISOString()).toBe(filled.running_since);
     expect(Math.abs(Date.now() - Date.parse(filled.running_since!))).toBeLessThan(5000);
+  });
+
+  it('004 把 480 分钟的「1 天」重编码成 1440 分钟，未估与瞬时不动', () => {
+    // 折算口径只能这样测：先用 001–003 造出旧刻度的数据，再补上 004 走一次真实升级路径。
+    // 两条最容易写坏、而且坏了不会让别的用例变红的：
+    //   1. 整体乘 3 →「1 天 20 分」（500）会变成「3 天 20 分」（4340）：用户没动过工期，显示却变了；
+    //   2. 把 NULL 当成 0 参与折算（例如先 COALESCE 再算）→「未估」静默变成「瞬时」。
+    // 004 里 WHERE 那两条判据是防御性的：原表达式下 NULL 与 0 本来就是原值，删掉 WHERE 这几行
+    // 也照样绿（审阅实测过），它挡的是将来 CHECK 被放宽、负数进到 `%` 里。
+    // 判据是「迁移前后用户看到的 天/小时/分 标签逐字不变」，所以 480 这两个含义（1 天 / 8 小时）
+    // 在旧刻度里本来就分不开，迁移统一按「1 天」处理。
+    const upTo003 = makeMigrationsDir({
+      '001_init.sql': fs.readFileSync(path.join(migrationsDir, '001_init.sql'), 'utf8'),
+      '002_duration_minutes.sql': fs.readFileSync(
+        path.join(migrationsDir, '002_duration_minutes.sql'),
+        'utf8',
+      ),
+      '003_task_clock.sql': fs.readFileSync(
+        path.join(migrationsDir, '003_task_clock.sql'),
+        'utf8',
+      ),
+    });
+    const db = openDatabase(':memory:');
+    expect(runMigrations(db, upTo003)).toEqual([
+      '001_init.sql',
+      '002_duration_minutes.sql',
+      '003_task_clock.sql',
+    ]);
+    db.prepare(
+      `INSERT INTO tasks (id, parent_id, column_id, title, description, duration_minutes, orders, created_at, updated_at, archived_at)
+       VALUES ('week',     NULL, 'todo', '工期 7 天',  '', 3360, 1000, 't', 't', NULL),
+              ('dayPlus',  NULL, 'todo', '1 天 20 分', '',  500, 2000, 't', 't', NULL),
+              ('oneDay',   NULL, 'todo', '工期 1 天',  '',  480, 3000, 't', 't', NULL),
+              ('minutes',  NULL, 'todo', '45 分',      '',   45, 4000, 't', 't', NULL),
+              ('instant',  NULL, 'todo', '瞬时',       '',    0, 5000, 't', 't', NULL),
+              ('unset',    NULL, 'todo', '未估',       '', NULL, 6000, 't', 't', NULL),
+              -- 已归档的也要折算：取消归档之后界面上不能还是旧刻度。
+              ('archived', NULL, 'todo', '归档的 2 天', '', 960, 7000, 't', 't', 't')`,
+    ).run();
+
+    fs.copyFileSync(
+      path.join(migrationsDir, '004_duration_natural_day.sql'),
+      path.join(upTo003, '004_duration_natural_day.sql'),
+    );
+    expect(runMigrations(db, upTo003)).toEqual(['004_duration_natural_day.sql']);
+
+    expect(db.prepare('SELECT id, duration_minutes FROM tasks ORDER BY orders').all()).toEqual([
+      { id: 'week', duration_minutes: 10_080 },
+      { id: 'dayPlus', duration_minutes: 1460 },
+      { id: 'oneDay', duration_minutes: 1440 },
+      { id: 'minutes', duration_minutes: 45 },
+      { id: 'instant', duration_minutes: 0 },
+      { id: 'unset', duration_minutes: null },
+      { id: 'archived', duration_minutes: 2880 },
+    ]);
   });
 
   it('003 的 spent_minutes 只接受非负整数', () => {

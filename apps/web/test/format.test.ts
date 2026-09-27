@@ -32,14 +32,14 @@ describe('formatDuration', () => {
   it('不到一天按小时和分钟组合', () => {
     expect(formatDuration(MINUTES_PER_HOUR)).toBe('工期 1 小时');
     expect(formatDuration(90)).toBe('工期 1 小时 30 分');
-    expect(formatDuration(MINUTES_PER_DAY - 1)).toBe('工期 7 小时 59 分');
+    expect(formatDuration(MINUTES_PER_DAY - 1)).toBe('工期 23 小时 59 分');
   });
 
   it('一天以上按天、小时、分钟组合，只保留非零部分', () => {
     expect(formatDuration(MINUTES_PER_DAY)).toBe('工期 1 天');
     expect(formatDuration(MINUTES_PER_DAY + 60)).toBe('工期 1 天 1 小时');
     expect(formatDuration(MINUTES_PER_DAY + 65)).toBe('工期 1 天 1 小时 5 分');
-    expect(formatDuration(4320)).toBe('工期 9 天');
+    expect(formatDuration(4320)).toBe('工期 3 天');
   });
 
   it('契约外的负数兜底按瞬时处理，不显示负工期', () => {
@@ -64,12 +64,12 @@ describe('formatScheduleMinutes', () => {
   it('其余与工期共用同一套换算', () => {
     expect(formatScheduleMinutes(45)).toBe('45 分');
     expect(formatScheduleMinutes(MINUTES_PER_HOUR)).toBe('1 小时');
-    // 8 小时工作制：480 分钟是 1 天，900 分钟是 1 天 7 小时（不是 15 小时）。
+    // 自然日：1440 分钟是 1 天，1860 分钟是 1 天 7 小时（不是 31 小时）。
     expect(formatScheduleMinutes(MINUTES_PER_DAY)).toBe('1 天');
-    expect(formatScheduleMinutes(900)).toBe('1 天 7 小时');
-    expect(formatScheduleMinutes(1380)).toBe('2 天 7 小时');
-    expect(formatScheduleMinutes(1440)).toBe('3 天');
-    expect(formatScheduleMinutes(1560)).toBe('3 天 2 小时');
+    expect(formatScheduleMinutes(1860)).toBe('1 天 7 小时');
+    expect(formatScheduleMinutes(3300)).toBe('2 天 7 小时');
+    expect(formatScheduleMinutes(2880)).toBe('2 天');
+    expect(formatScheduleMinutes(1560)).toBe('1 天 2 小时');
   });
 });
 
@@ -98,8 +98,8 @@ describe('progressPercent', () => {
 
 describe('工期输入的三段换算', () => {
   it('已有工期拆成天 / 小时 / 分，为零的那段留空', () => {
-    expect(splitDuration(1920)).toEqual({ days: '4', hours: '', minutes: '' });
-    expect(splitDuration(1470)).toEqual({ days: '3', hours: '', minutes: '30' });
+    expect(splitDuration(1920)).toEqual({ days: '1', hours: '8', minutes: '' });
+    expect(splitDuration(1470)).toEqual({ days: '1', hours: '', minutes: '30' });
     expect(splitDuration(MINUTES_PER_DAY + 65)).toEqual({
       days: '1',
       hours: '1',
@@ -128,7 +128,7 @@ describe('工期输入的三段换算', () => {
     });
   });
 
-  it('按 1 天 = 480 分钟、1 小时 = 60 分钟求和', () => {
+  it('按 1 天 = 1440 分钟（自然日）、1 小时 = 60 分钟求和', () => {
     expect(readDurationInput({ days: '2', hours: '4', minutes: '30' })).toEqual({
       kind: 'minutes',
       value: 2 * MINUTES_PER_DAY + 4 * MINUTES_PER_HOUR + 30,

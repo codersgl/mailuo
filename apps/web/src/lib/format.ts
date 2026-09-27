@@ -3,11 +3,14 @@
  *
  * 工期的存储单位是分钟（见 docs/spec.md 的「关键路径」）：`null` 表示未估工期，
  * `0` 表示瞬时任务，其余是分钟数。「天」和「小时」只是展示时的换算，
- * 1 天 = 480 分钟（8 小时工作制），不参与任何日历计算。
+ * 1 天 = 1440 分钟（自然日），不参与任何日历计算。
+ *
+ * 为什么是自然日而不是 8 小时工作制：已用是按墙上时钟累计的，两边「天」的长度必须一致，
+ * 否则进度条会凭空放大 3 倍（见 docs/decisions.md D80）。
  */
 
 export const MINUTES_PER_HOUR = 60;
-export const MINUTES_PER_DAY = 480;
+export const MINUTES_PER_DAY = 1440;
 
 /**
  * 工期上限：9999 天。后端 `apps/api/src/domain/duration.ts` 的 `MAX_DURATION_MINUTES` 是同一个数，
@@ -77,7 +80,7 @@ function groupMinutes(total: number): string {
   return parts.join(' ');
 }
 
-/** 分钟数按 480 / 60 拆成天、小时、分三段。展示与编辑输入共用同一套换算。 */
+/** 分钟数按 1440 / 60 拆成天、小时、分三段。展示与编辑输入共用同一套换算。 */
 export function splitMinutes(total: number): { days: number; hours: number; minutes: number } {
   const days = Math.floor(total / MINUTES_PER_DAY);
   const rest = total % MINUTES_PER_DAY;

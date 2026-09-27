@@ -125,7 +125,7 @@ describe('卡片上的工期提醒', () => {
     expect(near).not.toBeNull();
     expect(barPercent(near!)).toBe('90%');
     expect((near!.querySelector('i') as HTMLElement).className).toContain('bg-accent');
-    expect(near!.getAttribute('title')).toBe('工期 1 天，已用 7 小时 12 分，剩 48 分');
+    expect(near!.getAttribute('title')).toBe('工期 8 小时，已用 7 小时 12 分，剩 48 分');
 
     const note = screen.getByText('剩 48 分');
     expect(note.className).toContain('text-accent');
@@ -155,7 +155,7 @@ describe('卡片上的工期提醒', () => {
 
     // 这一档没有可见文字，读屏只能靠条本身。
     expect(weak!.getAttribute('role')).toBe('img');
-    expect(weak!.getAttribute('aria-label')).toBe('工期 1 天，已用 4 小时，剩 4 小时');
+    expect(weak!.getAttribute('aria-label')).toBe('工期 8 小时，已用 4 小时，剩 4 小时');
     expect(weak!.getAttribute('aria-hidden')).toBeNull();
     // 也不能顺手多出一行字。
     expect(screen.queryByText(/^剩 /)).toBeNull();
@@ -204,7 +204,7 @@ describe('卡片上的工期提醒', () => {
       subtreeTimes,
     );
 
-    expect(screen.getByText('已用 3 小时 / 1 天 4 小时')).toBeTruthy();
+    expect(screen.getByText('已用 3 小时 / 12 小时')).toBeTruthy();
     expect(bar(container, 'weak')).not.toBeNull();
     // 子任务那条照旧在 meta 行里。
     expect(screen.getByText('1/2 子任务')).toBeTruthy();
@@ -232,8 +232,8 @@ describe('卡片上的工期提醒', () => {
     const container = renderFace({ id: 'p', childTotal: 2, childDone: 1, durationMinutes: 480 });
 
     expect(anyTrack(container)).toBeNull();
-    // 自己的工期（480 分 = 工期 1 天）与自己的已用都不能顶上来：那正是 D76 摘掉的那条假数据。
-    expect(container.textContent).not.toContain('工期 1 天');
+    // 自己的工期（480 分 = 8 小时）与自己的已用都不能顶上来：那正是 D76 摘掉的那条假数据。
+    expect(container.textContent).not.toContain('工期 8 小时');
     expect(container.textContent).not.toContain('已用');
   });
 
@@ -257,7 +257,7 @@ describe('任务树节点上的工期提醒', () => {
     expect(barPercent(near!)).toBe('90%');
     // 树上没有小字，条是这一行唯一说「还剩多久」的地方，所以必须可读。
     expect(near!.getAttribute('role')).toBe('img');
-    expect(near!.getAttribute('aria-label')).toBe('工期 1 天，已用 7 小时 12 分，剩 48 分');
+    expect(near!.getAttribute('aria-label')).toBe('工期 8 小时，已用 7 小时 12 分，剩 48 分');
   });
 
   it('超期的节点用危险色短条', () => {

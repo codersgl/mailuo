@@ -147,12 +147,12 @@ describe('buildSubtreeTimes', () => {
 describe('branchView', () => {
   it('全部叶子都估了：给分数、给条，Σ 的口径写在完整文案里', () => {
     const view = branchView(
-      { leafCount: 2, spentMinutes: 180, runningSince: [], durationMinutes: 720 },
+      { leafCount: 2, spentMinutes: 180, runningSince: [], durationMinutes: 2880 },
       { columnId: 'doing', archivedAt: null },
       T0_MS,
     );
 
-    expect(view.capsule).toBe('已用 3 小时 / 1 天 4 小时');
+    expect(view.capsule).toBe('已用 3 小时 / 2 天');
     expect(view.estimated).toBe(true);
     expect(view.reminder.fill).toBe('weak');
     // 「Σ 是工作量，不是日历工期」必须写在文案里，否则这两个数会被当成日历工期读。

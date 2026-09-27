@@ -743,7 +743,7 @@ describe('App 增删改', () => {
     fireEvent.change(dialog().getByDisplayValue('重构登录'), { target: { value: '重构登录 v2' } });
     fireEvent.change(dialog().getByLabelText('天'), { target: { value: '2' } });
     fireEvent.change(dialog().getByLabelText('分'), { target: { value: '30' } });
-    // 三段换算的实时预览：2 天 30 分 = 990 分钟。
+    // 三段换算的实时预览：2 天 30 分 = 2910 分钟（1 天 = 1440 分钟）。
     expect(dialog().getByText('工期 2 天 30 分')).toBeTruthy();
 
     fireEvent.click(dialog().getByRole('button', { name: '保存' }));
@@ -754,7 +754,7 @@ describe('App 增删改', () => {
     expect(patch?.body).toEqual({
       title: '重构登录 v2',
       description: '',
-      durationMinutes: 990,
+      durationMinutes: 2910,
     });
 
     // 看板被静默重取，卡片上新标题与新工期到位，抽屉仍然开着。
@@ -776,10 +776,10 @@ describe('App 增删改', () => {
     fireEvent.click(dialog().getByRole('button', { name: '保存' }));
 
     expect(await dialog().findByText('已保存')).toBeTruthy();
-    // 后端把标题 trim 了、9 小时折成 1 天 1 小时：输入框不能还留着原始输入。
+    // 后端把标题 trim 了；9 小时不足一天，天那一段要留空而不是显示 0 天。
     expect((dialog().getByDisplayValue('重构登录') as HTMLInputElement).value).toBe('重构登录');
-    expect((dialog().getByLabelText('天') as HTMLInputElement).value).toBe('1');
-    expect((dialog().getByLabelText('小时') as HTMLInputElement).value).toBe('1');
+    expect((dialog().getByLabelText('天') as HTMLInputElement).value).toBe('');
+    expect((dialog().getByLabelText('小时') as HTMLInputElement).value).toBe('9');
   });
 
   it('有子任务的父任务：工期那一栏是只读的汇总，保存时根本不带这个字段', async () => {
@@ -1247,7 +1247,7 @@ describe('App 搜索', () => {
 
   it('输入关键词后主区换成结果页：按列分组、显示路径与工期，看板列消失', async () => {
     createFakeApi([
-      task({ id: 'b', title: '支付对账', durationMinutes: 1440 }),
+      task({ id: 'b', title: '支付对账', durationMinutes: 4320 }),
       task({ id: 'b1', title: '对账脚本', parentId: 'b' }),
       task({ id: 'a', title: '重构登录', columnId: 'doing', orders: 2000 }),
     ]);
@@ -1580,7 +1580,7 @@ describe('App 依赖图', () => {
 describe('App 子树聚合', () => {
   it('父任务卡片上画的是子树的 Σ 已用 / Σ 工期，数字来自同一棵任务树', async () => {
     // 父任务自己的 durationMinutes 是 null（它不再是展示口径），聚合只能从子任务树算出来：
-    // 两片叶子 8 小时 + 4 小时（= 1 天 4 小时）、已用 2 小时 + 1 小时 → 「已用 3 小时 / 1 天 4 小时」。
+    // 两片叶子 8 小时 + 4 小时（= 12 小时）、已用 2 小时 + 1 小时 → 「已用 3 小时 / 12 小时」。
     // 这条同时守着「BoardPage 把任务树算出来的汇总交给了看板卡片」这段接线。
     createFakeApi([
       task({ id: 'p', title: '重构登录' }),
@@ -1603,6 +1603,6 @@ describe('App 子树聚合', () => {
     ]);
     render(<App />);
 
-    expect(await boardArea().findByText('已用 3 小时 / 1 天 4 小时')).toBeTruthy();
+    expect(await boardArea().findByText('已用 3 小时 / 12 小时')).toBeTruthy();
   });
 });
