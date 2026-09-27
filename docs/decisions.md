@@ -101,9 +101,10 @@
 - D78 第 40 步：工期是叶子的属性，父任务只读（2026-09-25，分支 feat/parent-duration，用户授权改规范）
 - D79 第 41 步：发 0.3.0（2026-09-25，分支 chore/release-0.3.0）
 
-**2026-09-27（D80）**
+**2026-09-27（D80–D81）**
 
 - D80 第 42 步：工期改按自然日，1 天 = 1440 分钟（2026-09-27，分支 fix/day-length-1440，用户拍板并授权改规范）
+- D81 第 43 步：发 0.4.0（2026-09-27，分支 chore/release-0.4.0）
 
 ## D1 用 pnpm workspace 管理多应用（2026-09-22）
 
@@ -3738,4 +3739,68 @@ new = floor(old / 480) * 1440 + (old % 480)
   进去也不应该是 66%」——先把那个 3 倍修掉，空闲口径单独一步再谈。
 - **不清理历史已用**：`spent_minutes` 里已经记进去的空闲时间原样保留。删数据不可逆，而且统一「天」
   之后这些数不再被放大，只是仍然偏大。
+
+
+## D81 第 43 步：发 0.4.0（2026-09-27，分支 chore/release-0.4.0）
+
+用户验收 D80 后要求发版，并确认走 0.4.0 而不是补丁号。
+
+### 为什么是 0.4.0
+
+沿用 D75 / D79 的同一条判断：改的是用户看得见的行为，不发补丁号。这一版有两条：
+
+- 所有工期换算与进度百分比都变了（「7 天」从 3360 分钟变成 10080 分钟，同一个任务从 66% 变 22%）；
+- 升级会**重写用户库里的 `duration_minutes`**（迁移 004），一次性的数据变更，不是纯代码增量。
+
+两个备选都不合适：0.3.1 会把「行为变化」塞进补丁号；等空闲口径（D80 的「没做的」）一起发则要让
+0.3.0 的用户继续看放大 3 倍的进度条，而这两件事没有依赖关系。
+
+### 这一版进包的改动（相对 0.3.0 的发布源 `11af888`）
+
+只有 D80 一步，但它同时改了 api 的 dist、web 的 dist 与 `apps/api/migrations/`（004 在 `files` 里）：
+
+- 前后端 `MINUTES_PER_DAY` 480 → 1440（`apps/api/src/domain/duration.ts`、`apps/web/src/lib/format.ts`），
+  上限随之为 9999 天；
+- 迁移 004 把存量工期按「用户当时输入的 天 / 小时 / 分」重新编码（`new = floor(old/480)*1440 + old%480`），
+  NULL 与 0 不动；
+- 抽屉提示改成「1 天 = 24 小时（自然日）」并由常量算出，README 与 `docs/spec.md` 同步。
+
+升级会在下一次启动时自动跑 004。本机真实库（`~/.mailuo/kanban.db`）在合并时仍是 001–003，所以
+**合并不等于生效**：要等 `mailuo` / `pnpm dev:api` 下一次启动。D53 记过相反的情形（dev watch 在合并时
+自动重启、顺带把迁移落到真实库），这次因为本机没有跑着 watch 进程所以没有发生。
+
+### 做法
+
+1. `.worktrees/chore-release-0.4.0` / 分支 `chore/release-0.4.0`，三个 `package.json`（根、`apps/api`、
+   `apps/web`）一起改成 0.4.0（只有根那个会被发布，理由同 D75）。
+2. 合并回 main，推送。
+3. 建 Release：tag `v0.4.0`，target main（即合并后的提交），非 draft、非 prerelease → `guard` →
+   门禁 → `npm publish`。
+
+`gh` 是 2.4.0：`--target` / `--title` / `--notes-file` 都能用，只有 D79 记过的 `--latest` 没有，
+不写它也照样是最新 release。
+
+### 门禁（worktree，合并前）
+
+lint 0 error / 5 warning（同基线）、typecheck 通过、build 通过；bin 37 / api 321 / web 501 全绿。
+版本号这一步只动三个字符串，门禁是照 D79 的口径在合并前完整跑一遍。
+
+### 发布结果（2026-09-27）
+
+- Release：`v0.4.0` → `1b347cd`（merge 版本号 0.4.0 的那个提交），非 draft、非 prerelease，
+  https://github.com/codersgl/mailuo/releases/tag/v0.4.0
+- 推送 main 的 CI（`push` 事件）：运行 36295519885 成功，1 分 0 秒。D80 的三个提交第一次上远端。
+- 发布工作流（`release` 事件）：运行 36295528971 成功，1 分 18 秒——`guard` 6 秒（tag 与
+  `package.json` 一致、npm 上没有 0.4.0），`npm-publish` 1 分 7 秒。
+- npm：`0.4.0` 已上线且是 `dist-tags.latest`；provenance 的 tlog logIndex 是 2969957054，
+  tarball 203.8 kB / 72 个文件 / shasum `cf5103a8...`。
+- CDN 现象与 D75、D79 一致：刚发完 `npm view dist-tags.latest` 还返回 `0.3.0`，实测约 60 秒后变成
+  `0.4.0`（本次轮询第 4 次命中）。本机 `npm view` 还要绕开一个环境问题：默认 cache / log 目录在
+  HOME 下不可写，用 `npm_config_cache` / `npm_config_logs_dir` 指到仓库内的临时目录。
+
+### 没做的（可选复杂性）
+
+- 不写 CHANGELOG 文件：同 D75 / D79，改动清单就在上面，Release 说明也写了同一份内容。
+- 不引 semantic-release / changesets：同 D72 的「没做的」。
+
 
