@@ -106,10 +106,11 @@
 - D80 第 42 步：工期改按自然日，1 天 = 1440 分钟（2026-09-27，分支 fix/day-length-1440，用户拍板并授权改规范）
 - D81 第 43 步：发 0.4.0（2026-09-27，分支 chore/release-0.4.0）
 
-**2026-09-30（D82–D83）**
+**2026-09-30（D82–D84）**
 
 - D82 第 44 步：加测试覆盖率与阈值门禁（2026-09-30，分支 feat/test-coverage）
 - D83 第 45 步：补卡片拖拽落点与 App 拖拽回调的用例（2026-09-30，分支 test/coverage-2）
+- D84 第 46 步：补 web 入口的挂载冒烟与新建行的 Esc 用例（2026-09-30，分支 test/coverage-3）
 
 ## D1 用 pnpm workspace 管理多应用（2026-09-22）
 
@@ -3954,3 +3955,65 @@ D82 明确把「补低覆盖文件的用例」留给了下一步，这是那一�
   `derived.get(...) ?? child.columnId`）：代码里都标注了「正常走不到」，要用 mock 制造不一致
   才能执行，属于为了让数字好看而写的用例。
 - `NewTaskForm.tsx`（75%，缺的是 Esc 取消那条）等组件分支留到下一次。
+
+## D84 第 46 步：补 web 入口的挂载冒烟与新建行的 Esc 用例（2026-09-30，分支 test/coverage-3）
+
+**先更正 D83 的一句话**：那条把 `apps/api/src/index.ts` 与 `apps/web/src/main.tsx` 并列为
+「由 bin 的进程级用例真起服务跑过」。api 的那个成立（bin 真的 import 了服务端产物），但
+`main.tsx` 与 bin 无关——它是**真的没有任何用例执行过**。这一步把它补上。
+
+**问题**：D82 / D83 之后 `apps/web` 只剩两个可动的点，性质不同：
+
+- `src/main.tsx`（0%，24 行）：入口，承担三件事——`import './index.css'`（全局样式与主题令牌
+  的唯一入口）；缺 `#root` 时抛可读错误而不是静默白屏；把 App 包在 AppErrorBoundary 里再挂载
+  （渲染期异常不该白屏，见审计报告 C2）。
+- `src/components/NewTaskForm.tsx`（语句 75%）：缺的是 Esc 取消那条（42–44 行）。
+
+**做法**（不动生产代码）：
+
+1. 新增 `apps/web/test/mainBoot.test.tsx`。只打桩 `react-dom/client` 的 `createRoot`——jsdom 里
+   真挂载 App 会触发一串 fetch，测到的是数据层而不是入口。断言：挂到 `#root` 这个容器且只挂
+   一次、渲染树是 `StrictMode > AppErrorBoundary > App`（边界直接包住 App，中间插 Provider 会
+   红）、没有 `#root` 时 import 直接抛「index.html 缺少 #root 挂载点」且不起挂载。
+2. `App.test.tsx` 补两条新建行的 Esc：单独开着时收起输入行且不发 POST；与编辑抽屉同时开着时
+   只收新建行、不关抽屉。后者守的是 `NewTaskForm.handleKeyDown` 里那句 `stopPropagation`——
+   抽屉的 Esc 监听挂在 document 上，不拦就会一次关掉两层。两条用例的顺序是「先开新建行、再开
+   抽屉」：抽屉的遮罩会盖住看板，反过来点不到「新建任务」按钮（jsdom 不做命中测试，反过来也能
+   过，但那条路径鼠标走不到）。
+
+**边界（这个冒烟不证明什么）**：它证明的是入口的**控制流与元素结构**，不证明真实挂载行为
+（StrictMode 双调用、生命周期）——那是 `App.test.tsx` 与 `AppErrorBoundary.test.tsx` 的事。
+`import './index.css'` 这一行也守不住：删掉它，用例照样绿；要守只能对源码做断言，本步没做。
+
+**踩到的两个坑**：
+
+- 入口靠 `await import()` 执行，模块只在第一次 import 时跑；但把 `vi.resetModules()` 放进共用
+  `beforeEach` 会把 `App` / `AppErrorBoundary` 换成新的模块实例，使「渲染树里的是不是同一个
+  组件」这条断言假红。
+- 反过来只在第二条用例里 reset，则两条用例的结果取决于声明顺序：第二条那次失败的 import 会在
+  模块注册表里留下「已拒绝」的记录，第一条不 reset 就直接拿到同一个错误（`--sequence.shuffle
+  --sequence.seed=3` 实测假红，错误栈还指向另一行，误导排查）。
+  最终的修法：`resetModules()` 放回 `beforeEach`，第一条用例里**动态** import `react` /
+  `../src/App` / `../src/components/AppErrorBoundary` 再 import 入口——三者与 `main.tsx` 必须
+  来自同一次注册表。
+
+**结果**（apps/web，v8）：95.42 / 91.14 / 95.94 / 97.58 → **95.91 / 91.4 / 96.39 / 98.09**。
+`main.tsx` 0 → 100，`NewTaskForm.tsx` 75 → 90（剩第 28 行「空标题或保存中」的早退与第 42 行
+「不是 Escape」的早退）。阈值跟着上调函数 93 → 94、行 95 → 96；语句 93、分支 89 不变。
+
+同时更新 `docs/development.md` 的覆盖率一节：那里原来写「两个入口因此显示 0%」，现在只剩
+`apps/api/src/index.ts` 一个。
+
+**没有发现功能缺陷**：Esc 的 `stopPropagation` 在 React 19 下确实挡住了 document 上的抽屉监听
+（审查里删掉那一行验证过：第二条用例变红，第一条仍绿）。
+
+**仍没做的（留给用户拍板）**：`apps/api/src/index.ts` 仍 0%。它与 `main.tsx` 不同，是**启动脚本**，
+逻辑散在顶层语句里（allowedHosts 合并、判断有没有前端产物、EADDRINUSE 的可操作提示、SIGINT /
+SIGTERM 收尾）。两条路：
+
+- 把顶层逻辑抽成一个可注入的启动函数（例如 `startServer(options)`）放进新模块，`index.ts` 只剩
+  一次调用——入口因此可测，但要动生产代码；
+- 或在测试里 mock 掉 `@hono/node-server` 的 `serve` 与 `config` / `db` / `migrate` 再 `import`——
+  不动生产代码，但测的是替身接线，且模块级副作用（信号处理、`process.exit`）要逐个接管，很脆。
+
+两种都超出「补用例」的范围，先不做。

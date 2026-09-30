@@ -770,6 +770,45 @@ describe('App 增删改', () => {
     );
   });
 
+  it('新建行里按 Esc：收起输入行，不提交', async () => {
+    const api = createFakeApi(fixtures);
+    render(<App />);
+    await boardArea().findByText('支付对账');
+
+    fireEvent.click(boardArea().getByRole('button', { name: '在「待办」新建任务' }));
+    const input = boardArea().getByRole('textbox', { name: '在「待办」新建任务' });
+    fireEvent.change(input, { target: { value: '半截标题' } });
+    fireEvent.keyDown(input, { key: 'Escape' });
+
+    await waitFor(() =>
+      expect(boardArea().queryByRole('textbox', { name: '在「待办」新建任务' })).toBeNull(),
+    );
+    // 半截标题不该被顺手提交出去。
+    expect(api.calls.some((call) => call.method === 'POST')).toBe(false);
+  });
+
+  it('新建行与抽屉同时开着时，在新建行按 Esc 只收新建行，不关抽屉', async () => {
+    createFakeApi(fixtures);
+    render(<App />);
+    await boardArea().findByText('重构登录');
+
+    // 顺序是「先开新建行、再开抽屉」：抽屉的遮罩会盖住整块看板，反过来点不到「新建任务」按钮
+    // （jsdom 不做命中测试，反过来也能过，但那条路径鼠标走不到）。
+    fireEvent.click(boardArea().getByRole('button', { name: '在「待办」新建任务' }));
+    const input = boardArea().getByRole('textbox', { name: '在「待办」新建任务' });
+    await openEditor('重构登录');
+    // 抽屉真的开着：否则断言「Esc 之后抽屉还在」证明的是「本来就没有抽屉」。
+    expect(screen.getByRole('dialog')).toBeTruthy();
+
+    // 抽屉的 Esc 监听挂在 document 上，而新建行的 Esc 要阻止冒泡——否则一次 Esc 会关掉两层。
+    fireEvent.keyDown(input, { key: 'Escape' });
+
+    await waitFor(() =>
+      expect(boardArea().queryByRole('textbox', { name: '在「待办」新建任务' })).toBeNull(),
+    );
+    expect(screen.getByRole('dialog')).toBeTruthy();
+  });
+
   it('编辑任务：抽屉保存改标题与工期，看板与抽屉跟着更新', async () => {
     const api = createFakeApi(fixtures);
     render(<App />);
