@@ -81,10 +81,9 @@ TypeScript 7，所以根 `devDependencies` 里的 `typescript@6` 只服务 lint�
 - 范围：`apps/api/src/**`（vitest + v8）与 `apps/web/src/**`（vitest + jsdom + v8），
   以及 `bin/mailuo.mjs`（Node 内置的 `--experimental-test-coverage`）。
 - `include` 写死到 `src/**`：没被用例加载到的文件也以 0% 计入，而不是从分母里消失。
-  两个入口因此显示 0%，但性质不同：`apps/api/src/index.ts` 的启动路径由
-  `bin/mailuo.test.mjs` 的进程级用例真起服务跑过（那种覆盖算不进 vitest 的报告）；
-  `apps/web/src/main.tsx` 只做 createRoot + 挂载，没有任何用例执行它（jsdom 用例都从
-  `App.tsx` 起）。
+  只剩 `apps/api/src/index.ts` 一个入口是 0%：它的启动路径由 `bin/mailuo.test.mjs` 的进程级
+  用例真起服务跑过，那种覆盖算不进 vitest 的报告。`apps/web/src/main.tsx` 已由
+  `apps/web/test/mainBoot.test.tsx` 的挂载冒烟覆盖（D84）。
 - 新加工作区包时必须同时提供 `test:coverage`：根脚本用的是 `pnpm -r test:coverage`，
   只定义了 `test` 的包会被静默跳过，而 CI 与发布门禁跑的是前者。
 - 报告：终端表格 + `apps/api/coverage/index.html`、`apps/web/coverage/index.html`
