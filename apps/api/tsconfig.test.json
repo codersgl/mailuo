@@ -8,5 +8,7 @@
     "rootDir": ".",
     "noEmit": true
   },
-  "include": ["src/**/*.ts", "test/**/*.ts"]
+  // vitest.config.ts 也一起检查：覆盖率的阈值与 include 写在里面，键名写错时 vitest 会在
+  // 运行期报错，但那是跑到测试才发现的；放进 typecheck 清单能提前一档拦住。
+  "include": ["src/**/*.ts", "test/**/*.ts", "vitest.config.ts"]
 }

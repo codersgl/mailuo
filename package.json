@@ -51,6 +51,7 @@
     "start": "pnpm --filter @mailuo/api start",
     "prepack": "pnpm build",
     "test": "node --test bin/*.test.mjs && pnpm -r test",
+    "test:coverage": "node --test --experimental-test-coverage --test-coverage-include=bin/mailuo.mjs --test-coverage-lines=93 --test-coverage-branches=86 --test-coverage-functions=88 bin/*.test.mjs && pnpm -r test:coverage",
     "typecheck": "pnpm -r typecheck"
   },
   "dependencies": {

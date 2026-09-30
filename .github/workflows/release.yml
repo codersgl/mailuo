@@ -136,7 +136,8 @@ jobs:
       # 顺序不能反：bin/mailuo.test.mjs 的进程级用例要读构建产物（`files` 里的
       # apps/api/dist 与 apps/web/dist 也是这么来的）。
       - run: pnpm build
-      - run: pnpm test
+      # 同 CI：`test:coverage` 是 `test` 的超集（多出覆盖率阈值门禁），发布前只跑它。
+      - run: pnpm test:coverage
 
       # --ignore-scripts：prepack 会再构建一次，而那次构建没有任何用例碰过；发出去的应当是
       # 上面 build 过、也测过的那一份产物。
