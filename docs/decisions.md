@@ -106,12 +106,13 @@
 - D80 第 42 步：工期改按自然日，1 天 = 1440 分钟（2026-09-27，分支 fix/day-length-1440，用户拍板并授权改规范）
 - D81 第 43 步：发 0.4.0（2026-09-27，分支 chore/release-0.4.0）
 
-**2026-09-30（D82–D85）**
+**2026-09-30（D82–D86）**
 
 - D82 第 44 步：加测试覆盖率与阈值门禁（2026-09-30，分支 feat/test-coverage）
 - D83 第 45 步：补卡片拖拽落点与 App 拖拽回调的用例（2026-09-30，分支 test/coverage-2）
 - D84 第 46 步：补 web 入口的挂载冒烟与新建行的 Esc 用例（2026-09-30，分支 test/coverage-3）
 - D85 第 47 步：服务端启动流程抽成可注入的 server.ts（2026-09-30，分支 refactor/api-boot，用户拍板选 A）
+- D86 第 48 步：补 api 的可达分支并做变异验证（2026-09-30，分支 test/api-branches）
 
 ## D1 用 pnpm workspace 管理多应用（2026-09-22）
 
@@ -4079,3 +4080,83 @@ vitest 里只能靠 `import` 触发、一次运行只执行一次，还会留下
   一条直线的主流程，拆开只会增加跳转。
 - 没动 `bin/mailuo.mjs` 自己的启动逻辑（端口扫描、开浏览器、查新版本）：那部分本来就由 bin 的
   用例覆盖。
+
+## D86 第 48 步：补 api 的可达分支并做变异验证（2026-09-30，分支 test/api-branches）
+
+用户看完「为什么说是为数字写用例」的答复后，要求把其中**可达**的那批补掉。
+
+**先纠正 D85 结尾的口径**：那条把「剩下的分支」笼统说成「防御性、为数字」。这话只对一部分成立。
+把 38 条未覆盖分支按「能不能用公开输入到达」逐条过了一遍之后，至少 13 条是真实行为，之前一起
+扫掉是错的。
+
+**补的 13 条**（都通过公开接口或函数的正常用法到达，没有 mock 内部）：
+
+| 位置（按符号/函数定位，行号是当时的快照） | 触发 | 用例 |
+| --- | --- | --- |
+| `db/client.ts` 的 `openDatabase` | 文件路径（生产默认走这条），此前单测只用 `:memory:` | 新增 `test/client.test.ts` |
+| `domain/net.ts` 的 `hostNameOf` | `hostNameOf('[::1')`：方括号没闭上 | `net.test.ts` |
+| `routes/tasks.ts` 的写接口 Content-Type 中间件 | 写请求**完全没有** Content-Type 头 | `tasks.test.ts` |
+| `schemas/common.ts` 的 `strictObjectError` | 请求体不是对象时保留 Zod 原文案 | `tasks.test.ts` |
+| `schemas/task.ts` 的 `changeTaskParentSchema` 回调 | `parentId` 是数字（不是缺失）时的文案 | `tasks.test.ts` |
+| `repositories/search.ts` 的 `avoidSurrogateSplit` | 摘要**起点**落在代理对中间（既有用例只覆盖了终点那条三元分支） | `search.test.ts` |
+| `repositories/deps.ts` 的 `setTaskDeps` | 直接调仓储传不存在的任务 | `deps.test.ts` |
+| `repositories/tasks.ts` 的 `updateTaskFields` / `applyTaskUpdate` / `changeTaskParent` | 直接调仓储的四个早退（空 patch、UPDATE 0 行、任务不存在） | `tasks.test.ts` |
+| `routes/tasks.ts` 的 `requireTask` | 竞态兜底：500 + 那条日志 | 新增 `test/taskRace.test.ts`（受控模块替身） |
+
+两条**踩到的坑**，都是「想当然的输入其实到不了那条分支」：
+
+- 只测「Content-Type 写错」时 `?? ''` 的右半边永远不走；但换成带字符串 body 的请求也不行——
+  fetch 规范会给字符串 body 自动补 `text/plain;charset=UTF-8`。必须**不带 body**才是真的没有这个头。
+- 给 strictObject 传 `{}` 不会走对象级错误文案（那是字段级 issue）；要覆盖 `strictObjectError`
+  的另一侧必须传一个**非对象**的合法 JSON（`"不是对象"`）。
+
+**结果**（apps/api，v8）：97.24 / 92.6 / 97.84 / 98.23 → **98.12 / 95.13 / 97.84 / 98.48**，
+用例 338 → 350。阈值按「向下取整再减 2」重算：语句 95 → 96、分支 90 → 93（函数 95、行 96 不变）。
+四项都过了 95%。
+
+**变异验证**（AGENTS 新增「通过变异测试确保测试质量」这条之后第一次做，手工注入，逐条还原）：
+
+| 变异 | 结果 |
+| --- | --- |
+| 去掉 `header('content-type') ?? ''` 的兜底 | CAUGHT |
+| `strictObjectError` 恒返回对象级文案 | CAUGHT |
+| `changeTaskParentSchema` 里 `parentId` 非字符串的文案换成另一条 | CAUGHT |
+| `createTaskSchema` 里 `parentId` 的静态文案换成另一条 | CAUGHT（审查指出第一版漏了这条入口后补的 POST 用例） |
+| `hostNameOf` 的 `end === -1` 守卫改成返回裸主机 | CAUGHT |
+| 去掉建父目录的 `mkdirSync` | CAUGHT |
+| 去掉摘要起点的代理对修正 | CAUGHT |
+| 去掉 `setTaskDeps` 的存在性守卫 | CAUGHT |
+| 空 patch 早退改成恒返回 `undefined` | CAUGHT（审查指出第一版漏了「任务存在 + 空 patch」输入后补的断言） |
+| 去掉 `requireTask` 的断言 | CAUGHT（断言日志里的**那条**错误，不是只数次数） |
+| `result.changes === 0` 改成恒假 | **SURVIVED（已知等价）**：任务不存在时后面 `findTask` 同样返回 undefined，这条早退从外部不可观测。留着它只为少跑一次查询。 |
+
+两次假存活都出在**变异与用例各自的问题**上，值得记下来：
+
+- 「`parentId` 文案」第一次显示存活，是变异打错了位置——同样的字符串在 `createTaskSchema` 里
+  先出现（那次改的是 POST 入口，而用例打的是 PATCH 入口）。修正后 CAUGHT，同时暴露了 POST
+  入口确实没人钉，补了一条。
+- 「空 patch 早退」第一版用例只传了不存在的任务，改成恒返回 `undefined` 也是绿的（两边同为
+  undefined）。补上「任务存在 + 空 patch 返回原记录、且不写 `updated_at`」之后才真正钉住。
+
+结论：**存活要先怀疑变异本身，再怀疑用例；两者都排除后，剩下来的才是真缺口。**
+
+**顺带发现（未改代码）**：`domain/net.ts` 的 `if (end === -1) return ''` 是冗余的——
+`value.startsWith('[')` 且 `end === -1` 时，紧随其后的 `rest` 校验必然也返回 `''`。所以「整条删掉」
+这种变异存活（改它的返回值则会被抓到）。行为是对的，属于刻意防御代码；按规则不擅自删除，记在这里。
+
+**剩下的 25 条分支（构造上不可达，不再强求）**：
+
+- `cpm.ts` 9 处 `??` 兜底 + `if (!early || !late)` 断言、`derive.ts:122`、`clock.ts:71`、
+  `subtreeDuration.ts:46/93/117`：单亲树/拓扑序保证 `Map` 里一定有对应条目，代码注释也写了
+  「正常走不到」。
+- `deps.ts:76`、`tasks.ts:281/389/459/541`、`search.ts:123/127`：同一类不变量与私有函数的兜底
+  （`readBreadcrumb` 只会抛那两种脏数据错误，所以 catch 的「其它错误」永不发生）。
+- `app.ts` 的 `toErrorResponse`：全仓没有任何地方抛「响应体是 JSON 的 HTTPException」，也没有
+  message 为空的路径——未覆盖的是 `if` 为真的那半边（`return response`）与 `message || '请求失败'`
+  的右侧，都是为将来留的分支。
+
+**没做的**：
+
+- web 侧还有 41 条可达分支（D83 报告的分支缺口），留给下一步。
+- 没引入 Stryker 之类的自动变异工具：这次是手工注入逐条验证。要不要把它做成 `pnpm mutation`
+  并进 CI，是下一步的事——全量变异在一次 CI 里跑不完，需要先定范围（建议 `domain/**` + `server.ts`）。

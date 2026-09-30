@@ -2,6 +2,11 @@ import { describe, expect, it } from 'vitest';
 import { createApp } from '../src/app.js';
 import { MAX_DURATION_MINUTES } from '../src/domain/duration.js';
 import {
+  applyTaskUpdate,
+  changeTaskParent,
+  updateTaskFields,
+} from '../src/repositories/tasks.js';
+import {
   createTestDb,
   insertTask,
   readJson,
@@ -197,6 +202,52 @@ describe('POST /api/tasks', () => {
     expect(await response.json()).toEqual({ error: 'Content-Type 必须是 application/json' });
   });
 
+  it('完全没有 Content-Type 头时同样拦下（缺失与写错是两条路径）', async () => {
+    // 只测「写错 content-type」时，`header('content-type') ?? ''` 的右半边永远不走。
+    // 注意请求不能带 body：fetch 规范会给字符串 body 自动补 `text/plain;charset=UTF-8`，
+    // 那样头又是存在的了——不带 body 才是真的「没有这个头」。
+    const response = await createApp(createTestDb()).request('/api/tasks', { method: 'POST' });
+
+    expect(response.status).toBe(400);
+    expect(await response.json()).toEqual({ error: 'Content-Type 必须是 application/json' });
+  });
+
+  it('请求体不是对象时保留 Zod 的可读描述，而不是换成「存在未定义的字段」', async () => {
+    // strictObject 的对象级文案只替换「未定义字段」那一种 issue；非对象请求体是另一种，
+    // 必须继续给出 Zod 自己的描述。这里钉字面量而不是 /object/i：这句是 Zod 的默认英文，
+    // 随主版本可能变，钉死才能在升级时显式改一次，而不是让断言静默放宽。
+    const response = await postTask(app(), '不是对象');
+
+    expect(response.status).toBe(400);
+    expect(await response.json()).toEqual({
+      error: 'Invalid input: expected object, received string',
+    });
+  });
+
+  it('新建任务时 parentId 不是字符串，同样给「必须是字符串」', async () => {
+    // 与下面「改父级」那条是两个 schema：`createTaskSchema` 的 parentId 用的是静态文案，
+    // `changeTaskParentSchema` 用的是带条件的回调。两条入口都要钉，否则只改一条不会被发现。
+    const response = await postTask(app(), { parentId: 42, columnId: 'todo', title: 'A' });
+
+    expect(response.status).toBe(400);
+    expect(await response.json()).toEqual({ error: 'parentId: 父任务 id 必须是字符串' });
+  });
+
+  it('改父级时 parentId 不是字符串，给「必须是字符串」而不是「不能为空」', async () => {
+    const db = createTestDb();
+    const id = insertTask(db, { title: 'A', columnId: 'todo', orders: 1000 });
+    const api = createApp(db);
+
+    const response = await api.request(`/api/tasks/${id}/parent`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ parentId: 42, columnId: 'todo' }),
+    });
+
+    expect(response.status).toBe(400);
+    expect(await response.json()).toEqual({ error: 'parentId: 父任务 id 必须是字符串' });
+  });
+
   it('父任务已归档返回 400', async () => {
     const db = createTestDb();
     const archivedParentId = insertTask(db, {
@@ -353,5 +404,42 @@ describe('PATCH /api/tasks/:id', () => {
     expect(response.status).toBe(400);
     // Hono 自己抛的 HTTPException 只带 text/plain，这里必须被包成 { error: string }
     expect(await response.json()).toEqual({ error: '请求体不是合法 JSON' });
+  });
+});
+
+/**
+ * 仓储层的「任务不存在」守卫，直接调函数而不经过路由。
+ *
+ * 路由在调用前已经查过存在性（404），所以这几条从 HTTP 层走不到；但它们各自是一处**早退**，
+ * 改掉之后调用方拿到的是 undefined（而不是抛错或写坏数据），这条契约只在这里钉得住。
+ * 直接调仓储也是这些函数的正常用法——它们是导出的，dev 脚本与将来的命令都会用。
+ */
+describe('仓储层的任务不存在守卫', () => {
+  it('updateTaskFields：空 patch 不做 UPDATE，任务在就返回原记录、不在才返回 undefined', () => {
+    const db = createTestDb();
+    const id = insertTask(db, { title: 'A', columnId: 'todo', orders: 1000 });
+
+    // assignments 为空：不拼 SQL，直接回查一次。这条早退的**返回值**也要钉：
+    // 改成恒返回 undefined 时，只有「任务存在 + 空 patch」这个输入能发现（不存在时两边同为 undefined）。
+    const found = updateTaskFields(db, id, {});
+    expect(found?.id).toBe(id);
+    expect(found?.title).toBe('A');
+    // 空 patch 不写库：updated_at 保持造数据时的固定值。
+    expect(found?.updatedAt).toBe('2024-01-01T00:00:00.000Z');
+
+    // assignments 非空但 UPDATE 命中 0 行（任务不存在）。
+    expect(updateTaskFields(db, '不存在', { title: 'A' })).toBeUndefined();
+  });
+
+  it('applyTaskUpdate：任务不存在时返回 undefined，不写任何字段', () => {
+    const db = createTestDb();
+
+    expect(applyTaskUpdate(db, '不存在', { title: 'A' })).toBeUndefined();
+  });
+
+  it('changeTaskParent：任务不存在时返回 undefined', () => {
+    const db = createTestDb();
+
+    expect(changeTaskParent(db, '不存在', { parentId: null, columnId: 'todo' })).toBeUndefined();
   });
 });

@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { createApp } from '../src/app.js';
 import type { Db } from '../src/db/client.js';
+import { setTaskDeps } from '../src/repositories/deps.js';
 import {
   createTestDb,
   insertTask,
@@ -376,5 +377,14 @@ describe('PUT /api/tasks/:id/deps', () => {
     });
     expect(wrongMethod.status).toBe(400);
     expect(await wrongMethod.json()).toEqual({ error: 'Content-Type 必须是 application/json' });
+  });
+
+  it('仓储层：任务不存在时 setTaskDeps 返回 undefined，不写依赖', () => {
+    // 路由在调用前已经 404 了（存在性、同层、环都在路由层校验），所以这条从 HTTP 层走不到；
+    // 但它是仓储自己的契约：写之前先确认目标在，而不是往 task_deps 里插一堆悬空行。
+    const db = createTestDb();
+
+    expect(setTaskDeps(db, '不存在的任务', ['also-missing'])).toBeUndefined();
+    expect(db.prepare('SELECT COUNT(*) AS n FROM task_deps').get()).toEqual({ n: 0 });
   });
 });

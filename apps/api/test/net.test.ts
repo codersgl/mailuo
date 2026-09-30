@@ -35,6 +35,9 @@ describe('hostNameOf', () => {
     expect(hostNameOf('127.0.0.1:3999@evil.com')).toBe('');
     expect(hostNameOf('127.0.0.1:')).toBe('');
     expect(hostNameOf('[::1]:abc')).toBe('');
+    // 方括号没闭上：解析不出边界时必须整条拒绝（两种输入走同一个分支，第二个是更短的样例）。
+    expect(hostNameOf('[::1')).toBe('');
+    expect(hostNameOf('[')).toBe('');
     expect(hostNameOf('evil.com/x')).toBe('');
     expect(hostNameOf('evil.com?x=1')).toBe('');
     expect(hostNameOf('a b')).toBe('');

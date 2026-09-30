@@ -137,6 +137,27 @@ describe('GET /api/search', () => {
     expect(snippet).toContain('😀');
   });
 
+  it('摘要起点落在代理对中间时也向外挪（另一种切点，方向与上一条相反）', async () => {
+    const db = createTestDb();
+    // emoji 放在最前，关键词的起点让它后面第 25 个码元处：`index - SNIPPET_RADIUS` 正好落在
+    // emoji 的低代理上。上一条用例切的是**结束**边（高代理），这条切的是**开始**边，两条分支相反。
+    insertTask(db, {
+      title: '无关标题',
+      columnId: 'todo',
+      orders: 1000,
+      description: `😀${'x'.repeat(23)}KEY${'x'.repeat(12)}`,
+    });
+
+    const { body } = await search(db, { q: 'key' });
+
+    const snippet = body.results[0]!.snippet as string;
+    expect(/[\uD800-\uDBFF](?![\uDC00-\uDFFF])/.test(snippet)).toBe(false);
+    expect(/(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/.test(snippet)).toBe(false);
+    expect(snippet).toContain('😀');
+    // 起点被挪回 0，所以不该出现表示「前面还有内容」的省略号。
+    expect(snippet.startsWith('…')).toBe(false);
+  });
+
   it('父链成环的脏数据只让那两条结果没有路径，其余结果照常返回', async () => {
     const db = createTestDb();
     const aId = insertTask(db, { title: '甲 关键词', columnId: 'todo', orders: 1000 });
