@@ -51,6 +51,18 @@ describe('useTheme', () => {
     expect(hasDark()).toBe(true);
   });
 
+  it('跟随系统期间系统从深色切成浅色，页面摘掉 dark 类', () => {
+    const media = stubMatchMedia(true);
+    renderHook(() => useTheme());
+    expect(hasDark()).toBe(true);
+
+    // 上一个用例走的是「变深」，这里走另一侧：切浅色时必须真的摘掉类，
+    // 否则在深色系统上启动、随后用户把系统改回浅色，页面会一直停在深色。
+    act(() => media.setDark(false));
+
+    expect(hasDark()).toBe(false);
+  });
+
   it('一旦选过就不再跟随系统，而且拆掉系统监听', () => {
     const media = stubMatchMedia(true);
     const { result } = renderHook(() => useTheme());

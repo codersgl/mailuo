@@ -124,4 +124,26 @@ describe('useCardFlip', () => {
     expect(calls).not.toContain('animate a');
     expect(calls).not.toContain('getAnimations');
   });
+
+  it('卡片不在任何列里（找不到 data-column-id）时按空列处理：量测不炸，后续重排仍做动画', () => {
+    const { container, calls, byId } = setup([{ id: 'a', columnId: 'todo', top: 100 }]);
+    const { rerender } = render(<Host container={container} enabled board={board()} />);
+    calls.length = 0;
+
+    // 直接把卡片挪到容器下（真实 DOM 操作，closest 真的找不到列）。这一轮位置没变，
+    // 所以看不出动画；但量测必须走完——`closest(...)?.getAttribute(...)` 少一个兜底，
+    // 这里拿到 undefined 参与比较就是另一回事了。
+    const card = byId.get('a')!.el;
+    container.appendChild(card);
+    rerender(<Host container={container} enabled board={board()} />);
+    expect(calls).not.toContain('animate a');
+
+    // 下一轮位置变了，而前后两轮都「没有列」：应当算同一列，照常做让位动画。
+    // 若把「没有列」当成每轮都变，这张卡片就再也不会滑动了。
+    card.getBoundingClientRect = () =>
+      ({ top: 300, left: 0, right: 0, bottom: 0, width: 0, height: 0 }) as DOMRect;
+    rerender(<Host container={container} enabled board={board()} />);
+
+    expect(calls).toContain('animate a');
+  });
 });

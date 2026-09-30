@@ -83,6 +83,9 @@ function drag(rowTestId: string, to: { x: number; y: number }) {
 }
 
 afterEach(() => {
+  // 有两条用例会给 document 装 elementFromPoint 替身（jsdom 本来没有这个 API），
+  // 这里统一拆掉，与 App/Sidebar 的 afterEach 保持一致，免得漏给后面的用例。
+  delete (document as unknown as { elementFromPoint?: unknown }).elementFromPoint;
   cleanup();
 });
 
@@ -212,5 +215,20 @@ describe('useTreeDrag', () => {
 
     fireEvent.pointerUp(document, { clientX: 40, clientY: 5 });
     expect(state()).toBe('');
+  });
+
+  it('没有 elementFromPoint 时按「指针不在任何一行上」退化，而不是抛错', () => {
+    const { log, setOver } = setup();
+    setOver('b');
+    // setup 装的替身在这里摘掉，还原 jsdom 本来的样子（没有这个方法）。命中测试缺少
+    // 布局能力时应当安静地得出空落点；少了这层判断，这里会变成一次 TypeError。
+    delete (document as unknown as { elementFromPoint?: unknown }).elementFromPoint;
+
+    drag('row-a', { x: 40, y: 5 });
+    fireEvent.pointerUp(document, { clientX: 40, clientY: 5 });
+
+    expect(log).toEqual(['begin a', 'start a', 'drop a null']);
+    // 没有命中任何一行，行高亮也就没有目标。
+    expect(screen.getByTestId('state').textContent).toBe('');
   });
 });

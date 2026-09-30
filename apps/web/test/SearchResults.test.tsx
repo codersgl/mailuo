@@ -129,6 +129,25 @@ describe('SearchResults', () => {
     expect(screen.queryByText('未估工期')).toBeNull();
   });
 
+  it('未选中行的工期胶囊用 bg-surface-2（选中行才是 bg-surface）', () => {
+    renderResults(
+      ready([
+        result({ id: 't1', title: '登录甲', durationMinutes: 480 }),
+        result({ id: 't2', title: '登录乙', durationMinutes: 4320 }),
+      ]),
+      { selectedIndex: 0 },
+    );
+
+    // 胶囊底色要跟着行的选中态走：未选中行是 surface，胶囊用 surface-2 才分得出来；
+    // 写反的话未选中行上的胶囊与背景同色，看着像缺了一块。
+    const selectedPill = screen.getByText('工期 8 小时');
+    expect(selectedPill.className).toContain('bg-surface');
+    expect(selectedPill.className).not.toContain('bg-surface-2');
+
+    const plainPill = screen.getByText('工期 3 天');
+    expect(plainPill.className).toContain('bg-surface-2');
+  });
+
   it('归档的结果带「已归档」标记', () => {
     renderResults(ready([result({ id: 't1', title: '登录归档版', archivedAt: '2026-09-22T00:00:00.000Z' })]));
 

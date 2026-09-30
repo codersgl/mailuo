@@ -116,6 +116,24 @@ describe('fetchBoard', () => {
     expect((failure as ApiError).message).toBe('请求失败（HTTP 502）');
   });
 
+  it('错误体是 JSON 对象但 error 不可用时，同样用状态码兜底', async () => {
+    // 契约是 `{ error: string }`，但代理或旧版本后端可能给出空串、数字、别的字段名。
+    // 这两种形状都要落到「请求失败（HTTP …）」那句兜底文案上，不能把 '' 或 42 当成可显示的文案。
+    stubFetch(() => jsonResponse(400, { error: '' }));
+
+    const empty = await fetchBoard(null, false).catch((cause: unknown) => cause);
+
+    expect((empty as ApiError).status).toBe(400);
+    expect((empty as ApiError).message).toBe('请求失败（HTTP 400）');
+
+    stubFetch(() => jsonResponse(500, { error: 42 }));
+
+    const notString = await fetchBoard(null, false).catch((cause: unknown) => cause);
+
+    expect((notString as ApiError).status).toBe(500);
+    expect((notString as ApiError).message).toBe('请求失败（HTTP 500）');
+  });
+
   it('请求发不出去时提示后端没启动', async () => {
     stubFetch(() => {
       throw new TypeError('Failed to fetch');
@@ -132,6 +150,16 @@ describe('fetchBoard', () => {
 
     const failure = await fetchBoard(null, false).catch((cause: unknown) => cause);
 
+    expect((failure as ApiError).message).toBe('后端返回的不是 JSON');
+  });
+
+  it('200 但 body 是空串时走同一条兜底（空 body 连 JSON.parse 都不该试）', async () => {
+    stubFetch(() => new Response('', { status: 200 }));
+
+    const failure = await fetchBoard(null, false).catch((cause: unknown) => cause);
+
+    expect(failure).toBeInstanceOf(ApiError);
+    expect((failure as ApiError).status).toBe(200);
     expect((failure as ApiError).message).toBe('后端返回的不是 JSON');
   });
 });
@@ -188,6 +216,25 @@ describe('请求超时', () => {
     const failure = await fetchBoard(null, false).catch((cause: unknown) => cause);
 
     expect((failure as ApiError).message).toBe('后端响应超时，请重试');
+  });
+
+  it('读 body 失败但不是超时时，说「读取响应失败」而不是超时或状态码兜底', async () => {
+    // 连接被重置、读到一半断流：请求发出去了，失败发生在读响应这一步。归到「没拿到响应」
+    // （status 0）这一类，但文案要能区分出不是超时——否则用户会一直重试一个不慢的后端。
+    stubFetch(
+      () =>
+        ({
+          ok: true,
+          status: 200,
+          text: () => Promise.reject(new TypeError('terminated')),
+        }) as unknown as Response,
+    );
+
+    const failure = await fetchBoard(null, false).catch((cause: unknown) => cause);
+
+    expect(failure).toBeInstanceOf(ApiError);
+    expect((failure as ApiError).status).toBe(0);
+    expect((failure as ApiError).message).toBe('读取响应失败，请重试');
   });
 
   it('不是超时的失败仍是原来那句「连不上后端」', async () => {

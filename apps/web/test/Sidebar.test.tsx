@@ -281,6 +281,135 @@ describe('Sidebar', () => {
     expect(requested.some((url) => url.endsWith('/parent'))).toBe(true);
   });
 
+  it('拖完松手后的那次 click 不进入看板，但只吞紧接着的那一次', async () => {
+    stubTreeFetch();
+    const { onNavigate } = renderSidebar();
+    await screen.findByText('补单元测试');
+
+    // 指针压在 b 的上半区：落点是「成为 b 的子节点」，一次真的拖拽。
+    (document as unknown as { elementFromPoint: () => Element | null }).elementFromPoint = () => {
+      const row = { getAttribute: () => 'b', getBoundingClientRect: () => ({ top: 0, height: 20 }) };
+      return { closest: () => row } as unknown as Element;
+    };
+    fireEvent.pointerDown(screen.getByText('补单元测试'), { button: 0, clientX: 0, clientY: 0 });
+    fireEvent.pointerMove(document, { clientX: 40, clientY: 5 });
+    fireEvent.pointerUp(document, { clientX: 40, clientY: 5 });
+
+    // 浏览器紧跟着 pointerup 补一个 click：这一次必须被吞掉，否则拖完一个节点就顺手跳进它的看板。
+    fireEvent.click(screen.getByText('补单元测试'));
+    expect(onNavigate).not.toHaveBeenCalled();
+
+    // 抑制窗口只吞一次：用户确实想打开这个任务时，下一次点击照常导航（不能永久失灵）。
+    fireEvent.click(screen.getByText('补单元测试'));
+    expect(onNavigate).toHaveBeenCalledWith('a1x');
+  });
+
+  it('指针不在任何一行上时松手：不发改父级请求，也不报错', async () => {
+    stubTreeFetch();
+    const { onParentChanged } = renderSidebar();
+    await screen.findByText('对账脚本');
+
+    // 不装 elementFromPoint 替身：resolveSlot 退化成「落点为空」，等价于拖到树外的空白处松手。
+    fireEvent.pointerDown(screen.getByText('对账脚本'), { button: 0, clientX: 0, clientY: 0 });
+    fireEvent.pointerMove(document, { clientX: 40, clientY: 5 });
+    fireEvent.pointerUp(document, { clientX: 40, clientY: 5 });
+
+    // 空落点什么都不做：不拿一个猜出来的父级去写库，也不该把「没有落点」当成错误弹给用户。
+    expect(requested.filter((url) => url.endsWith('/parent'))).toEqual([]);
+    expect(onParentChanged).not.toHaveBeenCalled();
+    expect(screen.queryByText('移动任务失败')).toBeNull();
+  });
+
+  it('拖动落库失败时在树顶显示后端文案，点一下就收起', async () => {
+    requested = [];
+    vi.stubGlobal('fetch', (input: string) => {
+      const url = String(input);
+      requested.push(url);
+      if (url.endsWith('/parent')) {
+        return Promise.resolve(jsonResponse({ error: '目标父任务不存在' }, 400));
+      }
+      return Promise.resolve(jsonResponse({ tasks: visibleOf(treeTasks) }));
+    });
+    const { onParentChanged } = renderSidebar();
+    await screen.findByText('补单元测试');
+
+    (document as unknown as { elementFromPoint: () => Element | null }).elementFromPoint = () => {
+      const row = { getAttribute: () => 'b', getBoundingClientRect: () => ({ top: 0, height: 20 }) };
+      return { closest: () => row } as unknown as Element;
+    };
+    fireEvent.pointerDown(screen.getByText('补单元测试'), { button: 0, clientX: 0, clientY: 0 });
+    fireEvent.pointerMove(document, { clientX: 40, clientY: 5 });
+    fireEvent.pointerUp(document, { clientX: 40, clientY: 5 });
+
+    // ApiError 的 message 就是可以直接展示的中文文案（见 api/client.ts）；失败时不能假装刷新成功。
+    expect(await screen.findByText('目标父任务不存在')).toBeTruthy();
+    expect(onParentChanged).not.toHaveBeenCalled();
+
+    // 树顶这行错误没有表单可以就地报错，所以它自己就是「知道了」按钮。
+    fireEvent.click(screen.getByText('目标父任务不存在'));
+    expect(screen.queryByText('目标父任务不存在')).toBeNull();
+  });
+
+  it('落库失败但异常不是 ApiError 时用兜底文案，不漏出异常本身', async () => {
+    requested = [];
+    vi.stubGlobal('fetch', (input: string) => {
+      const url = String(input);
+      requested.push(url);
+      if (url.endsWith('/parent')) {
+        // 200 但不是契约形状（body 为 null）：client 解包 .then(readWrittenTask) 时抛 TypeError，
+        // 这类异常没有可展示的 message，界面必须自己给一句人话。
+        return Promise.resolve(jsonResponse(null));
+      }
+      return Promise.resolve(jsonResponse({ tasks: visibleOf(treeTasks) }));
+    });
+    renderSidebar();
+    await screen.findByText('补单元测试');
+
+    (document as unknown as { elementFromPoint: () => Element | null }).elementFromPoint = () => {
+      const row = { getAttribute: () => 'b', getBoundingClientRect: () => ({ top: 0, height: 20 }) };
+      return { closest: () => row } as unknown as Element;
+    };
+    fireEvent.pointerDown(screen.getByText('补单元测试'), { button: 0, clientX: 0, clientY: 0 });
+    fireEvent.pointerMove(document, { clientX: 40, clientY: 5 });
+    fireEvent.pointerUp(document, { clientX: 40, clientY: 5 });
+
+    expect(await screen.findByText('移动任务失败')).toBeTruthy();
+  });
+
+  it('拖动途中被拖的节点已不在树里（重取后它被删了）时，松手不再发请求', async () => {
+    // 树在拖动期间被上层静默重取（写操作成功后的统一刷新），被拖的那一行可能已经不存在。
+    let serving: TreeTask[] = visibleOf(treeTasks);
+    requested = [];
+    vi.stubGlobal('fetch', (input: string) => {
+      const url = String(input);
+      requested.push(url);
+      if (url.endsWith('/parent')) {
+        return Promise.resolve(jsonResponse({ error: '不该发这个请求' }, 500));
+      }
+      return Promise.resolve(jsonResponse({ tasks: serving }));
+    });
+    const { onParentChanged } = renderSidebar();
+    await screen.findByText('对账脚本');
+
+    (document as unknown as { elementFromPoint: () => Element | null }).elementFromPoint = () => {
+      const row = { getAttribute: () => 'b', getBoundingClientRect: () => ({ top: 0, height: 20 }) };
+      return { closest: () => row } as unknown as Element;
+    };
+    fireEvent.pointerDown(screen.getByText('对账脚本'), { button: 0, clientX: 0, clientY: 0 });
+    fireEvent.pointerMove(document, { clientX: 40, clientY: 5 });
+
+    // 重取回来的一份里没有 b1 了：拖动还在进行，松手时不能凭一个过期 id 去改库。
+    serving = visibleOf(treeTasks).filter((task) => task.id !== 'b1');
+    act(() => refreshTree());
+    await waitFor(() => expect(screen.queryByText('对账脚本')).toBeNull());
+
+    fireEvent.pointerUp(document, { clientX: 40, clientY: 5 });
+
+    expect(requested.some((url) => url.endsWith('/parent'))).toBe(false);
+    expect(onParentChanged).not.toHaveBeenCalled();
+    expect(screen.queryByText('不该发这个请求')).toBeNull();
+  });
+
   it('子任务全部已归档时，折叠态不显示「0」徽标（与展开态一样没有徽标）', async () => {
     const allArchived: TreeTask[] = [
       treeTask('a', null, '重构登录'),
