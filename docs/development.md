@@ -94,6 +94,11 @@ TypeScript 7，所以根 `devDependencies` 里的 `typescript@6` 只服务 lint�
 - 阈值定义在 `apps/api/vitest.config.ts`、`apps/web/vitest.config.ts` 与根 `package.json`
   的 `test:coverage`（bin 那段），取值是当前实测值向下取整再减 2 个点。为什么用这个口径、
   代价是什么，见 `docs/decisions.md` D82。
+- 变异测试目前是**手工**做的：挑几处关键分支临时改坏、跑定向用例确认变红再还原，D86 做过一轮
+  12 个、D87 由子代理各做一轮、D88 审查做了 24 个探针。Stryker 试装过（D88），但
+  `@stryker-mutator/vitest-runner@10` 与本仓库的 vitest 5 在「按变异点选测试」这步不兼容——
+  变异阶段平均只选到 2.05 条用例、mutation score 1.84，那个分数不可信；依赖与脚本已回退，
+  要再试见 D88 结尾的三条路。
 
 ## 发布（npm）
 

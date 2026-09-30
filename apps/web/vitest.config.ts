@@ -18,6 +18,10 @@ import { defineConfig } from 'vitest/config';
  * 2026-09-30（D87）补掉可达分支之后实测 97.15 / 95.65 / 96.84 / 98.38，语句阈值跟着上调。
  * 剩下的 49 条分支集中在 DependencyGraph（23）、TaskEditorPanel（11）与若干构造上不可达的兜底，
  * 清单见 D87。
+ *
+ * 2026-09-30（D88）补完 DependencyGraph 与 TaskEditorPanel 之后实测
+ * 98.39 / 98.49 / 98.19 / 99.19，四项阈值一起上调。剩下 17 条见 D88，全部是构造上不可达或
+ * 死代码，不再强求。
  */
 export default defineConfig({
   test: {
@@ -31,10 +35,10 @@ export default defineConfig({
       reportsDirectory: './coverage',
       reportOnFailure: true,
       thresholds: {
-        statements: 95,
-        branches: 93,
-        functions: 94,
-        lines: 96,
+        statements: 96,
+        branches: 96,
+        functions: 96,
+        lines: 97,
       },
     },
   },

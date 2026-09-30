@@ -106,7 +106,7 @@
 - D80 第 42 步：工期改按自然日，1 天 = 1440 分钟（2026-09-27，分支 fix/day-length-1440，用户拍板并授权改规范）
 - D81 第 43 步：发 0.4.0（2026-09-27，分支 chore/release-0.4.0）
 
-**2026-09-30（D82–D87）**
+**2026-09-30（D82–D88）**
 
 - D82 第 44 步：加测试覆盖率与阈值门禁（2026-09-30，分支 feat/test-coverage）
 - D83 第 45 步：补卡片拖拽落点与 App 拖拽回调的用例（2026-09-30，分支 test/coverage-2）
@@ -114,6 +114,7 @@
 - D85 第 47 步：服务端启动流程抽成可注入的 server.ts（2026-09-30，分支 refactor/api-boot，用户拍板选 A）
 - D86 第 48 步：补 api 的可达分支并做变异验证（2026-09-30，分支 test/api-branches）
 - D87 第 49 步：补 web 的可达分支（2026-09-30，分支 test/web-branches）
+- D88 第 50 步：补完两个大组件分支；Stryker 试装后回退（2026-09-30，分支 chore/quality-d88）
 
 ## D1 用 pnpm workspace 管理多应用（2026-09-22）
 
@@ -4240,3 +4241,73 @@ D86 结尾把 web 的 41 条可达分支留给下一步，这是那一步。
 最终干净），报告里逐条给了「覆盖成功 / 不可达及理由」；审查又独立做了两轮探针（把可疑分支替换成
 throw 后跑全量用例），并纠正了上面两处。这一步没有引入自动变异工具；要不要把 Stryker 做进来，
 仍按 D86 的建议先圈定范围。
+
+## D88 第 50 步：补完两个大组件分支；Stryker 试装后回退（2026-09-30，分支 chore/quality-d88）
+
+用户批准两件事：补 `DependencyGraph` / `TaskEditorPanel` 的分支，以及把变异测试工具化（Stryker）。
+后者没做成，原因写在下面；前者做完了。
+
+### 一、两个大组件的分支（做成）
+
+`DependencyGraph` 23 条 + `TaskEditorPanel` 11 条，共 34 条目标分支：新增 22 条用例
+（`test/DependencyGraph.test.tsx` 16 条、`test/App.test.tsx` 6 条）覆盖了 32 条；
+`DependencyGraph:348`（`spot === undefined`）与 `TaskEditorPanel:155`（`editingState?.selectedIds` 的
+`?? []`）两条是构造上不可达的防御分支——前者 `layoutGraph` 对每个输入节点都会生成坐标，
+后者 `onToggle` 只在 `editingState !== null` 时被触发、`selectedIds` 恒为数组。
+
+顺带补齐了编辑器面板的失败路径（保存失败要显示后端文案、不能误报「已保存」；标题只剩空白或工期
+非法时保存被守卫挡住且不发请求），这几条此前没有用例；`App.test.tsx` 的假后端因此多了一个
+`patchError` 注入项（与既有 `postError` / `moveError` 同形）。
+
+**审查又抓到两条空转用例**（这一轮 24 个变异探针，20 killed / 3 survived，两处 survived 就是它们）：
+「从节点卡上按下不平移」「从详情卡上按下不平移」只断言了
+`toContain('cursor-grab')`——而 `'cursor-grabbing'.includes('cursor-grab')` 为真，切了 grabbing
+也照样绿；把 `DependencyGraph.tsx` 的 `closest(...)` 守卫删掉，两条用例原样通过。已改成
+`not.toContain('cursor-grabbing')` + 指针移动后相机 `transform` 不变（详情卡那条再加一条
+「pointerup 之后详情卡仍在」），三条相关变异（两处守卫 + 非左键守卫）复验全部 CAUGHT。
+空图缩放那条的注释也改了：`?? 0` 的右支确实被走到，但 NaN 锚点在组件层观察不到，
+这条靠覆盖率而不是断言守住，不假装它是行为断言。
+
+**结果**（apps/web，v8）：97.15 / 95.65 / 96.84 / 98.38 → **98.39 / 98.49 / 98.19 / 99.19**，
+用例 560 → 582。阈值按「向下取整再减 2」重算：语句 95 → 96、分支 93 → 96、函数 94 → 96、
+行 96 → 97。
+
+剩下的 17 条分支（全是构造上不可达或死代码，清单在 vitest.config.ts 与本条对应）：
+
+- `App.tsx:219`（`dragStartRef` 与 `dragTaskRef` 同时赋值）、`:339`/`:348`（`editing` 为 null 时抽屉
+  已卸载）；`BoardView.tsx:122/123`（落点换算里列永远找得到，列体也永远在）。
+- `DependencyGraph.tsx:348`、`TaskEditorPanel.tsx:155`。
+- `TaskCard.tsx:83`、`useCardDrag.ts:87`、`useTreeDrag.ts:73`、`useCardFlip.ts:47/75/78`、
+  `usePointerDrag.ts:129`（属性存在性选择器 / 同一次提交必渲染的 ref / 死代码，理由同 D87）。
+- `subtreeTime.ts:85/130/159`（单亲树 + 拓扑序保证，同 api 的 subtreeDuration）。
+
+### 二、Stryker：装上跑通了，但没有可信结果，回退（没做成）
+
+用户批准「引入 Stryker、先只圈 `apps/api/src/domain/**` + `server.ts`、视耗时决定是否进 CI」。
+装了 `@stryker-mutator/core@10.0.0` + `@stryker-mutator/vitest-runner@10.0.0`，配置、脚本
+（根 `test:mutation` + `apps/api` 的 `mutation`）、`.stryker-tmp` 忽略项都写好了，**但结果不可信**：
+
+- 在 `apps/api` 下默认（沙箱）模式：沙箱里没有仓库根的 `tsconfig.base.json` 与 `bin/mailuo.mjs`，
+  vite 转换直接报 `Failed to load tsconfig '../../tsconfig.base.json': Tsconfig not found`，干跑就崩；
+  `test/config.test.ts` 的交叉用例也读不到 bin。
+- 把配置提到仓库根（沙箱含整仓）：干跑通过（331 用例），但变异阶段**平均每个变异点只选到
+  2.05 条用例**，597 个变异里 11 个被杀、581 个存活，mutation score 1.84%（日志
+  `.tmp-mutation.log`）。用例确实跑了，跑的是与被测文件无关的那两条——perTest 的覆盖率映射与
+  vitest 的 root 对不上，选不出「这个变异点该跑哪些用例」。
+- 回到 `apps/api` + `inPlace: true`（不建沙箱，tsconfig 与 bin 都在）：第一次干跑仍崩在同一个
+  tsconfig 错（`.stryker-tmp/` 的备份被测试发现当成候选，已用 `test.exclude` 排除）；排除之后
+  干跑通过，但 `clock.ts` 的 33 个变异点 36 秒内全部「存活」、报告 `Ran 0.00 tests per mutant`
+  ——这一次没有留存日志，是在命令输出里读到的。`coverageAnalysis` 的 `perTest` / `all` / `off`
+  三种模式结果相同。
+- 期间还踩到两个环境问题，都已定位：Stryker 的 TSConfigPreprocessor 依赖 `typescript` 的
+  `parseConfigFileTextToJson`，而本仓库 apps/api 是 TypeScript 7（原生实现，没有这个 API）；
+  `.stryker-tmp/` 若不从 vitest 的 `test.exclude` 里排除，测试发现会把备份里的 `*.test.ts`
+  当候选、转换时找不到 tsconfig 而整跑崩掉。
+
+判断：`@stryker-mutator/vitest-runner@10.0.0` 与本仓库的 vitest 5.0.2（Vite 8 / rolldown）在
+「按变异点选测试」这一步不兼容（peer 范围写的是 `vitest >=2.0.0`，实际选不出用例），继续投入
+就是在给工具链打补丁。**已把依赖、脚本、配置、忽略项全部回退**，仓库回到「变异验证手工做」的
+状态（D86 一轮 12 个变异、D87 由子代理各做一轮、D88 审查 24 个探针）；不引入一个会给出假分数的门禁。
+
+要再试的话，三条路（都没做）：给变异单独钉一个 vitest 4 的环境（容器或临时 workspace）；
+等 runner 支持 vitest 5；或者换 mocha/jest runner 另配一套测试。

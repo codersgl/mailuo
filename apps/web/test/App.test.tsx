@@ -62,6 +62,8 @@ function createFakeApi(
     postError?: string;
     archiveError?: string;
     deleteError?: string;
+    /** 非空时所有字段改动（PATCH /api/tasks/:id）都回这个错误，模拟后端拒绝这次字段写。 */
+    patchError?: string;
     /** 非空时所有移动请求都回这个错误（模拟落库失败，看板要退回按下时的顺序）。 */
     moveError?: string;
     /** 非空时所有看板读请求都回这个错误（模拟当前这层看板被别处删掉）。 */
@@ -427,6 +429,7 @@ function createFakeApi(
     }
 
     if (method === 'PATCH' && path.startsWith('/api/tasks/')) {
+      if (options.patchError !== undefined) return json({ error: options.patchError }, 400);
       const item = tasks.find((candidate) => candidate.id === id('/api/tasks/'));
       if (!item) return json({ error: '任务不存在' }, 404);
       if (typeof body.title === 'string') item.title = body.title.trim();
@@ -1011,6 +1014,121 @@ describe('App 增删改', () => {
     expect(api.calls.find((call) => call.method === 'PATCH')?.body).toMatchObject({
       title: '支付对账 v3',
     });
+  });
+
+  it('字段保存失败：抽屉显示后端文案，不误报「已保存」，busy 也放开', async () => {
+    // 字段那次写的失败路径：以前只测了依赖那次失败（depsError），字段这次没有用例。
+    const api = createFakeApi(fixtures, { patchError: '标题太长' });
+    render(<App />);
+    await boardArea().findByText('重构登录');
+    await openEditor('重构登录');
+
+    fireEvent.change(dialog().getByDisplayValue('重构登录'), { target: { value: '重构登录 v2' } });
+    fireEvent.click(dialog().getByRole('button', { name: '保存' }));
+
+    expect(await dialog().findByText('标题太长')).toBeTruthy();
+    expect(dialog().queryByText('已保存')).toBeNull();
+    // 失败后 busy 要放开：否则用户改完标题也点不动第二次保存。
+    expect((dialog().getByRole('button', { name: '保存' }) as HTMLButtonElement).disabled).toBe(false);
+    // 字段那次没成功，依赖那次（本来也没变）不该跟着发。
+    expect(api.calls.some((call) => call.method === 'PUT')).toBe(false);
+  });
+
+  it('标题只剩空白：给出「标题不能为空」，提交被守卫挡住而不发请求', async () => {
+    const api = createFakeApi(fixtures);
+    render(<App />);
+    await boardArea().findByText('重构登录');
+    await openEditor('重构登录');
+
+    const titleInput = dialog().getByDisplayValue('重构登录');
+    fireEvent.change(titleInput, { target: { value: '   ' } });
+
+    expect(dialog().getByText('标题不能为空')).toBeTruthy();
+    expect((dialog().getByRole('button', { name: '保存' }) as HTMLButtonElement).disabled).toBe(true);
+
+    // 保存按钮是禁用的，但标题框里按 Enter 会直接提交表单（jsdom 不隐式提交，这里手动 submit）：
+    // canSave 的守卫必须在这里也挡住，否则会发一次标题为空串的 PATCH。
+    fireEvent.submit(titleInput.closest('form')!);
+    expect(api.calls.some((call) => call.method === 'PATCH')).toBe(false);
+    expect(dialog().queryByText('已保存')).toBeNull();
+  });
+
+  it('抽屉里按 Esc 之外的键不关闭：草稿与抽屉都留在原地', async () => {
+    createFakeApi(fixtures);
+    render(<App />);
+    await boardArea().findByText('重构登录');
+    await openEditor('重构登录');
+
+    fireEvent.change(dialog().getByDisplayValue('重构登录'), { target: { value: '重构登录 v2' } });
+    fireEvent.keyDown(dialog().getByDisplayValue('重构登录 v2'), { key: 'a' });
+
+    // 只有 Escape 该关抽屉；普通按键顺手关掉会连没保存的草稿一起丢。
+    expect(screen.getByRole('dialog')).toBeTruthy();
+    expect((dialog().getByDisplayValue('重构登录 v2') as HTMLInputElement).value).toBe('重构登录 v2');
+  });
+
+  it('工期输入非法：给出与上限一致的提示，保存被挡住且不发请求', async () => {
+    const api = createFakeApi(fixtures);
+    render(<App />);
+    await boardArea().findByText('重构登录');
+    await openEditor('重构登录');
+
+    // 小数不是合法输入：readDurationInput 只认纯数字，不能被 parseInt 悄悄截成 1。
+    fireEvent.change(dialog().getByLabelText('天'), { target: { value: '1.5' } });
+
+    expect(dialog().getByText('工期必须是 0 到 9999 天之间的整数')).toBeTruthy();
+    expect((dialog().getByRole('button', { name: '保存' }) as HTMLButtonElement).disabled).toBe(true);
+
+    fireEvent.submit(dialog().getByDisplayValue('重构登录').closest('form')!);
+    expect(api.calls.some((call) => call.method === 'PATCH')).toBe(false);
+  });
+
+  it('把工期改回未估后保存：patch 里是 null，不是 0', async () => {
+    const api = createFakeApi(fixtures);
+    render(<App />);
+    await boardArea().findByText('重构登录');
+    await openEditor('重构登录');
+
+    // 先填一个数，确保这次保存是「用户改成未估」而不是「本来就没估」。
+    fireEvent.change(dialog().getByLabelText('天'), { target: { value: '1' } });
+    expect(dialog().getByText('工期 1 天')).toBeTruthy();
+    // 快捷按钮把三段清空。全空是「未估」，写 0 才是「瞬时」——两者契约上不同。
+    fireEvent.click(dialog().getByRole('button', { name: '未估工期' }));
+    expect(dialog().queryByText('工期 1 天')).toBeNull();
+
+    fireEvent.click(dialog().getByRole('button', { name: '保存' }));
+    expect(await dialog().findByText('已保存')).toBeTruthy();
+    expect(api.calls.find((call) => call.method === 'PATCH')?.body).toMatchObject({
+      durationMinutes: null,
+    });
+  });
+
+  it('父任务工期汇总：叶子是 0 显示「瞬时」，是正数显示汇总值，两种都用正常字色', async () => {
+    createFakeApi([
+      task({ id: 'q', title: '零工期父' }),
+      task({ id: 'q1', title: '零工期子', parentId: 'q', durationMinutes: 0 }),
+      task({ id: 'r', title: '有工期父' }),
+      task({ id: 'r1', title: '有工期子', parentId: 'r', durationMinutes: 120 }),
+    ]);
+    render(<App />);
+
+    /** 只读工期那一行里显示数值的 span（第 2 个子元素）。 */
+    const derivedValue = () =>
+      document.querySelector('[data-duration-derived]')?.children[1] as HTMLElement | undefined;
+
+    await openEditor('零工期父');
+    // 0 是「瞬时」：汇总算出了一个可信的数，只是它是 0，不能与「未估」混为一谈。
+    expect(document.querySelector('[data-duration-derived]')?.textContent).toContain('瞬时');
+    // 有数时字色是 text-ink；只有「还不知道」（undefined）与「未估」（null）才用灰字。
+    expect(derivedValue()?.className).toContain('text-ink');
+    expect(derivedValue()?.className).not.toContain('text-ink-2');
+
+    fireEvent.click(dialog().getByRole('button', { name: '取消' }));
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+
+    await openEditor('有工期父');
+    expect(document.querySelector('[data-duration-derived]')?.textContent).toContain('2 小时');
+    expect(derivedValue()?.className).not.toContain('text-ink-2');
   });
 
   it('前置任务：同层候选按列分组，自己不在其中，已归档的候选点不动', async () => {
