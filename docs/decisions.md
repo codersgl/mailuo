@@ -106,9 +106,10 @@
 - D80 第 42 步：工期改按自然日，1 天 = 1440 分钟（2026-09-27，分支 fix/day-length-1440，用户拍板并授权改规范）
 - D81 第 43 步：发 0.4.0（2026-09-27，分支 chore/release-0.4.0）
 
-**2026-09-30（D82）**
+**2026-09-30（D82–D83）**
 
 - D82 第 44 步：加测试覆盖率与阈值门禁（2026-09-30，分支 feat/test-coverage）
+- D83 第 45 步：补卡片拖拽落点与 App 拖拽回调的用例（2026-09-30，分支 test/coverage-2）
 
 ## D1 用 pnpm workspace 管理多应用（2026-09-22）
 
@@ -3886,3 +3887,70 @@ caret 到 5.0.2）里选后者：仓库各处的依赖都是 caret，钉死一�
 无关。跑覆盖率前 unset `http_proxy` / `https_proxy` / `HTTP_PROXY` / `HTTPS_PROXY` /
 `NODE_USE_ENV_PROXY` 即可（CI 上没有这些变量）。安装依赖仍要用
 `pnpm install --store-dir <仓库内路径>`，同 D42。
+
+## D83 第 45 步：补卡片拖拽落点与 App 拖拽回调的用例（2026-09-30，分支 test/coverage-2）
+
+D82 明确把「补低覆盖文件的用例」留给了下一步，这是那一步。
+
+**问题**：`apps/web/src/hooks/useCardDrag.ts` 语句 58.06 / 分支 37.5，整块没跑到的正是
+`resolveDropSlot`——「拖到哪儿」的唯一判据。原因两条叠在一起：
+
+- useCardDrag 自己的用例都注入假的 `resolveDrop`，真实实现从不执行；
+- App 层的拖拽链路（onStart / onPreview / onDrop / onCancel）在 jsdom 里也起不来：没有
+  `document.elementFromPoint`，命中测试直接退化成「不在任何列上」。
+
+于是「拖到别的列 / 列尾 / 列内某张卡片之前」这条主链路没有任何自动化证据，只能靠浏览器验收；
+`App.tsx` 也因此只有语句 67.92。
+
+**做法**（不动生产代码，只补用例与测试替身）：
+
+1. 新增 `apps/web/test/dropSlot.test.ts` 直接测 `resolveDropSlot`。jsdom 没有布局，就给卡片装
+   替身矩形、给 document 装一个「指针压在哪」的 elementFromPoint，钉住六种落点：空列＝列尾、
+   卡片上半区＝插到它前面、越过中线落到下一张、最后一张下半区＝列尾、命中的是卡片内部元素时
+   靠 closest 走回列、以及缺 elementFromPoint 时的退化。
+2. `App.test.tsx` 补一组「App 卡片拖拽」，用同一个替身走完整链路：松手前卡片已经画在目标列
+   （乐观重排）、落定发出的请求体是换算出的 `{columnId, position}`、落库失败退回按下时的顺序并
+   报错、拖出所有列后松手不落库、Esc 取消不落库。
+3. 假后端补上移动接口（`PATCH /api/tasks/:id` + `{columnId, position}`，按真后端口径把目标列
+   未归档卡片重新编号）与 `moveError` 注入。不补的话写成功后的静默重取会把乐观重排原样退回，
+   用例就分不清「界面自己画的」和「服务端确认过的」。
+
+**踩到的坑（写下来免得下次重踩）**：被拖对象必须是**叶子**卡片。有子任务的父任务的列由子任务
+推导，`canDragCard` 直接拒绝拖拽；第一版用例拿根 fixtures 里的「支付对账」（有子任务）当被拖
+对象，四条全绿不了，表现是「拖了没反应」。
+
+**测试替身的两处环境缺口**：
+
+- `document.elementFromPoint`：jsdom 没有，逐条用例安装与拆除（沿用 Sidebar.test.tsx 的手法）。
+- Web Animations：jsdom 的 `Element.prototype.getAnimations` 与 `animate` 都是 undefined，而拖拽
+  一开始 `useCardFlip` 就会调用容器的 `getAnimations`。在 `test/setup.ts` 里补一对空实现，包在
+  `typeof Element !== 'undefined'` 里——setupFiles 对 node 环境的 `viteConfig.test.ts` 也生效，
+  不包会 ReferenceError 整个套件。
+
+**结果**（apps/web，v8）：
+
+| | 语句 | 分支 | 函数 | 行 |
+| --- | --- | --- | --- | --- |
+| D82 实测 | 91.89 | 88.21 | 93.01 | 93.91 |
+| D83 实测 | 95.42 | 91.14 | 95.94 | 97.58 |
+
+其中 `useCardDrag.ts` 58.06 → 96.77、`App.tsx` 67.92 → 93.08、`domain/board.ts` 的语句与函数
+到 100。阈值按 D82「实测值向下取整再减 2 个点」的口径跟着上调：语句 93 / 分支 89 / 函数 93 /
+行 95。
+
+**代价说清**：余量只有 2 个点上下，而 `App.tsx` 自己就贴着全局语句阈值（93.08 > 93），所以在
+`App.tsx` 里加一段没被跑到的代码就可能直接压破门禁。这不是坏事（正是门禁要拦的），但要知道它是
+「改 App.tsx 前先本地跑一次覆盖率」，而不是「随便加代码都不会红」。
+
+**没有发现功能缺陷**：这批用例第一次跑通之后全绿，说明这条链路现在的行为与 D42 / D51 记的设计
+一致。它拦住的是「整块没测」，不替代浏览器验收，也不等于这次改对了。
+
+**没做的（可选复杂性）**：
+
+- 没给 `apps/api/src/index.ts`（0%）与 `apps/web/src/main.tsx`（0%）补用例：两者都是入口脚本，
+  由 bin 的进程级用例真起服务跑过（算不进 vitest 报告）；补 vitest 用例要把 `serve` / `createRoot`
+  整套 mock 掉，测到的是替身而不是入口。
+- 没补 api 侧剩下的防御分支（cpm 的「缺少任务的时间参数」、deps 仓储的同一句、derive 的
+  `derived.get(...) ?? child.columnId`）：代码里都标注了「正常走不到」，要用 mock 制造不一致
+  才能执行，属于为了让数字好看而写的用例。
+- `NewTaskForm.tsx`（75%，缺的是 Esc 取消那条）等组件分支留到下一次。
