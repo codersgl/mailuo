@@ -250,6 +250,80 @@ describe('TaskCard', () => {
     const article = screen.getByText('灰度开关').closest('article')!;
     expect(article.className).not.toContain('overflow-hidden');
   });
+
+  it('没传 onDragStart 时按下卡片不抛错，点击照常进入看板', () => {
+    // onDragStart 是可选回调（卡片外壳也被非拖拽场景渲染）。缺失时 startDrag 必须退化成空操作，
+    // 不能把 undefined 当函数调用——那会在用户一按下卡片时就炸掉整块看板。
+    const { onOpen } = renderCard();
+    const body = screen.getByText('灰度开关').closest('button')!;
+
+    fireEvent.pointerDown(body, { button: 0, clientX: 10, clientY: 10 });
+    fireEvent.pointerUp(document, { clientX: 10, clientY: 10 });
+    fireEvent.click(body);
+
+    expect(onOpen).toHaveBeenCalledWith('t1');
+  });
+
+  it('在弹层内部按下不关闭弹层：菜单项的 mousedown 不能被当成「点外面」', () => {
+    // 关闭监听挂在 document 上，先于菜单项的 click 收到 mousedown；不排除菜单内部的话，
+    // 用户还没抬起手指菜单就已经消失，归档 / 删除根本点不到。
+    renderCard();
+    openMenu();
+
+    fireEvent.mouseDown(screen.getByRole('button', { name: '归档' }));
+
+    expect(isOpen()).toBe(true);
+    expect(screen.getByRole('button', { name: '归档' })).toBeTruthy();
+  });
+
+  it('在「⋯」触发按钮上按下也不关闭弹层', () => {
+    // 触发按钮在弹层之外（两个是兄弟节点），但它是开关本身：再按一次该由 click 切换收起，
+    // mousedown 先关一次会让「再点收起」变成「关了又开」。
+    renderCard();
+    openMenu();
+
+    fireEvent.mouseDown(trigger());
+
+    expect(isOpen()).toBe(true);
+  });
+
+  it('弹层开着时按非 Esc 键不关闭，Esc 才关闭', () => {
+    renderCard();
+    openMenu();
+
+    // 键盘监听挂在 document 上，任意按键都会进来：不判 key 的话按一下方向键菜单就没了。
+    fireEvent.keyDown(document, { key: 'a' });
+
+    expect(isOpen()).toBe(true);
+
+    fireEvent.keyDown(document, { key: 'Escape' });
+
+    expect(isOpen()).toBe(false);
+  });
+
+  it('触发按钮贴近视口底边时菜单向上翻，视口变化后会重新判断落向', () => {
+    // jsdom 的 getBoundingClientRect 全是 0，触发按钮永远「贴着视口顶边」；这里给一个接近底边的假矩形。
+    const rect = vi
+      .spyOn(Element.prototype, 'getBoundingClientRect')
+      .mockReturnValue({ bottom: window.innerHeight - 4 } as DOMRect);
+    try {
+      renderCard();
+      openMenu();
+
+      const menu = document.querySelector('.shadow-menu')!;
+      // 向上时按自身高度整体上移（-translate-y-full），而不是写死偏移：菜单高随内容变（三项 / 确认态）。
+      expect(menu.className).toContain('-translate-y-full');
+      expect(menu.className).not.toContain('top-7');
+
+      // 窗口变高 / 滚动之后要重算：只在打开那一刻判一次的话，用户滚一下菜单就跑到屏幕外了。
+      rect.mockReturnValue({ bottom: 0 } as DOMRect);
+      fireEvent(window, new Event('resize'));
+
+      expect(document.querySelector('.shadow-menu')!.className).toContain('top-7');
+    } finally {
+      rect.mockRestore();
+    }
+  });
 });
 
 afterEach(() => {

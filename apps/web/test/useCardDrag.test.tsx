@@ -427,4 +427,58 @@ describe('useCardDrag', () => {
 
     expect(events.start).toEqual([]);
   });
+
+  it('拖拽期间按其它键不取消：只有 Escape 算取消', () => {
+    const { events, card } = setup();
+
+    pointerDown(card);
+    fireEvent.pointerMove(document, { clientX: 130, clientY: 100 });
+
+    // 拖拽中打字（比如在别处按了快捷键）不能算「放弃这次拖拽」：取消要显式，否则
+    // 手一抖按到键盘就把用户的拖拽撤销了。
+    fireEvent.keyDown(document, { key: 'Enter' });
+    fireEvent.keyDown(document, { key: 'a' });
+
+    expect(events.cancel).toEqual([]);
+    expect(screen.getByTestId('dragging').textContent).toBe('t1');
+
+    fireEvent.pointerUp(document, { clientX: 130, clientY: 100 });
+    expect(events.drop).toEqual([slot]);
+  });
+
+  it('阈值内的按下按 Escape 不算取消：这一次仍然是点击', () => {
+    const { events, card } = setup();
+
+    pointerDown(card);
+    // 还没超过阈值，拖拽根本没开始——此时没有「取消」可言，按 Escape 不该吞掉这次按下，
+    // 否则用户点开卡片前顺手按了个 Esc，点击就没反应了。
+    fireEvent.pointerMove(document, { clientX: 101, clientY: 100 });
+    fireEvent.keyDown(document, { key: 'Escape' });
+
+    expect(events.cancel).toEqual([]);
+    expect(events.start).toEqual([]);
+
+    fireEvent.pointerUp(document, { clientX: 101, clientY: 100 });
+    fireEvent.click(card);
+
+    expect(events.drop).toEqual([]);
+    expect(events.open).toEqual([true]);
+  });
+
+  it('上一次按下还没结束时的重复按下被忽略，原来的拖拽照常落定', () => {
+    const { events, card } = setup();
+
+    pointerDown(card);
+    fireEvent.pointerMove(document, { clientX: 130, clientY: 100 });
+    expect(screen.getByTestId('dragging').textContent).toBe('t1');
+
+    // 拖拽中又收到一次 pointerDown（多指、或按着不动时的重复事件）。这一次不进入候选；
+    // 若它把记录覆盖成一次「还没跨阈值」的新按下，松手就什么都不落定，卡片凭空弹回。
+    pointerDown(card);
+
+    expect(screen.getByTestId('dragging').textContent).toBe('t1');
+
+    fireEvent.pointerUp(document, { clientX: 130, clientY: 100 });
+    expect(events.drop).toEqual([slot]);
+  });
 });

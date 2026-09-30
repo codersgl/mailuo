@@ -14,6 +14,10 @@ import { defineConfig } from 'vitest/config';
  *
  * 2026-09-30（D84）补了入口 `main.tsx` 的挂载冒烟与新建行的 Esc 用例，实测
  * 95.91 / 91.4 / 96.39 / 98.09，函数与行阈值跟着上调。
+ *
+ * 2026-09-30（D87）补掉可达分支之后实测 97.15 / 95.65 / 96.84 / 98.38，语句阈值跟着上调。
+ * 剩下的 49 条分支集中在 DependencyGraph（23）、TaskEditorPanel（11）与若干构造上不可达的兜底，
+ * 清单见 D87。
  */
 export default defineConfig({
   test: {
@@ -27,8 +31,8 @@ export default defineConfig({
       reportsDirectory: './coverage',
       reportOnFailure: true,
       thresholds: {
-        statements: 93,
-        branches: 89,
+        statements: 95,
+        branches: 93,
         functions: 94,
         lines: 96,
       },

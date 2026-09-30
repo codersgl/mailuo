@@ -106,13 +106,14 @@
 - D80 第 42 步：工期改按自然日，1 天 = 1440 分钟（2026-09-27，分支 fix/day-length-1440，用户拍板并授权改规范）
 - D81 第 43 步：发 0.4.0（2026-09-27，分支 chore/release-0.4.0）
 
-**2026-09-30（D82–D86）**
+**2026-09-30（D82–D87）**
 
 - D82 第 44 步：加测试覆盖率与阈值门禁（2026-09-30，分支 feat/test-coverage）
 - D83 第 45 步：补卡片拖拽落点与 App 拖拽回调的用例（2026-09-30，分支 test/coverage-2）
 - D84 第 46 步：补 web 入口的挂载冒烟与新建行的 Esc 用例（2026-09-30，分支 test/coverage-3）
 - D85 第 47 步：服务端启动流程抽成可注入的 server.ts（2026-09-30，分支 refactor/api-boot，用户拍板选 A）
 - D86 第 48 步：补 api 的可达分支并做变异验证（2026-09-30，分支 test/api-branches）
+- D87 第 49 步：补 web 的可达分支（2026-09-30，分支 test/web-branches）
 
 ## D1 用 pnpm workspace 管理多应用（2026-09-22）
 
@@ -4160,3 +4161,82 @@ vitest 里只能靠 `import` 触发、一次运行只执行一次，还会留下
 - web 侧还有 41 条可达分支（D83 报告的分支缺口），留给下一步。
 - 没引入 Stryker 之类的自动变异工具：这次是手工注入逐条验证。要不要把它做成 `pnpm mutation`
   并进 CI，是下一步的事——全量变异在一次 CI 里跑不完，需要先定范围（建议 `domain/**` + `server.ts`）。
+
+## D87 第 49 步：补 web 的可达分支（2026-09-30，分支 test/web-branches）
+
+D86 结尾把 web 的 41 条可达分支留给下一步，这是那一步。
+
+**问题**：D84 之后 `apps/web` 实测 95.91 / 91.4 / 96.39 / 98.09，分支 91.4 是四个数里唯一低于 95 的。
+1129 条分支里 97 条未覆盖，要过 95% 需要补掉 41 条。这 97 条散在 20 个文件里，不是一块能一次写完的
+代码，所以按「hooks / 组件 / App+工具」分三组并行补（每组一个子代理，各自只改测试文件、各自跑定向
+用例），最后统一跑覆盖率核对。
+
+**结果**（apps/web，v8）：95.91 / 91.4 / 96.39 / 98.09 → **97.15 / 95.65 / 96.84 / 98.38**，
+用例 517 → 560。阈值按「向下取整再减 2」重算：语句 93 → 95、分支 89 → 93（函数 94、行 96 不变）。
+四项都过了 95%。
+
+补掉的分支按文件：
+
+- `api/client.ts`：读 body 失败但不是超时、200 空 body、非 2xx 且响应体没有可用 `error` 文案。
+- `lib/highlight.ts`：两侧空白都折叠后仍不命中时退化成原文一段。
+- `domain/board.ts`：`orders` 撞车时按 `createdAt` 定序的三个比较分支、落点指向不存在的列。
+- `hooks/`：`useSearch` 的 cancelled 守卫与非 ApiError 兜底、`useTheme` 跟随系统切浅色、
+  `useTreeDrag` 缺 `elementFromPoint` 的退化、`useCardFlip` 卡片不在任何列里、
+  `usePointerDrag` 的非 Escape 键 / 阈值内按 Escape / 重复按下、`useTaskActions` 的非 ApiError 兜底。
+- `components/`：`TaskCard` 的菜单内部与触发按钮上的 mousedown、Esc、向上翻转、缺 `onDragStart`；
+  `Sidebar` 的拖动中被拖节点消失、ApiError 与非 ApiError 两条失败文案、落点为空、错误行渲染、
+  拖拽尾巴的 click；`SearchResults` 未选中行样式；`TreeNodeRow` 的 `over` 提醒色；
+  `NewTaskForm` 的空白标题、保存中重复提交、非 Esc 键。
+- `App.tsx`：ArrowUp 选择、Enter 打开选中结果、归档正在编辑的卡片收起抽屉、任务树取不到时的工期
+  破折号、看板重取中抽屉退回列 id、拖拽尾巴的 click 不进入下层看板，以及**拖拽中看板离开 ready**
+  与**搜索态下改父级要重取搜索**（见下面的审查更正）。
+
+两个新文件是**文件级模块替身**，都有注释说明为什么不能塞进原有文件：
+`test/useSearchFallback.test.ts`、`test/useTaskActions.test.ts`（真实 client 会把所有失败包成
+`ApiError`，只有把 `fetchSearch` / 写操作换成抛普通 `Error` 的替身才走得到兜底分支；`vi.mock` 是
+文件级的，塞进原文件会把那里「经真实 client」的用例一起顶掉）。`App.test.tsx` 的假后端另加了
+`treeError` 选项（与既有 `boardError` / `scheduleError` 同形），用来构造「任务树取不到」。
+
+**审查更正了两处实质错误**（子代理的结论与既有用例都错了，都靠变异验证才发现）：
+
+1. **`App.tsx` 的 7 条分支其实可达**，不是「拖拽回调都到不了」。错因是漏看了监听器的归属：
+   指针监听挂在 document 上、由 **App** 的 `useCardDrag` 拥有，不随 `BoardView` 卸载而摘除——
+   看板转 loading 只卸载视图，事件照样到得了 `onStart` / `onPreview` / `onDrop` / `onCancel`。
+   补了两条用例：一条「拖拽中看板离开 ready」（先让 `onStart` 在看板为空时早退、再把看板放回来
+   走 `onPreview` 的 `start === null`，再分别用 Esc / pointerUp 走 `onCancel` / `onDrop`），
+   一条「搜索态下任务树改父级」覆盖 `if (searching) search.retry()`。真正不可达的只剩
+   `App.tsx:219`（`onStart` 里 `dragStartRef` 与 `dragTaskRef` 同时赋值）与 `:339`/`:348`
+   （`editing` 为 null 时抽屉已卸载，保存用的是旧闭包）。
+2. **两条 D51 时代的用例是空转的**。它们按的是「支付对账」——一张有子任务的父卡片，
+   `canDragCard` 为假，`usePointerDrag.begin` 提前返回，`pressed` 从来没置位，所以它们想守的
+   「按下标记必须清掉」那段逻辑从未被执行；断言「新卡片还没显示」只是 `waitFor` 抢在后台 GET
+   之前。审查用「把 `App.tsx:152` 改成 throw」证明了原用例照样绿，换成可拖的叶子卡片后立刻红。
+   已把这几条（含「⋯」起点与「没被推迟过就不补刷」）换成叶子卡片，并给推迟用例补了一条**顺序
+   无关**的断言：按下期间看板 GET 次数必须为 0——只断言「还没显示」会依赖时序，把「立刻重取」
+   的错误实现放过去（这一条也是变异验证逼出来的：第一次改完仍 SURVIVED）。
+
+**判定为构造上不可达（或死代码）、没有硬测的分支**：
+
+- `useTreeDrag` 的 `overId === null`、`useCardDrag` 的 `columnId === null`、`useCardFlip` 的
+  两处 `id === null`：值来自 `closest('[data-attr]')`，属性存在性选择器保证属性一定在，
+  真实元素 `getAttribute` 不可能返回 null；要够到只能让假 `closest` 与假 `getAttribute`
+  自相矛盾，那是断言替身而不是行为。
+- `useCardFlip` 的 `readCardRects` 里 `container === null`：**死代码**——唯一调用点在
+  `container === null || !enabled` 守卫之后，要测只能改生产代码导出它。
+- `usePointerDrag` 的 `drag === null`（keydown 监听只在 `begin()` 里 `dragRef.current` 赋值之后
+  挂上，`stop()` 必摘，不存在「有监听器但记录为空」的窗口）。
+- `TaskCard` 的 `rect === undefined`（`triggerRef` 指向同一次提交里必渲染的按钮）。
+- `domain/subtreeTime.ts` 的 `sums.has(frame.id)` 与 `part === undefined`：单亲树 + 拓扑序保证
+  `Map` 里一定有对应条目；另一处 `findCycleMembers` 里的 `seen.has(id)` 不可达的原因是
+  「单亲 + id 唯一 ⇒ 从非环起点出发不可能重复访问」（手工造重复 id 或自环数据才会命中）。
+- `App.tsx:219`、`:339`、`:348`（见上）。
+
+**剩下的 49 条分支**：`DependencyGraph` 23、`TaskEditorPanel` 11、`App` 3、`useCardFlip` 3、
+`subtreeTime` 3、`BoardView` 2、`TaskCard` / `useCardDrag` / `usePointerDrag` / `useTreeDrag` 各 1。
+前两者是下一步的候选：它们的分支多且互相耦合（悬停边 / 选中 / 平移 / 抽屉草稿状态机），值得单独
+一步、配浏览器验收。
+
+**变异验证**：三个子代理各自对自己补的分支做了临时变异自检（每个变异只留一个、跑完还原，`src/`
+最终干净），报告里逐条给了「覆盖成功 / 不可达及理由」；审查又独立做了两轮探针（把可疑分支替换成
+throw 后跑全量用例），并纠正了上面两处。这一步没有引入自动变异工具；要不要把 Stryker 做进来，
+仍按 D86 的建议先圈定范围。

@@ -151,6 +151,27 @@ describe('moveTaskInBoard', () => {
 
     expect(moveTaskInBoard(before, { taskId: 'nope', columnId: 'todo', position: 0 })).toBe(before);
   });
+
+  it('归档卡片 orders 撞车时按 createdAt 定序：更早在前、更晚在后、相同保持稳定', () => {
+    // 归档卡片保留原 orders，未归档重新编号是 1000、2000……，两者会撞上（compareOrders 的注释）。
+    // 这里四条同 orders，让排序过程同时出现「左早于右」「左晚于右」「左右完全相同」三种比较：
+    // 任何一档接错，同值数据的次序就与后端分歧，松手后的重取会把卡片挪到别处。
+    const before = board({
+      todo: [
+        // M 是唯一未归档的，会被重编号到 1000；createdAt 最晚。
+        task('M', 'todo', { orders: 1000, createdAt: '2026-09-22T00:00:03.000Z' }),
+        // A 最早，B/C 相同且居中 —— B 与 C 的先后是稳定性的判据。
+        task('A', 'todo', { orders: 1000, archived: true, createdAt: '2026-09-22T00:00:01.000Z' }),
+        task('B', 'todo', { orders: 1000, archived: true, createdAt: '2026-09-22T00:00:02.000Z' }),
+        task('C', 'todo', { orders: 1000, archived: true, createdAt: '2026-09-22T00:00:02.000Z' }),
+      ],
+    });
+
+    const after = moveTaskInBoard(before, { taskId: 'M', columnId: 'todo', position: 0 });
+
+    // 同 orders 下 A（最早）在最前，M（最晚）在最后，B 与 C 同值按输入顺序保持稳定。
+    expect(ids(after, 'todo')).toEqual(['A', 'B', 'C', 'M']);
+  });
 });
 
 describe('positionForDrop', () => {
@@ -177,6 +198,13 @@ describe('positionForDrop', () => {
 
     // 拖到归档卡片 a 之前（渲染顺序第一格），a 前面没有未归档卡片，所以是 0。
     expect(positionForDrop(withArchived, 'c', { columnId: 'todo', beforeTaskId: 'a' })).toBe(0);
+  });
+
+  it('落点指向不存在的列时按空列处理（数据过期也不抛错）', () => {
+    // 列在后台重取里被删掉、而这一次落点还是照着旧看板算的：找不到列就当它一张卡片也没有，
+    // 换算结果是 0，比抛错或退回一个别的列的下标安全 —— 后端会按目标列重新落位。
+    expect(positionForDrop(current, 'a', { columnId: 'missing', beforeTaskId: null })).toBe(0);
+    expect(positionForDrop(current, 'a', { columnId: 'missing', beforeTaskId: 'c' })).toBe(0);
   });
 });
 

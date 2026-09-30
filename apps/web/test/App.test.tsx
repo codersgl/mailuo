@@ -68,6 +68,8 @@ function createFakeApi(
     boardError?: string;
     /** 非空时所有依赖图读请求都回这个错误（模拟 cpm 接口失败）。 */
     scheduleError?: string;
+    /** 非空时所有任务树读请求都回这个错误（模拟树取不到，子树汇总因此没有可用的数据）。 */
+    treeError?: string;
     /** 注入一次依赖写入失败。状态码要跟真后端一致（环 409、已归档 400），文案照真后端写。 */
     depsError?: { status: number; message: string };
     /** 初始依赖边，`[前置 id, 后继 id]`。 */
@@ -233,7 +235,10 @@ function createFakeApi(
         scheduleWaiters.push(() => resolve(json(payload))),
       );
     }
-    if (method === 'GET' && path === '/api/tree') return json({ tasks: tree(includeArchived) });
+    if (method === 'GET' && path === '/api/tree') {
+      if (options.treeError !== undefined) return json({ error: options.treeError }, 404);
+      return json({ tasks: tree(includeArchived) });
+    }
     if (method === 'GET' && path.startsWith('/api/board/')) {
       const parentId = id('/api/board/');
       // 与真后端一致：看板接口对不存在的父任务回 404（仓储只查询，存在性由路由判）。
@@ -563,15 +568,17 @@ describe('App 增删改', () => {
   it('点过卡片之后再新建，看板也要立刻显示新卡片', async () => {
     const api = createFakeApi(fixtures);
     render(<App />);
-    const card = (await boardArea().findByText('支付对账')).closest('button')!;
+    // 必须用**可拖的叶子卡片**：有子任务的父卡片会被 canDragCard 拒绝，begin 提前返回，
+    // pressed 根本不会置位，这条回归用例就变成了空转（审查用它做过变异验证）。
+    const card = (await boardArea().findByText('重构登录')).closest('button')!;
 
-    // 一次没有位移的按下：真实浏览器里这就是「点卡片进子看板」，不产生拖拽。
+    // 一次没有位移的按下：真实浏览器里这就是「点卡片进它的看板」，不产生拖拽。
     // 回归用例：这条路径以前会把「指针还按着」的标记留在原地，之后每次写操作都不再刷新看板，
     // 于是新建出来的任务只出现在任务树里（树走的是另一条刷新路径），看板一直停在旧数据上。
     fireEvent.pointerDown(card, { button: 0, clientX: 100, clientY: 100 });
     fireEvent.pointerUp(document, { clientX: 100, clientY: 100 });
     fireEvent.click(card);
-    await waitFor(() => expect(window.location.pathname).toBe('/board/b'));
+    await waitFor(() => expect(window.location.pathname).toBe('/board/a'));
     fireEvent.click(breadcrumbNav().getByRole('button', { name: '根看板' }));
     await waitFor(() => expect(window.location.pathname).toBe('/'));
 
@@ -591,10 +598,11 @@ describe('App 增删改', () => {
   it('从卡片的「⋯」按下之后再新建，看板同样要立刻显示（另一条按下起点）', async () => {
     createFakeApi(fixtures);
     render(<App />);
-    await boardArea().findByText('支付对账');
+    // 同样要是可拖的叶子卡片，否则 begin 提前返回、pressed 不置位（见上一条的说明）。
+    await boardArea().findByText('重构登录');
     // 按下起点不止卡片主体：卡片右上角的「⋯」也绑着同一个 begin（见 TaskCard）。
     // 只覆盖主体的话，「⋯」这条路径的标记若清不掉就没人发现。
-    const more = boardArea().getByRole('button', { name: '「支付对账」的更多操作' });
+    const more = boardArea().getByRole('button', { name: '「重构登录」的更多操作' });
 
     fireEvent.pointerDown(more, { button: 0, clientX: 200, clientY: 100 });
     fireEvent.pointerUp(document, { clientX: 200, clientY: 100 });
@@ -611,7 +619,8 @@ describe('App 增删改', () => {
   it('没被推迟过就不补刷：一次没有写操作的按下不该多发一次看板读取', async () => {
     const api = createFakeApi(fixtures);
     render(<App />);
-    const card = (await boardArea().findByText('支付对账')).closest('button')!;
+    // 可拖的叶子卡片：只有 begin 被接受，pressed 才会置位，这条「不算推迟」的断言才有意义。
+    const card = (await boardArea().findByText('重构登录')).closest('button')!;
     const boardCalls = () =>
       api.calls.filter((call) => call.method === 'GET' && call.url === '/api/board').length;
     const before = boardCalls();
@@ -662,13 +671,52 @@ describe('App 增删改', () => {
     await waitFor(() => expect(boardArea().queryByText('重构登录')).toBeNull());
   });
 
+  it('搜索态下任务树改父级：搜索结果也跟着重取（写操作不止刷新看板）', async () => {
+    const api = createFakeApi(fixtures);
+    render(<App />);
+    await boardArea().findByText('支付对账');
+
+    // 先进搜索态：结果页盖住看板，但任务树照旧渲染，树拖动是这时唯一的写入口。
+    fireEvent.change(screen.getByRole('textbox', { name: '搜索任务' }), {
+      target: { value: '重构' },
+    });
+    await waitFor(() => expect(api.calls.some((call) => call.url.startsWith('/api/search'))).toBe(true));
+    const searchesBefore = api.calls.filter((call) => call.url.startsWith('/api/search')).length;
+
+    // 与上一条同一个手法：替身告诉 useTreeDrag 指针压在 b 那一行的上半区。
+    (document as unknown as { elementFromPoint: () => Element | null }).elementFromPoint = () => {
+      const target = {
+        getAttribute: () => 'b',
+        getBoundingClientRect: () => ({ top: 0, height: 20 }),
+      };
+      return { closest: () => target } as unknown as Element;
+    };
+    const row = await within(document.querySelector('aside')!).findByText('重构登录');
+    fireEvent.pointerDown(row, { button: 0, clientX: 0, clientY: 0 });
+    fireEvent.pointerMove(document, { clientX: 40, clientY: 5 });
+    fireEvent.pointerUp(document, { clientX: 40, clientY: 5 });
+
+    // 搜索结果里的「已归档」「层级路径」都会被这次改父级改掉，所以搜索必须重取一次；
+    // 漏掉这一步的话用户会盯着结果页看一份过期数据。
+    await waitFor(
+      () =>
+        expect(api.calls.filter((call) => call.url.startsWith('/api/search')).length).toBe(
+          searchesBefore + 1,
+        ),
+    );
+  });
+
   it('指针还按在卡片上时落地的写操作只是推迟刷新，松手后看板补上新任务', async () => {
     const api = createFakeApi(fixtures);
     render(<App />);
-    const card = (await boardArea().findByText('支付对账')).closest('button')!;
+    // 可拖的叶子卡片（见上一条的说明）；这条用例守的正是 pressed 期间推迟刷新那段逻辑。
+    const card = (await boardArea().findByText('重构登录')).closest('button')!;
+    const boardCalls = () =>
+      api.calls.filter((call) => call.method === 'GET' && call.url === '/api/board').length;
 
     // 按住不放（还没松手），模拟「一次写操作的回包正好落在这段窗口里」。
     fireEvent.pointerDown(card, { button: 0, clientX: 100, clientY: 100 });
+    const callsBeforeWrite = boardCalls();
     fireEvent.click(boardArea().getByRole('button', { name: '在「待办」新建任务' }));
     const input = boardArea().getByRole('textbox', { name: '在「待办」新建任务' });
     fireEvent.change(input, { target: { value: '补迁移测试' } });
@@ -680,17 +728,21 @@ describe('App 增删改', () => {
         true,
       ),
     );
+    // 等 POST 的回包被处理完（refreshAll 是在 then 里跑的）：不等的话下面两条断言都跑在
+    // 「请求刚发出」的时刻，无论实现对不对都是绿的。
+    await act(async () => {});
     expect(boardArea().queryByText('补迁移测试')).toBeNull();
+    // 这条是顺序无关的硬证据：**一次看板 GET 都不该发生**。只断言「还没显示」会依赖 waitFor
+    // 抢在 GET 回来之前，把「立刻重取」的实现错误地放过去（变异验证抓到过）。
+    expect(boardCalls()).toBe(callsBeforeWrite);
 
     // 松手：这一次按下以「点击」结束，推迟的那次刷新必须补上，否则看板永远停在旧数据上。
     fireEvent.pointerUp(document, { clientX: 100, clientY: 100 });
     expect(await boardArea().findByText('补迁移测试')).toBeTruthy();
 
     // 而且只补这一次：推迟标记收笔时要清掉，否则下一轮按下（哪怕没有写操作）还会再白跑一次。
-    const boardCalls = () =>
-      api.calls.filter((call) => call.method === 'GET' && call.url === '/api/board').length;
     const afterFlush = boardCalls();
-    const again = boardArea().getByText('支付对账').closest('button')!;
+    const again = boardArea().getByText('重构登录').closest('button')!;
     fireEvent.pointerDown(again, { button: 0, clientX: 100, clientY: 100 });
     fireEvent.pointerUp(document, { clientX: 100, clientY: 100 });
     await act(async () => {});
@@ -784,6 +836,59 @@ describe('App 增删改', () => {
       expect(boardArea().queryByRole('textbox', { name: '在「待办」新建任务' })).toBeNull(),
     );
     // 半截标题不该被顺手提交出去。
+    expect(api.calls.some((call) => call.method === 'POST')).toBe(false);
+  });
+
+  it('新建行标题只有空格时提交不发请求，输入行留在原地', async () => {
+    const api = createFakeApi(fixtures);
+    render(<App />);
+    await boardArea().findByText('支付对账');
+
+    fireEvent.click(boardArea().getByRole('button', { name: '在「待办」新建任务' }));
+    const input = boardArea().getByRole('textbox', { name: '在「待办」新建任务' });
+    fireEvent.change(input, { target: { value: '   ' } });
+
+    // 「添加」按钮此时是禁用的，但 Enter 或脚本仍能触发表单的 submit：这一层必须自己挡住空标题，
+    // 否则后端会收到一个只含空格的标题（客户端兜底不能只靠按钮的 disabled 属性）。
+    fireEvent.submit(input.closest('form')!);
+
+    expect(api.calls.some((call) => call.method === 'POST')).toBe(false);
+    expect(boardArea().getByRole('textbox', { name: '在「待办」新建任务' })).toBeTruthy();
+  });
+
+  it('保存中的重复提交被忽略：一次输入只发一个新建请求', async () => {
+    const api = createFakeApi(fixtures);
+    render(<App />);
+    await boardArea().findByText('支付对账');
+
+    fireEvent.click(boardArea().getByRole('button', { name: '在「待办」新建任务' }));
+    const input = boardArea().getByRole('textbox', { name: '在「待办」新建任务' });
+    fireEvent.change(input, { target: { value: '补迁移测试' } });
+    const form = input.closest('form')!;
+
+    // 连按两次回车：第一次的 POST 还在路上（saving 为 true），第二次不能再发一个，
+    // 否则一次输入会建出两张卡片。
+    fireEvent.submit(form);
+    fireEvent.submit(form);
+
+    expect(api.calls.filter((call) => call.method === 'POST')).toHaveLength(1);
+    expect(await boardArea().findByText('补迁移测试')).toBeTruthy();
+  });
+
+  it('新建行里按非 Esc 键不收起输入行', async () => {
+    const api = createFakeApi(fixtures);
+    render(<App />);
+    await boardArea().findByText('支付对账');
+
+    fireEvent.click(boardArea().getByRole('button', { name: '在「待办」新建任务' }));
+    const input = boardArea().getByRole('textbox', { name: '在「待办」新建任务' });
+    fireEvent.change(input, { target: { value: '半截标题' } });
+
+    // 用方向键而不是 Enter：Enter 会走表单提交，这里要守的是「按键处理只认 Esc」，
+    // 不判 key 的话打字过程中的任意按键都会把这一行收掉。
+    fireEvent.keyDown(input, { key: 'ArrowDown' });
+
+    expect(boardArea().getByRole('textbox', { name: '在「待办」新建任务' })).toBeTruthy();
     expect(api.calls.some((call) => call.method === 'POST')).toBe(false);
   });
 
@@ -1816,5 +1921,205 @@ describe('App 卡片拖拽', () => {
     expect(
       api.calls.some((call) => call.method === 'PATCH' && call.url === '/api/tasks/x'),
     ).toBe(false);
+  });
+
+  it('拖拽尾巴的那一次 click 不算点卡片：不进入下层看板', async () => {
+    createFakeApi(dragFixtures);
+    render(<App />);
+    await boardArea().findByText('写测试');
+
+    startDrag('写测试');
+    await waitFor(() => expect(text('doing')).toContain('写测试'));
+    fireEvent.pointerUp(document, { clientX: 500, clientY: 10 });
+
+    // 浏览器在拖拽的 pointerup 之后还会补一次 click。它不是「点卡片进子看板」，
+    // canOpen() 的抑制窗口必须吞掉它；吞不掉的话拖完一张卡片会顺手跳进它的子看板。
+    fireEvent.click(boardArea().getByText('写测试'));
+    await act(async () => {});
+
+    expect(window.location.pathname).toBe('/');
+    expect(boardArea().getByText('写测试')).toBeTruthy();
+  });
+
+  /**
+   * 拖拽进行中看板离开 ready（切「显示已归档」会换一份数据，走加载态）。
+   *
+   * 这条路径的监听器挂在 document 上、由 App 的 useCardDrag 拥有，**不随 BoardView 卸载而摘掉**，
+   * 所以「按下之后看板变空」时指针事件照样到得了 onStart / onPreview / onDrop / onCancel。
+   * 这几段回调都必须安全退出：拿不到按下时的看板快照就不重排、不落库，而不是读一个空看板。
+   *
+   * 顺序有讲究：先让 onStart 在看板为空时早早返回（dragStartRef 保持 null），再把看板放回来，
+   * 这样后面那次 pointerMove 才带着一个有效落点进 onPreview——正是 `start === null` 的那一侧。
+   */
+  it('拖拽中看板离开 ready：拖拽回调安全退出，不重排也不落库', async () => {
+    const api = createFakeApi(dragFixtures);
+    render(<App />);
+    await boardArea().findByText('写测试');
+    // 看板不在手时列 DOM 也一起没了，替身要能返回 null（而不是抛错）。
+    pointAt(() => document.querySelector('[data-column-id="doing"]'));
+
+    // 第一轮：onStart 撞上看板为空，随后用 Esc 走 onCancel。
+    const releaseCancel = api.holdBoardReads();
+    fireEvent.pointerDown(pressable('写测试'), { button: 0, clientX: 10, clientY: 10 });
+    fireEvent.click(screen.getByRole('checkbox', { name: /显示已归档/ }));
+    await waitFor(() => expect(boardArea().queryByText('写测试')).toBeNull());
+    fireEvent.pointerMove(document, { clientX: 500, clientY: 10 });
+    releaseCancel();
+    // 用「改文档」当看板回来的信号：被拖的「写测试」此刻还有一张跟手的克隆卡片（DragGhost），
+    // 按标题查会命中两个。
+    await boardArea().findByText('改文档');
+    // 看板回来了，这次落点真的算得出来；onPreview 拿到的 start 仍是 null。
+    fireEvent.pointerMove(document, { clientX: 510, clientY: 10 });
+    fireEvent.keyDown(document, { key: 'Escape' });
+
+    // 第二轮：同样的开头，这次用 pointerUp 走 onDrop。
+    const releaseDrop = api.holdBoardReads();
+    fireEvent.pointerDown(pressable('写测试'), { button: 0, clientX: 10, clientY: 10 });
+    fireEvent.click(screen.getByRole('checkbox', { name: /显示已归档/ }));
+    await waitFor(() => expect(boardArea().queryByText('写测试')).toBeNull());
+    fireEvent.pointerMove(document, { clientX: 500, clientY: 10 });
+    releaseDrop();
+    await boardArea().findByText('改文档');
+    fireEvent.pointerMove(document, { clientX: 510, clientY: 10 });
+    fireEvent.pointerUp(document, { clientX: 510, clientY: 10 });
+    await act(async () => {});
+
+    // 没有可回滚的快照，就不该发出任何移动请求；界面按服务端为准。
+    expect(api.calls.some((call) => call.method === 'PATCH' && call.url === '/api/tasks/x')).toBe(
+      false,
+    );
+    expect(boardArea().queryByRole('alert')).toBeNull();
+  });
+});
+
+/**
+ * 边界分支补充：已存在的链路里那几条没走到的路。每条都钉一个用户看得见的结果
+ * （高亮、地址、DOM 文案、请求），不是「执行到某一行」。
+ */
+describe('App 边界分支', () => {
+  /** 顶栏搜索框与输入帮手，与「App 搜索」那组同一手法。 */
+  function searchBox(): HTMLElement {
+    return screen.getByRole('textbox', { name: '搜索任务' });
+  }
+
+  function type(value: string): void {
+    fireEvent.change(searchBox(), { target: { value } });
+  }
+
+  /** 结果页里当前高亮那一行的文字（选中态只体现在类名上，取法与 SearchResults.test.tsx 一致）。 */
+  function selectedResultText(): string {
+    const row = Array.from(document.querySelectorAll('li > button')).find((button) =>
+      button.className.includes('bg-accent-weak'),
+    );
+    return row?.textContent ?? '';
+  }
+
+  it('↑ 把选中项移回上一条，Enter 进入的是它', async () => {
+    createFakeApi([
+      task({ id: 'x', title: '对账甲' }),
+      task({ id: 'y', title: '对账乙', orders: 2000 }),
+    ]);
+    render(<App />);
+    await boardArea().findByText('对账甲');
+
+    type('对账');
+    await boardArea().findByText('找到 2 个任务');
+
+    // ↓ 落到第二条，再 ↑ 回到第一条：上移走的是 moveSelection 的 -1 一侧（以前只测过 ↓）。
+    fireEvent.keyDown(searchBox(), { key: 'ArrowDown' });
+    await waitFor(() => expect(selectedResultText()).toContain('对账乙'));
+    fireEvent.keyDown(searchBox(), { key: 'ArrowUp' });
+    await waitFor(() => expect(selectedResultText()).toContain('对账甲'));
+
+    // Enter 打开的必须是高亮这一条（甲）而不是留在第二条：位移动对了，打开的对象才对。
+    fireEvent.keyDown(searchBox(), { key: 'Enter' });
+    await waitFor(() => expect(window.location.pathname).toBe('/board/x'));
+  });
+
+  it('结果为空时按 Enter 什么都不发生（没有选中项就不打开任何东西）', async () => {
+    createFakeApi(fixtures);
+    render(<App />);
+    await boardArea().findByText('支付对账');
+
+    type('完全不存在的词');
+    // 等到空状态出现，说明这一批结果已经就位且确实是空的（不是还在防抖窗口里拿着上一批）。
+    await boardArea().findByText('没有匹配「完全不存在的词」的任务');
+
+    fireEvent.keyDown(searchBox(), { key: 'Enter' });
+
+    // flatResults 为空、选中项是 -1：不能顺手打开别的东西，也不能把结果页换掉。
+    expect(window.location.pathname).toBe('/');
+    expect(boardArea().getByText('没有匹配「完全不存在的词」的任务')).toBeTruthy();
+  });
+
+  it('搜索框里按无关按键不被接管：不 preventDefault，也不改搜索状态', async () => {
+    createFakeApi(fixtures);
+    render(<App />);
+    await boardArea().findByText('支付对账');
+
+    type('脚本');
+    await boardArea().findByText('找到 1 个任务');
+
+    // fireEvent 返回 false 表示这次按键被 preventDefault 了。方向键/Enter/Esc 之外不该动它，
+    // 否则普通打字与 Tab 都会被搜索框吃掉（这是 Escape 那条判断的 else 一侧）。
+    expect(fireEvent.keyDown(searchBox(), { key: 'a' })).toBe(true);
+    expect((searchBox() as HTMLInputElement).value).toBe('脚本');
+    expect(boardArea().getByText('找到 1 个任务')).toBeTruthy();
+  });
+
+  it('归档正在编辑的那张卡片：抽屉跟着收起', async () => {
+    createFakeApi(fixtures);
+    render(<App />);
+    await boardArea().findByText('重构登录');
+    await openEditor('重构登录');
+    expect(screen.getByRole('dialog')).toBeTruthy();
+
+    // 遮罩只挡指针、不挡程序化点击；键盘上「Tab 绕回看板 + 回车」也走得到这条路
+    // （见 App.tsx 里 setTaskArchived 的注释），所以它不是测试里才有的操作。
+    await openCardMenu('重构登录');
+    fireEvent.click(boardArea().getByRole('button', { name: '归档' }));
+
+    // 被归档的正是抽屉里那一个：抽屉必须收起。若只比较了「有没有正在编辑的任务」而不比 id，
+    // 它会留着一个已归档任务的可编辑表单，而保存一定会被后端拒绝。
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+    await waitFor(() => expect(boardArea().queryByText('重构登录')).toBeNull());
+  });
+
+  it('任务树取不到时，父任务抽屉的工期是破折号并说明汇总没算出来', async () => {
+    // 子树汇总是从整棵任务树算的（domain/subtreeTime.ts）。树读不到时抽屉不能拿父任务自己的
+    // durationMinutes 顶上去冒充汇总 —— 那个字段根本不是它的展示口径。
+    createFakeApi(fixtures, { treeError: '加载任务树失败' });
+    render(<App />);
+    await boardArea().findByText('支付对账');
+
+    await openEditor('支付对账');
+
+    const derivedRow = document.querySelector('[data-duration-derived]');
+    // 「还不知道」画破折号，「知道是未估」才画未估：两种状态不能混成一个。
+    expect(derivedRow?.textContent).toContain('—');
+    expect(derivedRow?.getAttribute('title')).toBe('任务树还没取到，暂时算不出汇总');
+  });
+
+  it('看板正在重取时抽屉不崩：前置候选组退回列 id，候选与抽屉都还在', async () => {
+    const api = createFakeApi(fixtures);
+    render(<App />);
+    await boardArea().findByText('支付对账');
+    await openEditor('支付对账');
+    // 正常路径：候选分组的列名取自定义里的中文名。
+    expect(dialog().getByText('进行中')).toBeTruthy();
+
+    // 卡住这一次看板读，再切「显示已归档」——它换了一份看板数据，会走加载态。
+    const release = api.holdBoardReads();
+    fireEvent.click(screen.getByRole('checkbox', { name: /显示已归档/ }));
+
+    // 看板不在手时列字典是空的，候选分组退化成列 id；但抽屉与候选本身不能消失，
+    // 否则树或看板任一路请求慢一点，用户正在编辑的前置列表就会整块空掉。
+    expect(dialog().getByText('doing')).toBeTruthy();
+    expect(dialog().queryByText('进行中')).toBeNull();
+    expect(dialog().getByRole('checkbox', { name: /重构登录/ })).toBeTruthy();
+
+    release();
+    // 看板回来之后列名也回来。
+    expect(await dialog().findByText('进行中')).toBeTruthy();
   });
 });

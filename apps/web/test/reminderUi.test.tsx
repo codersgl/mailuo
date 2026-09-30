@@ -1,4 +1,4 @@
-import { cleanup, render, screen } from '@testing-library/react';
+import { cleanup, render, screen, within } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { TaskCardFace } from '../src/components/TaskCardFace';
 import { TreeNodeRow } from '../src/components/TreeNodeRow';
@@ -306,6 +306,23 @@ describe('任务树节点上的工期提醒', () => {
     cleanup();
     const leaf = renderTreeRow({ id: 'leaf', spentMinutes: 432, runningSince: T0 });
     expect(anyTrack(leaf)).not.toBeNull();
+  });
+
+  it('父任务的子树汇总超期时，比例用危险色（与卡片上的「超 x」同一套语言）', () => {
+    // 一片叶子：工期 8 小时、已用 11 小时 → 子树汇总超期，比例封顶 100%。
+    const child: TreeNode = {
+      task: treeTask({ id: 'c', parentId: 'p', durationMinutes: 480, spentMinutes: 660 }),
+      children: [],
+    };
+    const subtreeTimes = timesOf([treeTask({ id: 'p', durationMinutes: null }), child.task]);
+    const parent = renderTreeRow({ id: 'p', durationMinutes: null }, T0_MS, [child], subtreeTimes);
+    const parentRow = parent.querySelector<HTMLElement>('[data-tree-row="p"]')!;
+
+    expect(bar(parentRow, 'over')).not.toBeNull();
+    // 正常档位用 ink-3（弱化灰）；超期是危险信号，必须换成 danger，否则比例和「还剩一点」看起来一样。
+    const percent = within(parentRow).getByText('100%');
+    expect(percent.className).toContain('text-danger');
+    expect(percent.className).not.toContain('text-ink-3');
   });
 
   it('子树里有叶子未估工期：树上标「未估」，不画条也不给比例', () => {

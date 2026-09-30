@@ -195,4 +195,26 @@ describe('useSearch', () => {
 
     expect(hook.current.state).toMatchObject({ results: [{ id: 't2' }] });
   });
+
+  it('关键词变化后，晚到的旧请求失败也被丢弃（不把已就绪的新结果拉回失败态）', async () => {
+    stubDeferredFetch();
+    const { result: hook, rerender } = renderHook(({ keyword }) => useSearch(keyword, false), {
+      initialProps: { keyword: '登' },
+    });
+
+    await waitForRequests(1);
+    rerender({ keyword: '登录' });
+    await waitForRequests(2);
+
+    // 新请求先成功，界面已经有了新关键词的结果。
+    pending[1]?.respond(response([result('t2', '登录接口')]));
+    await waitFor(() => expect(hook.current.state.status).toBe('ready'));
+
+    // 旧请求这时才失败（超时、连接被重置都走这一条）。catch 里没有 cancelled 守卫的话，
+    // 界面会从新结果退回失败态，用户看到一条属于上一个关键词、且已经过期的错误。
+    pending[0]?.respond({ error: '连不上后端' }, 500);
+    await act(async () => {});
+
+    expect(hook.current.state).toMatchObject({ status: 'ready', results: [{ id: 't2' }] });
+  });
 });
