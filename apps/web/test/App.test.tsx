@@ -62,6 +62,8 @@ function createFakeApi(
     postError?: string;
     archiveError?: string;
     deleteError?: string;
+    /** 非空时所有移动请求都回这个错误（模拟落库失败，看板要退回按下时的顺序）。 */
+    moveError?: string;
     /** 非空时所有看板读请求都回这个错误（模拟当前这层看板被别处删掉）。 */
     boardError?: string;
     /** 非空时所有依赖图读请求都回这个错误（模拟 cpm 接口失败）。 */
@@ -380,6 +382,42 @@ function createFakeApi(
       if (!item) return json({ error: '任务不存在' }, 404);
       item.parentId = (body.parentId as string | null) ?? null;
       item.columnId = body.columnId as string;
+      return json({ task: toBoardTask(item), columnTasks: [] });
+    }
+
+    /**
+     * 移动卡片（看板拖拽落定）。真后端的入参是「目标列 + 目标列里未归档卡片的 0 基插入下标」，
+     * 落库后同列未归档卡片重新编号 1000、2000……（见 apps/api/src/repositories/tasks.ts）。
+     * 这里按同一口径改写 orders，否则乐观重排之后的静默重取会把卡片原样退回，用例就分不清
+     * 「界面自己画的」和「服务端确认过的」。
+     *
+     * 刻意**没实现**的真后端校验（用到时先补这里，别让它悄悄给出不同结论）：
+     * - 前端根本不会算出负下标，真后端由 updateTaskSchema 的 `.min(0, '位置不能为负')` 挡；
+     * - 目标列不存在（真路由回 400 `列不存在`）；
+     * - 有子任务的卡片不能手动换列（真路由回 400，前端由 canDragCard 先拦住）。
+     */
+    if (method === 'PATCH' && path.startsWith('/api/tasks/') && 'columnId' in body && 'position' in body) {
+      if (options.moveError !== undefined) return json({ error: options.moveError }, 400);
+      const item = tasks.find((candidate) => candidate.id === id('/api/tasks/'));
+      if (!item) return json({ error: '任务不存在' }, 404);
+      const targetColumn = body.columnId as string;
+      const siblings = tasks
+        .filter(
+          (candidate) =>
+            candidate.id !== item.id &&
+            candidate.parentId === item.parentId &&
+            candidate.columnId === targetColumn &&
+            candidate.archivedAt === null,
+        )
+        .sort((left, right) => left.orders - right.orders);
+      // 只钳上界，与真 `moveTask` 一致；不做 Math.max(..., 0)：负下标真后端会拒，这里静默当 0
+      // 会把「前端算错符号」这类回归吞掉。
+      const insertAt = Math.min(body.position as number, siblings.length);
+      const ordered = [...siblings.slice(0, insertAt), item, ...siblings.slice(insertAt)];
+      item.columnId = targetColumn;
+      ordered.forEach((candidate, index) => {
+        candidate.orders = (index + 1) * 1000;
+      });
       return json({ task: toBoardTask(item), columnTasks: [] });
     }
 
@@ -1604,5 +1642,140 @@ describe('App 子树聚合', () => {
     render(<App />);
 
     expect(await boardArea().findByText('已用 3 小时 / 12 小时')).toBeTruthy();
+  });
+});
+
+/**
+ * 卡片拖拽的端到端链路：命中测试（resolveDropSlot）→ 乐观重排 → 落定换算 position →
+ * PATCH → 失败/取消时退回按下时的顺序。
+ *
+ * 为什么值得单独一组：以前这几段只有 hooks/useCardDrag 的指针语义用例（注入假 resolveDrop），
+ * 以及 bin 里的浏览器验收；App 自己那几段回调（onStart/onPreview/onDrop/onCancel）与
+ * resolveDropSlot 的真实实现从未被执行过。jsdom 没有布局也没有 elementFromPoint，所以这里
+ * 用一个替身说明「指针压在哪一列」，其余（阈值、乐观重排、请求体）都是真的。
+ */
+describe('App 卡片拖拽', () => {
+  /**
+   * 两张叶子卡片分处两列。必须用叶子：有子任务的父任务列由子任务推导，`canDragCard` 直接
+   * 拒绝拖拽（根 fixtures 里的「支付对账」就是这种，拿它当被拖对象会得到一条永不开始的拖拽）。
+   */
+  const dragFixtures: FakeTask[] = [
+    task({ id: 'x', title: '写测试' }),
+    task({ id: 'y', title: '改文档', columnId: 'doing', orders: 2000 }),
+  ];
+
+  /** 指定命中测试「指针压在哪」。传函数是为了每次重新查 DOM：乐观重排会换掉列里的卡片。 */
+  function pointAt(target: Element | null | (() => Element | null)) {
+    (document as unknown as { elementFromPoint: () => Element | null }).elementFromPoint = () =>
+      typeof target === 'function' ? target() : target;
+  }
+
+  function column(id: string): Element {
+    const found = document.querySelector(`[data-column-id="${id}"]`);
+    if (found === null) throw new Error(`看板里没有这一列: ${id}`);
+    return found;
+  }
+
+  function text(id: string): string {
+    return column(id).textContent ?? '';
+  }
+
+  /** 拿卡片主体那颗按钮：pointerdown 绑在它身上（见 TaskCard）。 */
+  function pressable(title: string): HTMLElement {
+    const found = boardArea().getByText(title).closest('button');
+    if (found === null) throw new Error(`卡片没有可点的按钮: ${title}`);
+    return found;
+  }
+
+  /** 起一次拖拽并跨过阈值：落点固定指向 doing 列（列尾，除非列里还有别的卡片）。 */
+  function startDrag(title: string) {
+    pointAt(() => column('doing'));
+    fireEvent.pointerDown(pressable(title), { button: 0, clientX: 10, clientY: 10 });
+    fireEvent.pointerMove(document, { clientX: 500, clientY: 10 });
+  }
+
+  it('拖到另一列的列尾：先乐观重排，松手后按换算出的 position 落库', async () => {
+    const api = createFakeApi(dragFixtures);
+    render(<App />);
+    await boardArea().findByText('写测试');
+
+    // 目标列 doing 里已经有一张「改文档」，落点是列尾 → position = 1。
+    startDrag('写测试');
+
+    // 还没松手：卡片已经画在 doing 列里，且排在原有那张之后（乐观重排）。
+    await waitFor(() => expect(text('doing')).toContain('写测试'));
+    expect(text('doing').indexOf('改文档')).toBeLessThan(text('doing').indexOf('写测试'));
+
+    fireEvent.pointerUp(document, { clientX: 500, clientY: 10 });
+
+    await waitFor(() => {
+      const move = api.calls.find((call) => call.method === 'PATCH' && call.url === '/api/tasks/x');
+      expect(move?.body).toEqual({ columnId: 'doing', position: 1 });
+    });
+    // 服务端确认后的静默重取也让它留在 doing 列，而不是弹回 todo。
+    await waitFor(() => expect(text('doing')).toContain('写测试'));
+    expect(text('todo')).not.toContain('写测试');
+  });
+
+  it('落库失败：乐观重排退回按下时的顺序，并报出后端文案', async () => {
+    createFakeApi(dragFixtures, { moveError: '任务已归档' });
+    render(<App />);
+    await boardArea().findByText('写测试');
+
+    startDrag('写测试');
+    await waitFor(() => expect(text('doing')).toContain('写测试'));
+
+    fireEvent.pointerUp(document, { clientX: 500, clientY: 10 });
+
+    expect(await boardArea().findByRole('alert')).toBeTruthy();
+    expect(boardArea().getByText('任务已归档')).toBeTruthy();
+    // 失败后响亮重取一次，界面回到服务端状态：卡片还在原来的 todo 列。
+    await waitFor(() => expect(text('todo')).toContain('写测试'));
+    expect(text('doing')).not.toContain('写测试');
+  });
+
+  it('拖出所有列后松手：当场撤销预览，不落库也不报错', async () => {
+    const api = createFakeApi(dragFixtures);
+    render(<App />);
+    await boardArea().findByText('写测试');
+
+    startDrag('写测试');
+    await waitFor(() => expect(text('doing')).toContain('写测试'));
+
+    // 指针移到看板之外：落点为 null，预览当场退回按下时的看板。
+    pointAt(null);
+    fireEvent.pointerMove(document, { clientX: 1200, clientY: 5 });
+    await waitFor(() => expect(text('todo')).toContain('写测试'));
+    expect(text('doing')).not.toContain('写测试');
+
+    fireEvent.pointerUp(document, { clientX: 1200, clientY: 5 });
+    await act(async () => {});
+
+    expect(
+      api.calls.some((call) => call.method === 'PATCH' && call.url === '/api/tasks/x'),
+    ).toBe(false);
+    expect(boardArea().queryByRole('alert')).toBeNull();
+  });
+
+  it('拖拽中按 Esc：撤销预览且不落库', async () => {
+    const api = createFakeApi(dragFixtures);
+    render(<App />);
+    await boardArea().findByText('写测试');
+
+    startDrag('写测试');
+    await waitFor(() => expect(text('doing')).toContain('写测试'));
+
+    fireEvent.keyDown(document, { key: 'Escape' });
+
+    await waitFor(() => expect(text('todo')).toContain('写测试'));
+    expect(text('doing')).not.toContain('写测试');
+
+    // Esc 之后这一次按下已经结束：随后的 pointerup 不该再提交任何落点。
+    fireEvent.pointerUp(document, { clientX: 500, clientY: 10 });
+    await act(async () => {});
+
+    expect(
+      api.calls.some((call) => call.method === 'PATCH' && call.url === '/api/tasks/x'),
+    ).toBe(false);
   });
 });
