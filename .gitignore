@@ -2,6 +2,9 @@ node_modules/
 dist/
 build/
 
+# 覆盖率报告产物（vitest 的 html reporter 输出到这里）
+coverage/
+
 # SQLite 数据文件不入版本库（见 docs/spec.md）
 data/
 

@@ -55,6 +55,7 @@ pnpm dev:api          # 启动后端，默认 http://localhost:3001
 pnpm dev:web          # 启动前端，默认 http://localhost:5173（需要后端同时在跑）
 pnpm lint             # ESLint（配置见根目录 eslint.config.mjs）
 pnpm test             # 跑测试
+pnpm test:coverage    # 跑测试并出覆盖率报告，低于阈值即以非零退出码失败
 pnpm typecheck        # 类型检查
 pnpm build            # 编译后端到 apps/api/dist，打包前端到 apps/web/dist
 pnpm icons            # 只改了 brand/ 下的图标母版时跑，重新生成 apps/web/public/ 里的产物
@@ -63,18 +64,39 @@ pnpm icons            # 只改了 brand/ 下的图标母版时跑，重新生成
 开发时前端由 Vite 提供服务，`/api` 请求由 Vite 代理到后端，所以浏览器里只访问 5173 即可。
 
 CI（`.github/workflows/ci.yml`）在推送到 main 与每个 PR 上依次跑 `pnpm lint`、`pnpm typecheck`、
-`pnpm build`、`pnpm test`，与本地命令完全一致。顺序不能反：`bin/mailuo.test.mjs` 里有几条进程级
-用例会真的启动服务，要读构建产物，所以 CI 里 build 在 test 之前。
+`pnpm build`、`pnpm test:coverage`，与本地命令完全一致。顺序不能反：`bin/mailuo.test.mjs` 里有几条
+进程级用例会真的启动服务，要读构建产物，所以 CI 里 build 在 test 之前。CI 与发布工作流（`release.yml`）
+都跑 `test:coverage` 而不是 `test`：前者是后者的超集（同一套用例，外加覆盖率报告与阈值门禁），
+两条都跑只会把同样的用例跑两遍。
 
 `pnpm lint` 用的 typescript-eslint 目前只支持 TypeScript 6 的编译器 API，而本仓库构建用
 TypeScript 7，所以根 `devDependencies` 里的 `typescript@6` 只服务 lint，`apps/*` 各自的
 `typescript@7` 才是 `pnpm typecheck` / `pnpm build` 用的那个。原因与后续处置见
 `docs/decisions.md` D70。
 
+## 测试覆盖率
+
+`pnpm test:coverage` 跑同一套用例并采集覆盖率，任何一项低于阈值就以非零退出码失败。
+
+- 范围：`apps/api/src/**`（vitest + v8）与 `apps/web/src/**`（vitest + jsdom + v8），
+  以及 `bin/mailuo.mjs`（Node 内置的 `--experimental-test-coverage`）。
+- `include` 写死到 `src/**`：没被用例加载到的文件也以 0% 计入，而不是从分母里消失。
+  两个入口因此显示 0%，但性质不同：`apps/api/src/index.ts` 的启动路径由
+  `bin/mailuo.test.mjs` 的进程级用例真起服务跑过（那种覆盖算不进 vitest 的报告）；
+  `apps/web/src/main.tsx` 只做 createRoot + 挂载，没有任何用例执行它（jsdom 用例都从
+  `App.tsx` 起）。
+- 新加工作区包时必须同时提供 `test:coverage`：根脚本用的是 `pnpm -r test:coverage`，
+  只定义了 `test` 的包会被静默跳过，而 CI 与发布门禁跑的是前者。
+- 报告：终端表格 + `apps/api/coverage/index.html`、`apps/web/coverage/index.html`
+  （`coverage/` 已 gitignore）。
+- 阈值定义在 `apps/api/vitest.config.ts`、`apps/web/vitest.config.ts` 与根 `package.json`
+  的 `test:coverage`（bin 那段），取值是当前实测值向下取整再减 2 个点。为什么用这个口径、
+  代价是什么，见 `docs/decisions.md` D82。
+
 ## 发布（npm）
 
 发布由 `.github/workflows/release.yml` 完成：在 GitHub 上建 Release（tag 形如 `v0.3.0`）后自动跑
-`pnpm lint` / `pnpm typecheck` / `pnpm build` / `pnpm test`，然后 `npm publish`。认证走 npm
+`pnpm lint` / `pnpm typecheck` / `pnpm build` / `pnpm test:coverage`，然后 `npm publish`。认证走 npm
 Trusted Publishing（OIDC），仓库里没有任何 npm token，也不需要人工确认。
 
 发一个版本：

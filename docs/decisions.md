@@ -106,6 +106,10 @@
 - D80 第 42 步：工期改按自然日，1 天 = 1440 分钟（2026-09-27，分支 fix/day-length-1440，用户拍板并授权改规范）
 - D81 第 43 步：发 0.4.0（2026-09-27，分支 chore/release-0.4.0）
 
+**2026-09-30（D82）**
+
+- D82 第 44 步：加测试覆盖率与阈值门禁（2026-09-30，分支 feat/test-coverage）
+
 ## D1 用 pnpm workspace 管理多应用（2026-09-22）
 
 规范已定下 `apps/web` 与 `apps/api` 两个应用，需要一个工作区把两者的依赖和脚本组织起来。选 pnpm：单一 lockfile、依赖硬链接节省磁盘、`pnpm --filter` 可直接跑单个应用。
@@ -3804,3 +3808,81 @@ lint 0 error / 5 warning（同基线）、typecheck 通过、build 通过；bin 
 - 不引 semantic-release / changesets：同 D72 的「没做的」。
 
 
+
+## D82 第 44 步：加测试覆盖率与阈值门禁（2026-09-30，分支 feat/test-coverage）
+
+**问题**：仓库有 859 个用例（bin 37 / api 321 / web 501），却从来没有覆盖率数字——没有 provider、
+没有配置、没有脚本，CI 也不跑。于是「用例很多」和「代码被测到多少」是两件事：删掉一整块用例，
+门禁照样全绿。
+
+**先把现状量出来**（临时装 provider 实测，不代表当时仓库里的状态）：
+
+| 范围 | 语句 | 分支 | 函数 | 行 |
+| --- | --- | --- | --- | --- |
+| `apps/api/src/**` | 94.04 | 89.80 | 97.74 | 94.60 |
+| `apps/web/src/**` | 91.89 | 88.21 | 93.01 | 93.91 |
+| `bin/mailuo.mjs` | — | — | — | 95.78（行） |
+
+最低的几处是 `apps/web/src/hooks/useCardDrag.ts`（语句 58%、分支 37.5%）与
+`apps/web/src/components/NewTaskForm.tsx`（75%）。这一步不补这些用例，只把总体数字固定成可复现的门禁。
+
+**选型与版本**：用 vitest 官方的 `@vitest/coverage-v8`（provider 是 v8，与 Node 自带的那套同源）。
+它要求与 `vitest` **精确同版本**——只加 provider 时 pnpm 解析到 5.0.2，而 lockfile 里 vitest 是
+5.0.1，`pnpm peers check` 立刻报两条 unmet peer。两个办法（把 provider 钉在 5.0.1，或两边一起走
+caret 到 5.0.2）里选后者：仓库各处的依赖都是 caret，钉死一个反而与惯例不一致，而且以后
+`pnpm update vitest` 一样会把它打回不匹配。这是本次唯一动到测试运行器版本的地方（5.0.1 → 5.0.2，
+补丁号），全量用例重跑过。
+
+**include 写死 `src/**`，不靠默认值**。默认口径只统计「测试运行中被加载过的文件」：新加一个
+没被任何用例 import 的模块，它在报告里连 0% 都不会出现，等于从分母里消失——覆盖率看起来还涨了。
+写死之后，两个入口 `apps/api/src/index.ts` 与 `apps/web/src/main.tsx` 以 0% 计入，把 api 的总体从
+97.80 拉到 94.04。这是**故意的**，但两个入口的性质不同：`index.ts` 的启动路径由
+`bin/mailuo.test.mjs` 的进程级用例真起服务跑过，只是那种覆盖算不进 vitest 的报告；`main.tsx`
+只做 createRoot + 挂载，没有任何用例执行它（jsdom 用例都从 `App.tsx` 起），是真正意义上的未覆盖。
+宁可显示 0%，也不要让「没测到的文件」隐形。
+
+**阈值 = 当前实测值向下取整再减 2 个点**，是全局（不是按文件）门槛：
+
+- `apps/api/vitest.config.ts`：statements 92 / branches 87 / functions 95 / lines 92
+- `apps/web/vitest.config.ts`：statements 89 / branches 86 / functions 91 / lines 91
+- 根 `package.json` 的 `test:coverage`（bin 段）：lines 93 / branches 86 / functions 88
+
+为什么留 2 个点而不是卡到小数点：一次纯重构（挪函数、改早退顺序）就能让分支数抖掉一个点，卡死会
+让门禁变成「每次重构都要顺手调阈值」的噪音源；而真正的回退（删掉一整块用例、新加一个没测的模块）
+动辄几个点，2 个点足够拦住。代价见下。
+
+**api 那份 vitest 配置是新增的**：此前 `apps/api` 没有 `vitest.config.ts`，测试跑在默认环境（node）
+下。顺带把它放进 `apps/api/tsconfig.test.json` 的 include：阈值键名写错时 typecheck 就能拦下，
+而不是等到跑测试才发现。
+
+**bin 用 Node 内置的覆盖率**，不引第三个工具：`node --test --experimental-test-coverage
+--test-coverage-include=bin/mailuo.mjs`。include 只圈 `bin/mailuo.mjs` 一个文件，不带
+`bin/*.test.mjs`——测试文件本身不该进分母（Node 默认会把它们算进去）。
+
+**CI 与发布门禁跑 `pnpm test:coverage`，不再跑 `pnpm test`**。前者是后者的超集：同一套用例，
+外加覆盖率采集与阈值；两条都跑只是把同样的用例跑两遍。报告产物 `apps/*/coverage/` 加进
+`.gitignore`（ESLint 那边早就在忽略 `**/coverage/**`）。
+
+**代价与边界**：
+
+- 阈值是全局的：删掉 `useCardDrag.ts` 的一半用例，可以被 `apps/web` 别处新增的用例盖过去。
+  要按文件/按目录卡，得用 vitest 的 glob 阈值形式，这一步不做（见下）。
+- 入口文件长期 0%，api 的总体被它拉着。以后给 `index.ts` / `main.tsx` 补用例时要跟着上调阈值，
+  否则门禁停留在被入口稀释后的水平。
+- 覆盖率只说明「这一行被执行过」，不说明断言有没有意义。它拦的是「整块没测」，不替代审阅。
+
+**没做的（可选复杂性）**：
+
+- 不上传 codecov、不生成 lcov、不在 PR 里贴覆盖率评论：仓库没有这类外部服务，本地与 CI 看到的
+  同一份终端表格就够。
+- 不做按目录/按文件的阈值，也不看行级 diff 覆盖率：先跑一段时间全局门槛，看它是不是真的拦到了
+  东西再说。
+- 不把覆盖率加进 pre-commit：仓库没有钩子，全量用例要几十秒，不适合每次提交跑。
+- 不补 `useCardDrag.ts` 等低覆盖文件的用例：那是测试补强，与「把覆盖率量出来并变成门禁」是两件事，
+  另开一步。
+
+**本机沙箱注意**：这台机器的 `NODE_USE_ENV_PROXY=1` 会让 undici 在子进程 stderr 打一行实验性警告，
+`bin/mailuo.test.mjs` 里「`--help` 的 stderr 必须为空」那条会因此红——`main` 上同样红，与本次改动
+无关。跑覆盖率前 unset `http_proxy` / `https_proxy` / `HTTP_PROXY` / `HTTPS_PROXY` /
+`NODE_USE_ENV_PROXY` 即可（CI 上没有这些变量）。安装依赖仍要用
+`pnpm install --store-dir <仓库内路径>`，同 D42。
