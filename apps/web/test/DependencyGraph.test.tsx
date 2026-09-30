@@ -1,4 +1,4 @@
-import { cleanup, fireEvent, render, screen, within } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, within } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { DependencyGraph } from '../src/components/DependencyGraph';
 import type { ColumnRecord, LayerSchedule, ScheduleNode } from '../src/api/types';
@@ -110,6 +110,13 @@ function stage(container: HTMLElement): HTMLElement {
 function graphNode(container: HTMLElement, id: string): HTMLElement {
   const element = container.querySelector<HTMLElement>(`[data-graph-node="${id}"]`);
   if (element === null) throw new Error(`没有找到节点 ${id}`);
+  return element;
+}
+
+/** 相机层：舞台里第一个子元素，它的 transform 就是平移与缩放的最终结果。 */
+function cameraLayer(container: HTMLElement): HTMLElement {
+  const element = stage(container).firstElementChild as HTMLElement | null;
+  if (element === null) throw new Error('没有找到相机层');
   return element;
 }
 
@@ -313,5 +320,209 @@ describe('依赖图视图', () => {
     fireEvent.click(screen.getByRole('button', { name: '重试' }));
     expect(failed.props.onRetry).toHaveBeenCalled();
     expect(screen.getByRole('button', { name: '看板' })).toBeTruthy();
+  });
+
+  it('图是空的（舞台还没画出来）时缩放照样生效：量不到尺寸就用 0 当锚点', () => {
+    renderGraph({ state: { status: 'ready', data: { ...SCHEDULE, nodes: [], edges: [] } } });
+    // 空状态只画工具栏，舞台不在 DOM 里——zoomBy 读到的 rect 是 undefined，宽高两处 `?? 0`
+    // 都要兜住。这条只保证「不抛异常、缩放倍率照常」；anchor 究竟算成什么在组件层观察不到
+    // （空图不画相机层，一有图 useLayoutEffect 的 fit() 又会重置相机），所以那两条分支靠
+    // 覆盖率守住，不靠断言（审查用变异确认过：去掉 `?? 0` 这条用例照样绿）。
+    expect(document.querySelector('[data-graph-stage]')).toBeNull();
+
+    fireEvent.click(screen.getByRole('button', { name: '放大' }));
+    expect(screen.getByText('120%')).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: '缩小' }));
+    expect(screen.getByText('100%')).toBeTruthy();
+  });
+
+  it('平移阈值按两个方向分别判：只动 y 也跟手，开始拖动后不再受阈值限制', () => {
+    const { container } = renderGraph();
+    expect(cameraLayer(container).style.transform).toBe('translate(0px, 0px) scale(1)');
+
+    fireEvent.pointerDown(stage(container), { button: 0, clientX: 100, clientY: 100 });
+    // dx = 1（小于 3）但 dy = 12：判据是「两个方向都小于 3 才算手抖」，只动一个方向也要平移。
+    fireEvent.pointerMove(document, { clientX: 101, clientY: 112 });
+    expect(cameraLayer(container).style.transform).toBe('translate(1px, 12px) scale(1)');
+    // pan.moved 已经是 true：这一次只移了 1px 也继续跟手，否则拖到一半会卡住。
+    fireEvent.pointerMove(document, { clientX: 102, clientY: 112 });
+    expect(cameraLayer(container).style.transform).toBe('translate(2px, 12px) scale(1)');
+    fireEvent.pointerUp(document, { clientX: 102, clientY: 112 });
+  });
+
+  it('平移阈值按两个方向分别判：只动 x 超过 3px 也跟手', () => {
+    const { container } = renderGraph();
+    fireEvent.pointerDown(stage(container), { button: 0, clientX: 100, clientY: 100 });
+    // dy = 0 落在阈值内，dx = 40 落在阈值外：dy 那一侧不该把这次平移短路掉。
+    fireEvent.pointerMove(document, { clientX: 140, clientY: 100 });
+    expect(cameraLayer(container).style.transform).toBe('translate(40px, 0px) scale(1)');
+    fireEvent.pointerUp(document, { clientX: 140, clientY: 100 });
+  });
+
+  it('真的拖动过之后松手：这一次不是「点空白处」，详情卡保持打开', () => {
+    const { container } = renderGraph();
+    fireEvent.click(graphNode(container, 't1'));
+    expect(screen.queryByLabelText('梳理旧登录流程 的排期')).not.toBeNull();
+
+    fireEvent.pointerDown(stage(container), { button: 0, clientX: 100, clientY: 100 });
+    fireEvent.pointerMove(document, { clientX: 130, clientY: 100 });
+    fireEvent.pointerUp(document, { clientX: 130, clientY: 100 });
+
+    // pan.moved 已是 true：这次松手是平移的收尾，选中与详情卡都不该被清掉。
+    expect(screen.queryByLabelText('梳理旧登录流程 的排期')).not.toBeNull();
+    expect(graphNode(container, 't1').getAttribute('aria-pressed')).toBe('true');
+  });
+
+  it('拖动收尾之后到达的 pointermove / pointerup 被忽略：pan 已清空，相机不再跑', () => {
+    const { container } = renderGraph();
+    fireEvent.pointerDown(stage(container), { button: 0, clientX: 100, clientY: 100 });
+
+    // 监听挂在 document 上，事件到达顺序由浏览器决定。同一批里先收尾、再来一次松手与移动
+    // （React 的 effect 清理在这批结束前还没跑，所以监听仍然在）：panRef 已经是 null，
+    // 这两个守卫必须挡住，否则会拿一份没有起点的 pan 去算位移、把相机推走。
+    act(() => {
+      fireEvent.pointerUp(document, { clientX: 100, clientY: 100 });
+      fireEvent.pointerUp(document, { clientX: 100, clientY: 100 });
+      fireEvent.pointerMove(document, { clientX: 160, clientY: 160 });
+    });
+
+    expect(cameraLayer(container).style.transform).toBe('translate(0px, 0px) scale(1)');
+  });
+
+  it('非左键按下不平移：画布不切 grabbing，也不算「点空白处」', () => {
+    const { container } = renderGraph();
+    fireEvent.click(graphNode(container, 't1'));
+
+    fireEvent.pointerDown(stage(container), { button: 1, clientX: 20, clientY: 20 });
+    // 用 not.toContain('cursor-grabbing')：`'cursor-grabbing'.includes('cursor-grab')` 为真，
+    // 只断言 toContain('cursor-grab') 的话「切了 grabbing」也照样绿（审查用变异抓到过）。
+    expect(stage(container).className).not.toContain('cursor-grabbing');
+
+    fireEvent.pointerUp(document, { clientX: 20, clientY: 20 });
+    // 没进入平移，这次 pointerup 就不属于「点空白处」：详情卡保持打开。
+    expect(screen.queryByLabelText('梳理旧登录流程 的排期')).not.toBeNull();
+  });
+
+  it('从节点卡上按下不平移：那是选中，不该顺手把整张图拖走', () => {
+    const { container } = renderGraph();
+
+    fireEvent.pointerDown(graphNode(container, 't1'), { button: 0, clientX: 100, clientY: 100 });
+    expect(stage(container).className).not.toContain('cursor-grabbing');
+    // 光看不切 grabbing 还不够：真平移起来相机就会跟着指针走，所以再钉住变换没动。
+    fireEvent.pointerMove(document, { clientX: 160, clientY: 100 });
+    expect(cameraLayer(container).style.transform).toBe('translate(0px, 0px) scale(1)');
+  });
+
+  it('从详情卡上按下不平移：点卡片里的文字不会把图拖走', () => {
+    const { container } = renderGraph();
+    fireEvent.click(graphNode(container, 't1'));
+    const detail = screen.getByLabelText('梳理旧登录流程 的排期');
+
+    fireEvent.pointerDown(within(detail).getByText('梳理旧登录流程'), {
+      button: 0,
+      clientX: 5,
+      clientY: 5,
+    });
+    expect(stage(container).className).not.toContain('cursor-grabbing');
+    fireEvent.pointerMove(document, { clientX: 60, clientY: 5 });
+    expect(cameraLayer(container).style.transform).toBe('translate(0px, 0px) scale(1)');
+    fireEvent.pointerUp(document, { clientX: 60, clientY: 5 });
+    // 也没被当成「点空白处」：详情卡还在。
+    expect(screen.queryByLabelText('梳理旧登录流程 的排期')).not.toBeNull();
+  });
+
+  it('选中之后按别的键不收详情：文档与节点上的监听都只认 Escape', () => {
+    const { container } = renderGraph();
+    fireEvent.click(graphNode(container, 't1'));
+
+    // 文档那一层：a 键属于别的处理者（搜索框等），不能顺手清掉图上的选中。
+    fireEvent.keyDown(document, { key: 'a' });
+    expect(screen.queryByLabelText('梳理旧登录流程 的排期')).not.toBeNull();
+
+    // 节点按钮那一层：Enter 不是 Escape，本身也不收起详情。
+    fireEvent.keyDown(graphNode(container, 't1'), { key: 'Enter' });
+    expect(screen.queryByLabelText('梳理旧登录流程 的排期')).not.toBeNull();
+  });
+
+  it('悬停一条边：前置端及直接后继满色，其余 40%，那条线自己加粗到 2px', () => {
+    const { container } = renderGraph();
+    const group = container.querySelector('[data-graph-edge="t2->t3"]') as Element;
+    fireEvent.mouseEnter(group);
+
+    // 锚点取前置端 t2：t2 与直接后继 t3 满色，和它们都没有边的 t1 变淡。
+    expect(graphNode(container, 't2').className).not.toContain('opacity-40');
+    expect(graphNode(container, 't3').className).not.toContain('opacity-40');
+    expect(graphNode(container, 't1').className).toContain('opacity-40');
+    // 非关键边 hover 时是 2px；hover 的那一条自己永远满色。
+    expect(edgeLine(container, 't2->t3').getAttribute('stroke-width')).toBe('2');
+    expect(group.getAttribute('opacity')).toBe('1');
+    expect(container.querySelector('[data-graph-edge="t1->t3"]')?.getAttribute('opacity')).toBe('0.4');
+
+    fireEvent.mouseLeave(group);
+    expect(graphNode(container, 't1').className).not.toContain('opacity-40');
+  });
+
+  it('悬停关键边：线加粗到 3px', () => {
+    const { container } = renderGraph();
+    const group = container.querySelector('[data-graph-edge="t1->t3"]') as Element;
+    fireEvent.mouseEnter(group);
+    expect(edgeLine(container, 't1->t3').getAttribute('stroke-width')).toBe('3');
+  });
+
+  it('悬停末端节点：所有直接前置保持满色，隔一层的仍变淡', () => {
+    const { container } = renderGraph({ showArchived: true });
+    fireEvent.mouseEnter(graphNode(container, 't3'));
+
+    // t1、t2 都是 t3 的直接前置（反向邻居）要留住；t9 只连到 t2，隔了一层，必须变淡——
+    // 否则这条用例对「反向邻居也在高亮集合里」没有证明力。
+    expect(graphNode(container, 't1').className).not.toContain('opacity-40');
+    expect(graphNode(container, 't2').className).not.toContain('opacity-40');
+    expect(graphNode(container, 't9').className).toContain('opacity-40');
+  });
+
+  it('脏数据里有一条端点不存在的边：跳过它，其他节点与边照画', () => {
+    const dirty: LayerSchedule = {
+      ...SCHEDULE,
+      // 后端正常不会给出这种边（cpm 只回这一层里两端都存在的边）。这里守的是兜底：
+      // 一条坏边不能让整张图抛异常，也不能画出一条没有目标的线。
+      edges: [...SCHEDULE.edges, { predecessorId: 't1', successorId: 'ghost', critical: false }],
+    };
+    // showArchived 打开才会把这份边集原样交给组件：关着时 visibleScheduleGraph 会先按节点过滤。
+    const { container } = renderGraph({
+      showArchived: true,
+      state: { status: 'ready', data: dirty },
+    });
+
+    expect(container.querySelector('[data-graph-edge="t1->ghost"]')).toBeNull();
+    expect(graphNode(container, 't1')).toBeTruthy();
+    expect(container.querySelector('[data-graph-edge="t1->t3"]')).not.toBeNull();
+  });
+
+  it('列字典里查不到这个列时，详情卡退回显示 columnId 而不是留白', () => {
+    const { container } = renderGraph({ columns: [] });
+    fireEvent.click(graphNode(container, 't1'));
+
+    const detail = screen.getByLabelText('梳理旧登录流程 的排期');
+    // 看板还没到位时 App 传进来的列是空数组：这一格必须退回 id，不能空着。
+    expect(within(detail).getByText(/doing/)).toBeTruthy();
+  });
+
+  it('选中已归档节点：详情卡也标出「已归档」', () => {
+    const { container } = renderGraph({ showArchived: true });
+    fireEvent.click(graphNode(container, 't9'));
+
+    const detail = screen.getByLabelText('过时的调研 的排期');
+    expect(within(detail).getByText('已归档')).toBeTruthy();
+  });
+
+  it('切「显示已归档」把选中的归档节点藏起来后，详情卡跟着收起', () => {
+    const { container, rerender } = render(<DependencyGraph {...graphProps({ showArchived: true })} />);
+    fireEvent.click(graphNode(container, 't9'));
+    expect(screen.queryByLabelText('过时的调研 的排期')).not.toBeNull();
+
+    rerender(<DependencyGraph {...graphProps({ showArchived: false })} />);
+    // selectedId 还指着 t9，但它已经不在可见图里：详情卡不能挂着一个图里没有的任务
+    // （find 找不到 → `?? null` 那一段）。
+    expect(screen.queryByLabelText('过时的调研 的排期')).toBeNull();
   });
 });
