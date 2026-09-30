@@ -106,11 +106,12 @@
 - D80 第 42 步：工期改按自然日，1 天 = 1440 分钟（2026-09-27，分支 fix/day-length-1440，用户拍板并授权改规范）
 - D81 第 43 步：发 0.4.0（2026-09-27，分支 chore/release-0.4.0）
 
-**2026-09-30（D82–D84）**
+**2026-09-30（D82–D85）**
 
 - D82 第 44 步：加测试覆盖率与阈值门禁（2026-09-30，分支 feat/test-coverage）
 - D83 第 45 步：补卡片拖拽落点与 App 拖拽回调的用例（2026-09-30，分支 test/coverage-2）
 - D84 第 46 步：补 web 入口的挂载冒烟与新建行的 Esc 用例（2026-09-30，分支 test/coverage-3）
+- D85 第 47 步：服务端启动流程抽成可注入的 server.ts（2026-09-30，分支 refactor/api-boot，用户拍板选 A）
 
 ## D1 用 pnpm workspace 管理多应用（2026-09-22）
 
@@ -3256,7 +3257,8 @@ effect 停掉后 160 轮 0 失败（审阅做的因果实验）。
 **这里没按用户原先选的「加一条迁移做一次性重算」做**：这个功能没有任何 schema 变化，而推导规则
 只该有一份实现。迁移文件是纯 SQL，在里面再写一份推导就是第二份实现，迟早分叉——与 `domain/clock.ts`
 「分钟换算没有搬进 SQL」是同一条理由。改用启动时对账一次达到同样的效果（`apps/api/src/index.ts` 在
-`runMigrations` 之后调 `reconcileDerivedStatus`）：老库一打开就自洽，顺带还能自愈漂移。
+`runMigrations` 之后调 `reconcileDerivedStatus`；D85 之后这段搬到了 `apps/api/src/server.ts`）：
+老库一打开就自洽，顺带还能自愈漂移。
 
 ### 实现清单
 
@@ -3271,7 +3273,7 @@ effect 停掉后 160 轮 0 失败（审阅做的因果实验）。
   `changeTaskParent` 里各自的那次单点结算删掉，统一走对账。
 - `apps/api/src/routes/tasks.ts`：两条 400，文案抽成 `MANUAL_COLUMN_MOVE_REJECTED`（前端把 `error`
   直接显示给用户，两条路径要同一句话）。
-- `apps/api/src/index.ts`：启动对账。
+- `apps/api/src/index.ts`：启动对账（D85 移到 `apps/api/src/server.ts`）。
 - 前端：`domain/board.ts` 的 `canDragCard`（唯一定义，光标与拖拽准入共用）、`useCardDrag.canBegin`
   用它、`TaskCard` 据此切光标、`TaskCardFace` 与 `TreeNodeRow` 对非叶子不画工期胶囊与提醒条
   （`domain/reminder.ts` 的 `NO_REMINDER` 改为导出；树那边的叶子判据复用 `lib/tree.ts` 的
@@ -4017,3 +4019,63 @@ SIGTERM 收尾）。两条路：
   不动生产代码，但测的是替身接线，且模块级副作用（信号处理、`process.exit`）要逐个接管，很脆。
 
 两种都超出「补用例」的范围，先不做。
+
+## D85 第 47 步：服务端启动流程抽成可注入的 server.ts（2026-09-30，分支 refactor/api-boot，用户拍板选 A）
+
+D84 结尾把两条路摆给用户，用户选 A（重构）。这是那一步。
+
+**问题**：`apps/api/src/index.ts` 是 api 里唯一的 0%（34 条语句）。整套启动流程写成顶层副作用——
+读 `.env`、读配置、建库、合并 Host 白名单、迁移、给老库对账、判断有没有前端产物、`serve`、监听
+失败的提示、SIGINT/SIGTERM 收尾。其中好几句是用户直接看到的承诺：`HOST=0.0.0.0` 时的安全提醒、
+端口被占时指向根目录 `.env` 的提示、迁移了哪几个文件。它们过去没有一行自动化证据：入口脚本在
+vitest 里只能靠 `import` 触发、一次运行只执行一次，还会留下真实进程副作用。
+
+**做法**（TDD：先写 `apps/api/test/server.test.ts`，红了之后才写实现）：
+
+1. 新增 `apps/api/src/server.ts`：`startServer(deps)` 接收 16 项依赖（配置、建库、迁移、对账、
+   网卡地址、文件存在性、createApp、serve、日志、关库、退出、信号注册），另有四个纯函数
+   `mergeAllowedHosts` / `missingWebBuildMessage` / `listeningLines` / `listenFailureMessages`。
+   日志文案、顺序、退出码、信号处理与重构前**逐字一致**，没有行为变化。
+2. `index.ts` 收成组合根：接上真实实现并调用一次。能直接引用的就直接引用（`loadConfig`、
+   `openDatabase`、`runMigrations`、`existsSync`、`serve`、`console.*`、`process.exit`），只有依赖
+   调用者的才包一层（`process.on`、`db.close`、`os.networkInterfaces()`、`new Date()`）。
+3. **真实依赖的默认值不放在 server.ts**。第一版把 `defaultDeps()` 放进去，那些「只有真起服务才
+   执行」的闭包全被算成未覆盖：server.ts 函数 52.63%、语句 84.21%。接线本来就是组合根的职责，
+   挪回 `index.ts` 之后 server.ts 是 100 / 100 / 100 / 100，而「没测到的部分」只剩 `index.ts`
+   这个入口——与 web 的 `main.tsx` 同一个形状（D84）。
+4. 审查（子代理，含变异验证）后补了三处：`serve` 不再 `as unknown as`（直接赋值就结构化兼容，
+   留着 cast 会把 @hono/node-server 的选项/句柄变化从 tsc 底下放过去）；测试补上「先关库再退出」
+   的顺序断言、两行 EADDRINUSE 都打印、serve 收到的 fetch 就是 createApp 返回的那个、建库用的是
+   配置里的库路径、关库收到的是同一个 db 句柄——这些接线点位此前被变异验证证明是漏网的。
+
+**结果**（apps/api，v8）：
+
+| | 语句 | 分支 | 函数 | 行 |
+| --- | --- | --- | --- | --- |
+| 改前 | 94.04 | 89.8 | 97.74 | 94.6 |
+| 改后 | 97.24 | 92.6 | 97.84 | 98.23 |
+
+- `server.ts` 100 / 100 / 100 / 100；`index.ts` 0%（只剩 25–46 行的接线）。
+- 阈值按「实测值向下取整再减 2」重算：语句 92 → 95、分支 87 → 90、函数 95 → 95（不变）、
+  行 92 → 96。函数一度想下调到 93——那是把 `console.*` / `process.exit` 也各包一层转发闭包的结果，
+  改成直接引用后未覆盖函数只剩组合根里 4 个真正需要包装的闭包，阈值不必动。
+- 分支 92.6 仍未到 95。剩下的分支集中在 `cpm`（75.6）、`schemas/common`（50）、
+  `schemas/task`（75）、`repositories/search`（88.57）等处的防御性 `??` 与「正常走不到」断言；
+  补它们要用 mock 制造不一致，属于为数字而写的用例，所以如实记下这个缺口，不假装达标。
+
+**TDD 的收获**：先写的 17 条用例里有 1 条断言写错（我以为通配监听的放行名单会打印
+`http://127.0.0.1:3001`，实际是主机名 `127.0.0.1` / `[::1]`）。红灯逼我看清既有行为再改断言，
+而不是照着实现反推期望——这条纠正的是用例，不是代码。
+
+**验证真起服务没被改坏**：`bin/mailuo.test.mjs` 32 条 + `bin/package.test.mjs` 5 条全部通过，
+其中「真起服务、监听成功后才打印启动横幅」「显式端口被占时报告 CLI 自己的提示」「启动后查 registry
+并提示升级命令」都在列——它们 import 的是构建产物 `apps/api/dist/index.js`，走的就是这条新路径；
+`pnpm build` 与 `bin/package.test.mjs` 对产物与运行时依赖的检查也照旧。
+
+**没做的（可选复杂性）**：
+
+- 没给 `index.ts` 补 vitest 用例：它真起服务有 bin 覆盖，再 mock 一层只会测到替身。
+- 没把 `startServer` 拆得更细（例如把「迁移并打日志」「判断是否托管前端」各自成函数）：现在是
+  一条直线的主流程，拆开只会增加跳转。
+- 没动 `bin/mailuo.mjs` 自己的启动逻辑（端口扫描、开浏览器、查新版本）：那部分本来就由 bin 的
+  用例覆盖。
