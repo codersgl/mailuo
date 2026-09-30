@@ -11,12 +11,15 @@ import { defineConfig } from 'vitest/config';
  * 跑过，而那种覆盖率算不进 vitest 的报告。宁可显示 0%，不要看不见。
  *
  * 阈值取当前实测值向下取整再减 2 个点：够拦住真实回退，又不会被无关的小重构因为小数点
- * 波动弄红。调这里的数要同步 docs/decisions.md D82 / D85。
+ * 波动弄红。调这里的数要同步 docs/decisions.md D82 / D85 / D86。
  *
  * 2026-09-30（D85）：启动流程抽到 server.ts 之后实测 97.24 / 92.6 / 97.84 / 98.23。
  * server.ts 是 100 / 100 / 100 / 100；`index.ts` 0%，只剩组合根接线，未覆盖的函数是那 4 个
  * 真正需要包装的闭包（`os.networkInterfaces()`、`new Date()`、`db.close`、`process.on`）——
  * `console.*` / `process.exit` / `serve` 都是直接引用，不再各占一个未覆盖函数。
+ *
+ * 2026-09-30（D86）：补掉 13 条可达分支之后实测 98.12 / 95.13 / 97.84 / 98.48，
+ * 语句与分支阈值跟着上调。剩下 25 条分支是构造上不可达的兜底（清单见 D86），不再强求。
  */
 export default defineConfig({
   test: {
@@ -28,8 +31,8 @@ export default defineConfig({
       // 测试挂了也要出报告：红的时候更需要知道是哪一块没跑到。
       reportOnFailure: true,
       thresholds: {
-        statements: 95,
-        branches: 90,
+        statements: 96,
+        branches: 93,
         functions: 95,
         lines: 96,
       },
