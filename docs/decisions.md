@@ -4766,3 +4766,92 @@ bin 44 分钟起——都放不进 PR。这一步不碰 runner，先把「每次
 
 **留给下一步**：阶段 B（perTest 根因尖峰，决定能否把全量从 20 分钟压到个位数）与阶段 D
 （把差分挂进 CI、全量挂 nightly）。
+
+## D91 第 53 步：阶段 B —— perTest 根因定位，结论是版本不兼容而非配置（2026-10-01，分支 docs/mutation-perTest-spike）
+
+D88 试 `@stryker-mutator/vitest-runner` 失败后把依赖整个回退，只留下「与本仓库的 vitest 5 选不出用例」
+这句判断。这一步用隔离副本把根因钉死，产出是一个结论：**能救，代价是把 `apps/api` 的 vitest 降到 4.x**。
+
+### 问题与判据
+
+命令运行器下每个变异体都要跑完整套件，api 全量 17–23 分钟。唯一的结构性解法是恢复 perTest 覆盖率
+分析（每个变异体只跑覆盖它的用例）。判据不看抽象指标，只看**与 command runner 基线逐项一致**：
+对 `src/domain/clock.ts` 用能正常工作的 command runner 跑一遍（33 个变异点、32 杀 / 1 存活 / 96.97 分、
+51 秒），perTest 必须也杀到同样的 32 个、存活点落在同一位置（`clock.ts:54:31` 的 EqualityOperator）。
+「跑得快但杀得少」判失败。
+
+### 方法
+
+`git archive HEAD` 铺一份隔离副本 `.tmp-mutation-spike/`（gitignored），在副本里装依赖与
+`@stryker-mutator/{core,vitest-runner}@10.0.0`，每次实验前用脚本从 HEAD 重新铺一遍被跟踪文件。
+**这一步是必需的**：Stryker 是 `inPlace` 插桩，崩退时会把整个仓库留在插桩态，下一次插桩直接报
+`Identifier 'stryNS_xxx' has already been declared`（D89 记过这个风险，这次真踩到了）。
+
+### 三个必须先解决的环境前提（与版本问题无关，任何一个不满足都跑不起来）
+
+1. **`.stryker-tmp*/**` 必须从 vitest 的测试发现里排掉。不排掉时 vitest 会把备份目录里的
+   `*.test.ts` 当成候选，报 `ENOENT: scandir '.../backup-XXXX/migrations'`，整个 dry run 崩掉。
+   D88 已经踩过这一条。
+2. **`plugins` 必须显式写 test runner**。pnpm 的隔离布局下，Stryker 默认的 `plugins:
+   ["@stryker-mutator/*"]` 是把 glob 展开在**它自己所在的 `node_modules` 目录**里
+   （`plugin-loader.js`：`path.resolve(fileURLToPath(new URL('../../../../../', import.meta.url)), org)`），
+   而那里只有 core，于是「no TestRunner plugins were loaded」。写
+   `"plugins": ["@stryker-mutator/vitest-runner"]` 即可（相对路径指向 `dist/src/index.js` 也行）。
+3. runner 与 vitest 必须解析到**同一个实例**，否则测试文件从自己的包解析到另一个 vitest。所以修复
+   只能改 `apps/api` 自己的依赖，不能在仓库根另建一套环境。
+
+### 证据链
+
+**vitest 5.0.2 下 perTest 是坏的：**
+
+| 实验 | dry run | 每变异体用例数 | 结果 |
+| --- | --- | --- | --- |
+| `related: true`（默认） | 261 条 | **0.00** | 33 个全部 Survived，0.00 分，20 秒 |
+| `related: false` | 366 条 | **0.00** | 33 个全部 Survived，0.00 分 |
+
+`related` 不是原因，dry run 本身完全正常（能发现并执行用例），坏的是**每个变异体的那一次运行**：
+runner 用 `fromTestId(testFilter)` 还原出文件名去 `ctx.start(testFilesToRun)`，在 vitest 5 下一条用例
+都收集不到，于是没有用例能失败，全部记成 Survived。中途我先从 JSON 报告里的 `coveredBy`（一串数字）
+推断是 test id 格式错，**这个推断是错的**：`mutation-test-report-helper.js` 有一句
+「Mocha, jest and karma use test titles as test ids … we remap the test ids here to numbers」，
+报告里的数字 id 是写报告时重新编号的结果，不代表 runner 内部用的 id。具体是 vitest 5 的哪一处 API
+变化没有继续深挖（要改 runner 源码插桩才能定位），但下面 B4 的结果足以证明是版本问题。
+
+**顺带定位到的第二个 vitest 5 不兼容**：`vitest-test-runner.js:95` 在
+`if (this.log.isDebugEnabled())` 里对 `this.ctx.config` 做 `JSON.stringify`，vitest 5 的 config 有循环引用
+（`resolvedProjects[0].viteConfig.test` 回指自身），于是 `--logLevel debug|trace` 下 init 直接抛
+`TypeError: Converting circular structure to JSON`。vitest 4 下同样的 debug 跑法出现 0 次循环引用错误。
+这条只影响排查手段，不影响分数。
+
+**把 vitest 钉到 4.1.11 之后一切正常：**
+
+| 实验 | dry run | 每变异体用例数 | 结果 |
+| --- | --- | --- | --- |
+| clock.ts（三次复跑） | 261 条 | 7.76 / 6.21 / 7.52 | **32 杀 / 1 存活 / 96.97 分，Done in 10 秒**（墙钟 13 秒） |
+| 全量 domain + server.ts（并发 4） | 347 条 | 8.75 | 638 个变异点，565 杀 / 16 超时 / 49 存活 / 5 无覆盖 / 3 错误，**91.50 总分 / 92.22 覆盖口径，5 分 08 秒** |
+
+clock.ts 的 32/1 与存活点位置与 command runner 基线**逐项一致**，说明 perTest 恢复后没有引入假存活。
+全量的 91.50 分对照 D89 第十二节的 91.46 分（当时 597 个变异点）也吻合——多出来的 41 个变异点来自
+D89 第十三节给 `net.ts` 加的两个函数，它们本身覆盖良好。
+
+### 唯一真正的代价，以及它比想象中小
+
+runner 从自己的包解析 vitest，测试文件从自己的包解析 vitest，两边必须是同一个实例，所以只能改
+`apps/api` 的依赖。实测**不需要**仓库级 override：把 `apps/api/package.json` 的 `vitest` 与
+`@vitest/coverage-v8` 改成 `^4.1.11`、`pnpm install` 之后，`apps/api` 是 4.1.11、`apps/web` 仍是 5.0.2，
+两边套件互不影响（api 366 项全绿、web 582 项全绿）。代价因此收敛成一句话：`apps/api` 的测试跑在
+vitest 4 上，`apps/web` 与其余部分不动。
+
+### 结论与建议
+
+- **perTest 能恢复，障碍是 vitest 5 与 `@stryker-mutator/vitest-runner@10.0.0` 的不兼容，不是配置。**
+- 建议的下一步（阶段 C1）：把 `apps/api` 钉到 vitest 4.1.11，`stryker.config.json` 换成
+  `testRunner: "vitest"` + 显式 `plugins`，并在 `apps/api/vitest.config.ts` 里排除 `**/.stryker-tmp*/**`。
+  预期 api 全量从 17–23 分钟降到 5 分钟左右，且存活点清单与现在一致。
+- **web 不在这一步**：`apps/web` 留在 vitest 5，它的变异测试继续走命令运行器（D89 第十四节的定向子集）。
+  要让它也吃上 perTest，得先把 `apps/web` 也降到 vitest 4，那是另一步且风险更大（jsdom +
+  Testing Library + React 插件）。
+- 退出条件必须写死在 C1 里：`@stryker-mutator/vitest-runner` 支持 vitest 5 之后，把 `apps/api` 升回 5 并
+  删掉这段钉版本的注释。否则这会变成一份没人敢动的长期负债。
+- 由这一步顺带确认的两条前提要一起写进 C1：`plugins` 必须显式列（pnpm 布局），
+  `.stryker-tmp*/**` 必须排除（否则 dry run 直接崩）。
