@@ -5006,3 +5006,57 @@ CLI 位置参数合法性、删根配置无遗漏引用、`exclude` 是替换语
 - 可选优化（审核提过、这次没做）：把 workflow 拆成 PR 与定时两个文件，job 的 `if` 就不必比对 cron
   字符串（现在有「改了 cron 忘记改 if 会静默失效」的隐患，已在注释里点明）；PR 差分扩到 web/bin 两个
   scope（现在只覆盖 api，web/bin-only 的 PR 是「绿但没测」）。
+
+## D94 第 56 步：web 能不能也吃上 perTest —— 机制可行，但收益存疑，先不做（2026-10-01，分支 docs/web-perTest-spike）
+
+api 切到 perTest 之后（D92），剩下最贵的是 web（1087 个变异点、命令运行器、约 40 分钟）。这一步在隔离
+副本 `.tmp-web-spike/` 里只回答两个技术关卡，不落地任何改动。
+
+### 关卡一：apps/web 在 vitest 4 下能不能跑（决定性，也是最便宜的）
+
+能。582 项测试、47 个文件全绿，23 秒。jsdom + `@testing-library/react` + `@vitejs/plugin-react` 都没
+出现问题。这一关先问是对的：跑不起来后面都不用谈。
+
+### 关卡二：perTest 在 jsdom 下能不能选中用例
+
+能。用最小的源文件 `src/lib/cx.ts`（6 行、3 个变异点）做探针，`concurrency: 1`、`related` 默认开启：
+
+```
+Initial test run succeeded. Ran 223 tests in 28 seconds
+Ran 126.67 tests per mutant on average
+cx.ts | 66.67 | 2 killed | 1 survived
+```
+
+单 worker 跑完 85 秒，没有再出现 D91 那种「每个变异体 0 条用例」的症状。**机制是通的。**
+
+### 但收益存疑，这才是结论
+
+平均每个变异体 126.67 条用例，而 web 全量是 582 条——只降到 22%；api 是 8.6 / 366，降到 2.3%，差了
+十倍。原因是 **web 现在的配置已经在做文件级选择**：定向子集 20 个测试文件、单次 6.3 秒，而全量套件
+25.6 秒。perTest 是在文件级选择之上再做一次用例级选择，空间本来就小。
+
+粗算（并发 4、1087 个变异点）：现在约 28 分钟，perTest 按 127 条/变异体估约 25 分钟。**几乎没差。**
+
+`cx.ts` 是「被到处 import」的最坏情况（className 工具，几乎每个组件都用），domain 层的文件应该好得多，
+所以真实收益取决于各文件的测试覆盖宽度。用一个 3 变异点的文件说不出这个数——要么按文件统计
+`testsCompleted`，要么跑一个 domain 层的多变异点文件，而后者在本机是重负载（见下）。
+
+### 决定
+
+1. **不把 `apps/web` 切到 perTest。** 代价是又一个有意钉在 vitest 4 的包，而收益可能接近零。
+2. **web 的真实变异得分仍然没有测量。** `cx.ts` 那个 66.67% 只有 3 个变异点，一个存活就是 33%，
+   不代表任何东西。它应该由 D93 配好的 weekly CI job 在 GitHub runner 上跑出来。
+3. 若要再评估，先做一件更便宜的事：按文件统计一次 perTest 的 `testsCompleted / 变异点数`，
+   看 domain 层是不是真的比 `cx.ts` 好一个量级。这是纯测量，不需要改配置。
+
+### 两条过程教训（与结论无关，但下次别再踩）
+
+1. **这台机器扛不住命令运行器下的 web 基线。** 91 个变异点、并发 4、每个 worker 一套 jsdom，跑了两次
+   都把本机环境拖崩（会话中断、副本留在插桩态）。本机跑 web 变异必须 `concurrency: 1` 且目标要小；
+   重负载留给 CI。
+2. **恢复插桩态要只恢复被插桩的那个文件。** 我第一次用了「整体重新铺 tracked 文件」，把
+   `pnpm-workspace.yaml` 与 `pnpm-lock.yaml` 也覆盖回了 HEAD 版本，而 `node_modules` 里还是
+   vitest 4——三者不一致，pnpm 的依赖检查于是尝试联网安装并撞上 store 不可写，整个 dry run 崩掉。
+   正确做法是 `git show HEAD:<path> > <副本>/<path>`，只动被插桩的那一个文件。
+   （D89 记的「用 `git checkout -- apps bin scripts` 恢复」只适用于真正的 git 检出；`git archive`
+   铺出来的副本没有 `.git`。）
