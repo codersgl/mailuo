@@ -98,6 +98,9 @@ describe('missingWebBuildMessage', () => {
     expect(message).toContain('/repo/apps/web/dist/index.html');
     expect(message).toContain('pnpm build');
     expect(message).toContain('只提供 API');
+    // 文案哨兵：Stryker 只清空整条字面量（那种情况上面几条已经会红），所以这一条拦的是
+    // 「人改文案时把「未找到前端产物」这个结论删掉」——纯函数入口，变异测试杀不到这种片段改动。
+    expect(message).toContain('未找到前端产物');
   });
 });
 
@@ -157,6 +160,11 @@ describe('listenFailureMessages', () => {
     expect(messages[0]).toContain('3001');
     expect(messages[0]).toContain('.env');
     expect(messages[1]).toContain('404');
+    // 文案哨兵（同 missingWebBuildMessage 那条的理由）：这两行是要用户照做的操作指引，
+    // 「改哪个变量」与「只改一半会怎样」都不能被删掉而不报错。
+    expect(messages[0]).toContain('PORT');
+    expect(messages[0]).toContain('已被占用');
+    expect(messages[1]).toContain('两端不一致');
   });
 
   it('其它错误返回空数组，交给调用方原样打印 error 对象', () => {
@@ -205,7 +213,9 @@ describe('startServer', () => {
       staticRoot: '/repo/apps/web/dist',
     });
     // 产物在的时候不能打「未找到前端产物」——那是假告警，会让人以为托管坏了而去查错方向。
-    expect(deps.log).not.toHaveBeenCalledWith(missingWebBuildMessage('/repo/apps/web/dist/index.html'));
+    // 这里用文本片段而不是 missingWebBuildMessage(...)：两侧都调生产函数的话，helper 自己改坏也测不出来
+    //（那是 missingWebBuildMessage 用例的职责），而且失败信息会直接印出那行文案。
+    expect(deps.log).not.toHaveBeenCalledWith(expect.stringContaining('未找到前端产物'));
   });
 
   it('没有迁移时不打那一行，也不把不存在的产物目录交给 createApp', () => {

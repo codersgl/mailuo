@@ -233,8 +233,8 @@ describe('computeSchedule（纯计算）', () => {
   });
 
   it('成环时抛 DependencyCycleError，消息与 name 也要带上', () => {
-    // 消息与 name 会被日志（server 的 error 分支）与接口错误体用到：把它们清空不会让「抛的是这个类」
-    // 变色，但日志里就只剩空信息。所以这两个字段单独断言。
+    // message 与 name 只进 app.ts 的 console.error（接口错误体是固定的「服务器内部错误」，不带上它们），
+    // 也就是排查脏数据时唯一能看到的线索：清空不会让「抛的是这个类」变色，日志里却只剩空信息。
     const build = () =>
       computeSchedule(
         [

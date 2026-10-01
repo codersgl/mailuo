@@ -4516,10 +4516,27 @@ cpm 与 subtreeDuration 两条经审核独立复算（含在仓库外注入变�
 
 六条逐个手工改坏验证：6/6 变红，红的都是对应那一条；api 覆盖率与用例数不变（355 项）。
 
-**`cpm.ts:141` 改判为不可达，不计入盲区**：那是 `buildGraph` 里邻接表初值 `[]` → `["Stryker was here"]`。
-要区分它，某个任务的 id 必须恰好等于那串字符串——而 id 由 `randomUUID()` 生成、接口层无法指定，
-只有直接调纯函数才构造得出来。按「真实使用不可达」的口径它与等价变异同类，因此不为它造用例
-（硬造等于把 Stryker 的替换文本固化成契约）。
+**`cpm.ts:141` 改判：可区分、但现实不可达，不计入要补的清单**。那是 `buildGraph` 里邻接表初值
+`[]` → `["Stryker was here"]`。审核指出它**不是等价变异**，并给出了具体区分输入：
+`computeSchedule([{ id: 'Stryker was here', durationMinutes: 5 }, { id: 'b', durationMinutes: 1 }], [])`
+——原文 `b.earliestStart = 0`，变异后 `= 5`（该节点的 latest/slack/critical 也跟着变）。`computeSchedule`
+是导出函数，纯函数层面确实区分得开。真正拦住它的是**可达性**：任务 id 的唯一来源是
+`repositories/tasks.ts` 的 `randomUUID()`，`createTaskSchema` 是 `z.strictObject({parentId, columnId, title})`
+收不了 id，迁移只搬旧 id。所以口径写成「可区分但现实不可达（唯一入口 randomUUID）」，单独一类，
+不并入「等价变异」（两者的区别是：前者理论上杀得死，后者杀不死）。仍然不为它造用例——那等于把
+Stryker 的替换文本固化成契约。
+
+**审核另外提的三处，已处理**：
+
+1. `server.ts:180` 的否定断言原写成 `not.toHaveBeenCalledWith(missingWebBuildMessage(...))`，两侧都调生产
+   helper 属于自引用（helper 自己改坏测不出来，且失败信息只能印出整个对象）。已换成
+   `not.toHaveBeenCalledWith(expect.stringContaining('未找到前端产物'))`。
+2. `cpm.test.ts` 里那条注释原写「消息与 name 会被日志与接口错误体用到」，不准确：接口错误体固定是
+   `'服务器内部错误'`，`message`/`name` 只进 `console.error`。已按实际改写。
+3. 顺带补了三条**文案哨兵**（`listenFailureMessages` 两行的 `PORT`/`已被占用`/`两端不一致`、
+   `missingWebBuildMessage` 的「未找到前端产物」）。它们**不是变异测试缺口**：Stryker 的 `StringLiteral`
+   只清空整条字面量，而整条清空本来就会被既有断言抓住（探针实测：三条整条清空都会红）。它们拦的是
+   「人改文案时把关键半句删掉」，测试里已注明这一点——不要把这类断言记成变异覆盖率的一部分。
 
 计数更新：真盲区 25 → 24，已补 13 条，剩 `net.ts` 的 11 条（`L57` 两条、`L69/L137/L145` 三处 `trim()`、
 `L106` 两条、`L121` 四条）。
