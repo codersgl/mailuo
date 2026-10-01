@@ -52,6 +52,7 @@
     "prepack": "pnpm build",
     "test": "node --test bin/*.test.mjs && pnpm -r test",
     "test:coverage": "node --test --experimental-test-coverage --test-coverage-include=bin/mailuo.mjs --test-coverage-lines=93 --test-coverage-branches=86 --test-coverage-functions=88 bin/*.test.mjs && pnpm -r test:coverage",
+    "test:mutation": "stryker run",
     "typecheck": "pnpm -r typecheck"
   },
   "dependencies": {
@@ -63,6 +64,7 @@
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",
+    "@stryker-mutator/core": "^10.0.0",
     "eslint": "^10.11.0",
     "eslint-plugin-react-hooks": "^7.1.1",
     "eslint-plugin-react-refresh": "^0.5.7",

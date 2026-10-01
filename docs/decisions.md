@@ -4311,3 +4311,106 @@ throw 后跑全量用例），并纠正了上面两处。这一步没有引入�
 
 要再试的话，三条路（都没做）：给变异单独钉一个 vitest 4 的环境（容器或临时 workspace）；
 等 runner 支持 vitest 5；或者换 mocha/jest runner 另配一套测试。
+
+## D89 第 51 步：变异测试工具化跑通，但并发下的判定不稳定（2026-10-01，分支 chore/mutation-baseline）
+
+用户批准「先只对 apps/api 跑一次 Stryker 基线」。这一步与 D88 不同路径跑通了，也拿到了 26 条真实测试盲区，
+但有一条必须先说清楚：**并发跑出来的分数不能全信，暂时不能当门禁**（见第三、四节）。
+
+### 一、换掉了什么
+
+D88 卡在 `@stryker-mutator/vitest-runner@10`：它与本仓库的 vitest 5 在「按变异点选测试」这步不兼容
+（平均每变异点只选到 2.05 条用例，597 个变异点只杀 11 个）。这一步不再用 vitest 插件，改用 Stryker 自带的**命令运行器**：
+
+- `testRunner: "command"` + `commandRunner.command = pnpm --filter @mailuo/api test`。Stryker 为每个变异点起一个
+  子进程跑完整命令，把 `__STRYKER_ACTIVE_MUTANT__` 写进环境变量（见 `@stryker-mutator/core` 的
+  `command-test-runner.js`），插桩后的代码按这个变量切换行为，判死只看退出码。它不碰 vitest 的任何接口，
+  所以 D88 的失败点不存在。代价是 `coverageAnalysis` 只能 `"off"`：每个变异点都要跑满整套 350 条用例（单次约 3 秒）。
+- `inPlace: true`：pnpm workspace 里包级 `node_modules` 是软链，Stryker 的沙箱复制会跳过所有 `node_modules`，
+  测试在沙箱里起不来（D88 也在沙箱上撞过 tsconfig 找不到）。改成原地改文件、备份放 `.stryker-tmp/`，跑完还原。
+- 没装 `typescript-checker`：它依赖 `typescript` 的 `parseConfigFileTextToJson`，而 apps/api 用 TypeScript 7
+  （原生实现）没有这个 API（D88 已定位）。后果是 `?.` → `.` 这类「类型上不成立、运行时等价」的变异不会被过滤、
+  会被算成存活，所以分数是**下界**。
+
+范围与 D88 计划一致：`apps/api/src/domain/**` + `server.ts`，11 个文件、597 个变异点。入口 `pnpm test:mutation`，
+配置 `stryker.config.json`，报告落在 `coverage/mutation/`（已 gitignore）。
+
+### 二、数字（并发 3，17 分 14 秒）
+
+| 文件 | 得分 | 判死 | 超时 | 存活 |
+| --- | --- | --- | --- | --- |
+| cpm.ts | 85.94 | 108 | 2 | 18 |
+| derive.ts | 78.05 | 60 | 4 | 18 |
+| subtreeDuration.ts | 86.25 | 54 | 15 | 11 |
+| net.ts | 87.01 | 154 | 0 | 23 |
+| server.ts | 95.40 | 83 | 0 | 4 |
+| clock.ts | 96.97 | 32 | 0 | 1 |
+| board/columns/duration/search.ts | 100 | 各 1–5 | 0 | 0 |
+| 合计 | 87.44 | 501 | 21 | 75 |
+
+### 三、21 个超时里 20 个是假的，所以 87.44% 不能用
+
+逐个手工复验（把变异直接打到源码上、串行跑套件）：21 个 Timeout 里只有 `cpm.ts:167`
+（`cursor < queue.length` → `>=`）真的红，其余 20 个串行跑都是绿的；75 个 Survived 全部复验，串行跑都是绿的
+（**没有假存活**）；抽样复验两个判死点（`clock.ts` 的 `shouldRun` 体、`isLeaf && ...` 条件），手工改坏后套件确实红。
+
+原因：Stryker 的超时预算按空载干跑算（`net × timeoutFactor + timeoutMS`），并发时套件偶尔慢过预算，
+而这 20 个变异点都落在遍历/去重循环里（`derive.ts`、`subtreeDuration.ts`），它们让套件变慢但不失败。
+**Timeout 在 Stryker 里算「已检出」**，于是等价变异被记成判死，分数虚高。
+
+修正后：**502 / 597 = 84.09%**（501 判死 + 1 真超时），存活 95 条。
+
+### 四、并行下判定不稳定（未解决）
+
+把 `timeoutMS` 提到 60000、只对 `derive.ts` + `subtreeDuration.ts` 用并发 6 重跑（8 分 26 秒），仍有 16 个超时，
+且有 4 个变异点的判定与上一轮相反：
+
+| 位置 | 变异 | 并发 3 | 并发 6 |
+| --- | --- | --- | --- |
+| derive.ts:98 | 删掉 `onStack.add(child.id)` | Survived | Killed |
+| subtreeDuration.ts:95 | `?? []` → `&& []` | Timeout | Killed |
+| subtreeDuration.ts:89 | `if (seen.has(id))` → `false` | Timeout | Killed |
+| subtreeDuration.ts:90 | 删掉 `seen.add(id)` | Timeout | Killed |
+
+同一批变异点在「判活 / 判死」之间随并发摆动，说明这几个位置的判定受负载影响（负载下 vitest 偶发失败记判死，
+或慢过预算记超时）。没有继续深挖。所以：**现在这套东西只能用来找测试盲区，不能当 CI 门禁。**
+已知稳定的只有两条结论：75 个存活点逐个手工复验都是真的（0 假存活）、20 个超时点是假的。
+
+要当门禁用，先得解决并发稳定性。可选做法（都没做）：并发压到 2 以下；给 vitest 限制 worker 数
+（`--no-file-parallelism`）让单次套件的时间和 CPU 占用可预测；或只把分数当参考、关键变异点单独串行复验。
+
+### 五、75 个存活点里 26 个是真盲区
+
+判据：等价变异指「所有可达输入下行为相同」；可区分的必须给出具体输入。49 个等价变异按机制分四类：死分支
+（`cpm.ts:94` 的 throw 永不执行、`clock.ts:54` 的 `ms === 0` 两条路同值）、不变式保证的可选链/空值兜底
+（`cpm.ts` 的 8 处 `?.` / `?? []`，id 全部来自拓扑序，Map 里必有键）、seeds 集合与顺序无关（`derive.ts` 的 17 处，
+兜底过滤器会把漏掉的任务补回、重复 seed 被跳过）、数据形状保证的不可达（`subtreeDuration.ts` 的 10 处：
+环上节点不可能是非环节点的子节点、每个任务只有一个 parentId 所以 seen 是死代码）。
+
+26 个真盲区（括号内是区分输入的要点）：
+
+- **net.ts（16）**：`L36` `hostNameOf('[a]')`（`-1`→`+1` 后由 `'a'` 变 `''`）；`L38` 端口正则去 `^` / 去 `$`
+  （`'[::1]evil:3003'`、`'[::1]:3003x'` 由 `''` 变 `'::1'`，畸形 Host 被当回环）；`L44` `parts.length === 2` →
+  `true`（`'127.0.0.1:3003:evil'` 由 `''` 变 `'127.0.0.1'`）；`L46` 端口正则去 `^`（`'127.0.0.1:x3003'`）；
+  `L57` 回环正则去 `^`（`'evil127.0.0.1'` 由 false 变 true）与 `\d{1,3}` → `\d`（`'127.0.0.10'` 由 true 变 false，
+  127/8 里的多位数八位组被误拒）；`L69/L137/L145` 三处 `trim()` 去掉（`' ::1 '` 这类带空白的入参；生产链路的
+  config 已 trim，只有直接调纯函数可达）；`L106` `name === ''` 短路去掉；`L121` origin 协议白名单四个变体
+  （`isAllowedOrigin('https://127.0.0.1:5173')` 被拒、`file://127.0.0.1` 被放行）。
+- **cpm.ts（4）**：`L64`/`L65` 环错误的消息与 `name` 被清空（现有用例只 `toThrow(类)`）；`L141` predecessors 初值
+  （需要任务 id 恰为那串，接口不可达）；`L161` `(indegree.get(succ) ?? 0) + 1` → `&& 0`：A=10、B=10、C=5 且
+  A→C、A→B、B→C 时 `C.earliestStart` 由 20 变 10（入度漏算，C 在前置 B 之前被处理）。
+- **derive.ts（1）**：`L104` 删掉 `onStack.delete(frame.node.id)`：a.parent=c、b.parent=b、c.parent=b 时 c 被误判成回边、
+  由 doing 变 todo。
+- **subtreeDuration.ts（1）**：`L49` 子帧 `phase: 'enter'` → `''`：三层链 g←p←q←c(100) 时 p、g 由 100 变 0。
+- **server.ts（4）**：`L114` 通配监听的安全提醒整句被删仍全绿（现有断言只查「没有鉴权」）；`L119` 放行地址之间的
+  分隔符 `'、'` 被删仍全绿；`L121` `level: 'log'` 被改成空串仍全绿；`L180` `if (!serveWeb)` → `true`：
+  有前端产物时也打「未找到前端产物」的假告警。
+
+net.ts 是 Host/Origin 白名单所在，其中 4 条属于「畸形 Host 被当成回环放行」，优先补。
+
+### 六、代价与边界
+
+- 一次全量约 17 分钟（并发 3）/ 30 分钟（串行）；不适合每个 PR，手工或 nightly 用。
+- `inPlace: true` 的代价是真实的：中途 Ctrl-C 或杀进程会把**整个仓库**留在插桩态（插桩是全量的，不只是 `mutate`
+  圈定的文件），要手工从 `.stryker-tmp/backup-*` 拷回，或 `git checkout -- apps bin scripts`。这一步踩过一次，已恢复。
+- 报告与基线数据不入版本库（`coverage/` 已忽略）；这轮的分析脚本与原始报告在 `.tmp-mutation-check/`，未入库。
