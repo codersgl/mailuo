@@ -40,24 +40,60 @@ export function hostNameOf(host: string): string {
   }
 
   const parts = value.split(':');
-  if (parts.length === 1) return parts[0]!;
+  if (parts.length === 1) return withoutRootLabel(parts[0]!);
   if (parts.length === 2) {
     const [name, port] = parts as [string, string];
-    return /^\d{1,5}$/.test(port) ? name : '';
+    return /^\d{1,5}$/.test(port) ? withoutRootLabel(name) : '';
   }
   return '';
 }
 
 /**
- * 回环地址：`127.0.0.0/8`、`localhost`、`::1`。
+ * 去掉主机名末尾的根标签点：`localhost.` 与 `localhost` 是同一个名字。
+ *
+ * 浏览器访问 `http://localhost.:3003` 时 Host 就是 `localhost.:3003`（URL 解析器保留这个点），
+ * 不归一化会把本机地址判成外来主机而 403。只去一个点，`..` 这类畸形串保持原样交给上层判定。
+ */
+function withoutRootLabel(name: string): string {
+  return name.endsWith('.') ? name.slice(0, -1) : name;
+}
+
+/**
+ * 回环地址：`127.0.0.0/8`、`localhost`、`::1`、以及映射到 127/8 的 IPv4-mapped IPv6。
  *
  * IPv4 用严格正则而不是 `startsWith('127.')`：后者会放行 `127.0.0.1.evil.com` 这种域名，
  * 而攻击者完全可以把这种域名解析到 127.0.0.1 来做 DNS rebinding——Host 校验就地失效。
  */
 const LOOPBACK_IPV4 = /^127(?:\.\d{1,3}){3}$/;
 
+/**
+ * IPv4-mapped IPv6（`::ffff:127.0.0.1`）：它是同一个回环地址的另一种写法。浏览器按 URL 规范把它序列化成
+ * 十六进制压缩形式（`[::ffff:7f00:1]`），所以两种写法都要认——否则用户用 `http://[::ffff:127.0.0.1]:3003`
+ * 打开页面会被 403（本机地址被判成外来主机，见 docs/decisions.md D89 第十二节）。
+ * 只处理 `::ffff:` 前缀（浏览器只会产出这一种形式）；更啰嗦的展开写法来自裸客户端，被判外来是 fail-closed。
+ */
+const IPV4_MAPPED_PREFIX = '::ffff:';
+
+function isLoopbackIpv4Mapped(name: string): boolean {
+  if (!name.startsWith(IPV4_MAPPED_PREFIX)) return false;
+  const rest = name.slice(IPV4_MAPPED_PREFIX.length);
+  // 点分写法直接复用 IPv4 的判据。
+  if (rest.includes('.')) return LOOPBACK_IPV4.test(rest);
+  // 十六进制写法固定是两组（`7f00:1` = 127.0.0.1）；高 16 位的高字节是 0x7f 才算 127/8。
+  const groups = rest.split(':');
+  if (groups.length !== 2) return false;
+  const [high, low] = groups as [string, string];
+  if (!/^[0-9a-f]{1,4}$/.test(high) || !/^[0-9a-f]{1,4}$/.test(low)) return false;
+  return Number.parseInt(high, 16) >> 8 === 0x7f;
+}
+
 export function isLoopbackHostName(name: string): boolean {
-  return name === 'localhost' || name === '::1' || LOOPBACK_IPV4.test(name);
+  return (
+    name === 'localhost' ||
+    name === '::1' ||
+    LOOPBACK_IPV4.test(name) ||
+    isLoopbackIpv4Mapped(name)
+  );
 }
 
 /**

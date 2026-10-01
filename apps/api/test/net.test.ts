@@ -29,6 +29,16 @@ describe('hostNameOf', () => {
     expect(hostNameOf('example.com')).toBe('example.com');
   });
 
+  it('末尾的根标签点算同一个名字（localhost. 与 localhost 等价）', () => {
+    // 域名结尾那个点表示「这是完整域名」，可以省也可以留。浏览器访问 http://localhost.:3003 时
+    // Host 就带着这个点；不认它就会把一个本机地址判成外来主机而 403。
+    expect(hostNameOf('localhost.:3003')).toBe('localhost');
+    expect(hostNameOf('KanBan.Local.')).toBe('kanban.local');
+    expect(hostNameOf('.')).toBe('');
+    // 只去一个点：`localhost..` 仍是畸形名，不能跟着变成 localhost。
+    expect(hostNameOf('localhost..:3003')).toBe('localhost.');
+  });
+
   it('畸形 authority 一律返回空串（不能按第一个冒号宽容切分）', () => {
     // 端口不是数字：按第一个冒号切会得到 127.0.0.1 并当成回环，一个畸形请求就绕过白名单。
     expect(hostNameOf('127.0.0.1:3003.evil.com')).toBe('');
@@ -78,6 +88,23 @@ describe('isLoopbackHostName', () => {
     expect(isLoopbackHostName('192.168.1.5')).toBe(false);
     expect(isLoopbackHostName('::2')).toBe(false);
     expect(isLoopbackHostName('')).toBe(false);
+  });
+
+  it('IPv4-mapped 的回环地址也算回环（浏览器会把 [::ffff:127.0.0.1] 写成 [::ffff:7f00:1]）', () => {
+    // 浏览器 URL 解析器按规范把 http://[::ffff:127.0.0.1]:3003 序列化成 Host: [::ffff:7f00:1]:3003。
+    // 不认这个写法，用户用这个地址打开页面就会 403——本机地址被判成外来主机。
+    expect(isLoopbackHostName('::ffff:7f00:1')).toBe(true);
+    expect(isLoopbackHostName('::ffff:127.0.0.1')).toBe(true);
+    expect(isLoopbackHostName('::ffff:7f00:2')).toBe(true);
+    // 127/8 里任意 x.y 都算（高 16 位只要高字节是 0x7f），不是只有 127.0.0.0/16。
+    expect(isLoopbackHostName('::ffff:7f01:1')).toBe(true);
+    // 映射的不是 127/8 就照旧不认。
+    expect(isLoopbackHostName('::ffff:ac10:1')).toBe(false);
+    expect(isLoopbackHostName('::ffff:192.168.1.5')).toBe(false);
+    // 段数不对（少一段、多一段）不进回环集合。
+    expect(isLoopbackHostName('::ffff:')).toBe(false);
+    expect(isLoopbackHostName('::ffff:7f00')).toBe(false);
+    expect(isLoopbackHostName('::ffff:7f00:1:2')).toBe(false);
   });
 
   it('回环正则两头的锚点与八位组位数都要对', () => {
@@ -198,6 +225,21 @@ describe('isAllowedHostHeader', () => {
         allowedHosts: ['fd7a:115c:a1e0::d236:4d36'],
       }),
     ).toBe(false);
+  });
+
+  it('末尾带根标签点的回环名照常放行，外来域名不受影响', () => {
+    // 浏览器访问 http://localhost.:3003 时 Host 是 'localhost.:3003'；不认这个点就会 403。
+    expect(isAllowedHostHeader('localhost.:3003', LOCAL)).toBe(true);
+    // 带点不等于放宽：别的域名照样拒。
+    expect(isAllowedHostHeader('evil.example.:3003', LOCAL)).toBe(false);
+  });
+
+  it('IPv4-mapped 的回环地址在入口这一层也放行', () => {
+    // 浏览器把 [::ffff:127.0.0.1] 规范化成 [::ffff:7f00:1]，这一层要跟着认。
+    expect(isAllowedHostHeader('[::ffff:7f00:1]:3003', LOCAL)).toBe(true);
+    expect(isAllowedOrigin('http://[::ffff:7f00:1]:3003', LOCAL)).toBe(true);
+    // 非回环的映射地址不在白名单里，照旧拒。
+    expect(isAllowedHostHeader('[::ffff:ac10:1]:3003', LOCAL)).toBe(false);
   });
 
   it('HOST_ALLOW 里写了畸形条目时，畸形 Host 也不能因此被放行', () => {
