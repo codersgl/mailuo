@@ -20,6 +20,12 @@
  * 一条贯穿全篇的原则：**拿不准就拒绝执行，不要静默跳过**。这个脚本的产物是一个「绿」，
  * 而漏检和通过长得一模一样；所以路径穿越、含逗号的路径、超过上限的改动都是一句话报错加非零退出，
  * 而不是悄悄少跑几个变异点。
+ *
+ * 退出码（CI 靠它区分「分数不达标」与「根本没跑成」，两类失败的处置完全不同）：
+ *   0 = 正常结束（跑了且通过，或范围内没有改动）
+ *   1 = Stryker 自己判定不达标（配置里的 break 阈值）——唯一允许被 CI 容忍的一类
+ *   2 = 护栏拒绝：改动行数超过上限，或路径不能安全地传给 --mutate
+ *   3 = 用法/基础设施错误：参数或 scope 不认、diff 读不到、stryker 起不来
  */
 
 import { execFileSync } from 'node:child_process';
@@ -390,15 +396,15 @@ export function main(argv, deps = {}) {
   } catch (error) {
     log(error.message);
     log(USAGE);
-    return 1;
+    return 3;
   }
   if (options.help || !options.scope) {
     log(USAGE);
-    return options.help ? 0 : 1;
+    return options.help ? 0 : 3;
   }
   if (!SCOPES[options.scope]) {
     log(`未知 scope：${options.scope}（可选：${Object.keys(SCOPES).join(' / ')}）`);
-    return 1;
+    return 3;
   }
 
   let diffText;
@@ -406,7 +412,7 @@ export function main(argv, deps = {}) {
     diffText = readDiffText(options);
   } catch (error) {
     log(`读取 diff 失败（--base ${options.base}）：${error.message}`);
-    return 1;
+    return 3;
   }
 
   const plan = planScope({ scopeId: options.scope, diffText, maxLines: options.maxLines });
@@ -446,7 +452,9 @@ export function main(argv, deps = {}) {
     return runStryker({ scope: plan.scope, mutateArgs: plan.args });
   } catch (error) {
     log(`stryker 执行失败：${error.message}`);
-    return typeof error.status === 'number' ? error.status : 1;
+    // 有 status 说明子进程真的跑起来并返回了它自己的退出码（1 = 分数低于 break 阈值）；
+    // 没有 status 的是「根本没起来」——例如缺二进制、spawn 失败——归到 3，不要和分数混为一谈。
+    return typeof error.status === 'number' ? error.status : 3;
   }
 }
 

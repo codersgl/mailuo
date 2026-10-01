@@ -71,6 +71,24 @@ CI（`.github/workflows/ci.yml`）在推送到 main 与每个 PR 上依次跑 `p
 都跑 `test:coverage` 而不是 `test`：前者是后者的超集（同一套用例，外加覆盖率报告与阈值门禁），
 两条都跑只会把同样的用例跑两遍。
 
+变异测试**不**在 `ci.yml` 里，单独一个 `.github/workflows/mutation.yml`，因为三条入口的代价差得远、
+而且判定在负载下会摆动（D89 第七节）：
+
+- PR：只跑本次 diff 改到的行（`scripts/mutation-scope.mjs`）。**分数不达标不阻断**：脚本的退出码是
+  分层的（0 通过 / 1 分数低于 break 阈值 / 2 护栏拒绝 / 3 用法或基础设施错误，定义在脚本头部），
+  CI 只容忍 1；2 与 3 由紧跟其后的一步显式变红——「根本没跑成」不能显示成绿色。
+- 每天 03:17 UTC：api 全量（perTest，约 5 分钟）。
+- 每周日 04:43 UTC：web（约 40 分钟）与 bin（44 分钟起），两个 job 并行。
+- 也可以 `workflow_dispatch` 手动选范围（api / web / bin / all）。
+
+每次运行都把 `coverage/mutation/` 传成 artifact，用 `if: always()`——变异测试失败时报告最有用。
+PR 那一步用 `github.event.pull_request.base.sha` 当 `--base`：它和本次事件的 merge commit 严格配对，
+就是这条 PR 该比的那一侧；job 因此要 `fetch-depth: 0`（merge-base 要能找到那个提交）。取 base 的
+那一步单独先校验非空，免得空值落进「不阻断」的那一步被吞成绿色。
+
+为什么 PR 那一步不阻断：门禁的 `break` 阈值故意比保守下界低约 5 个点（D92），它拦得住「某个文件的
+用例被掏空」，拦不住「单个测试退化」，而且分数会随边界耗时摆动。先观察若干轮，稳定后再提成必需检查。
+
 `pnpm lint` 用的 typescript-eslint 目前只支持 TypeScript 6 的编译器 API，而本仓库构建用
 TypeScript 7，所以根 `devDependencies` 里的 `typescript@6` 只服务 lint，`apps/*` 各自的
 `typescript@7` 才是 `pnpm typecheck` / `pnpm build` 用的那个。原因与后续处置见

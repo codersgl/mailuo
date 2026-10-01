@@ -469,19 +469,19 @@ test('main：--help 打印用法并返回 0', () => {
   assert.match(logs.join('\n'), /用法/);
 });
 
-test('main：未知 scope 与未知参数都返回 1，且不执行', () => {
+test('main：未知 scope 与未知参数都返回 3（用法错误），且不执行', () => {
   let ran = 0;
   const runStryker = () => {
     ran += 1;
     return 0;
   };
-  assert.equal(main(['--scope', 'nope'], { readDiffText: () => '', runStryker, log: () => {} }), 1);
-  assert.equal(main(['--scope', 'api', '--wat'], { readDiffText: () => '', runStryker, log: () => {} }), 1);
-  assert.equal(main([], { readDiffText: () => '', runStryker, log: () => {} }), 1);
+  assert.equal(main(['--scope', 'nope'], { readDiffText: () => '', runStryker, log: () => {} }), 3);
+  assert.equal(main(['--scope', 'api', '--wat'], { readDiffText: () => '', runStryker, log: () => {} }), 3);
+  assert.equal(main([], { readDiffText: () => '', runStryker, log: () => {} }), 3);
   assert.equal(ran, 0);
 });
 
-test('main：--max-lines 缺取值或不是非负整数时返回 1，不静默关掉护栏', () => {
+test('main：--max-lines 缺取值或不是非负整数时返回 3，不静默关掉护栏', () => {
   let ran = 0;
   const runStryker = () => {
     ran += 1;
@@ -492,7 +492,7 @@ test('main：--max-lines 缺取值或不是非负整数时返回 1，不静默�
     ['--scope', 'api', '--max-lines', 'abc'],
     ['--scope', 'api', '--max-lines', '-1'],
   ]) {
-    assert.equal(main(argv, { readDiffText: () => '', runStryker, log: () => {} }), 1, argv.join(' '));
+    assert.equal(main(argv, { readDiffText: () => '', runStryker, log: () => {} }), 3, argv.join(' '));
   }
   assert.equal(ran, 0);
 });
@@ -519,17 +519,17 @@ test('main：--diff-file 走真实的读文件分支（绝对路径）', () => {
   }
 });
 
-test('main：--base 是不存在的 ref 时返回 1 并给出原因', () => {
+test('main：--base 是不存在的 ref 时返回 3 并给出原因', () => {
   const logs = [];
   const code = main(['--scope', 'api', '--base', 'definitely-not-a-ref-xyz'], { log: (m) => logs.push(m) });
-  assert.equal(code, 1);
+  assert.equal(code, 3);
   assert.match(logs.join('\n'), /读取 diff 失败/);
 });
 
 test('main：--base HEAD 走真实的 git 分支且不报错', () => {
   // 与工作区比较，结果取决于当前有没有未提交改动，所以只断言「没有在读 diff 这一步失败」。
   const code = main(['--scope', 'bin', '--base', 'HEAD'], { log: () => {} });
-  assert.notEqual(code, 1);
+  assert.notEqual(code, 3);
 });
 
 test('parseArgv：默认值与全部选项', () => {
@@ -617,20 +617,22 @@ test('isDirectRun：只有直接执行本模块时才为真', () => {
   assert.equal(isDirectRun(import.meta.filename, moduleUrl), false);
 });
 
-test('main：runStryker 抛错时返回它的 status，没有 status 就返回 1', () => {
+test('main：runStryker 抛错时返回它的 status，没有 status 就返回 3（不是分数问题）', () => {
   const diffText = diff('+++ b/apps/api/src/domain/clock.ts', '@@ -1,0 +2,1 @@', '+a');
   const base = { readDiffText: () => diffText, log: () => {} };
+  // 有 status：Stryker 真的跑起来了，用它自己的退出码结束（1 = 分数低于 break 阈值），原样传递。
   assert.equal(
     main(['--scope', 'api', '--run'], {
       ...base,
       runStryker: () => {
         const error = new Error('boom');
-        error.status = 3;
+        error.status = 1;
         throw error;
       },
     }),
-    3,
+    1,
   );
+  // 没有 status：根本没起来（缺二进制、spawn 失败），归 3——它和「分数不达标」的处置完全不同。
   assert.equal(
     main(['--scope', 'api', '--run'], {
       ...base,
@@ -638,7 +640,7 @@ test('main：runStryker 抛错时返回它的 status，没有 status 就返回 1
         throw new Error('boom');
       },
     }),
-    1,
+    3,
   );
 });
 
@@ -655,7 +657,14 @@ test('作为命令行直接执行时走真实入口，并把退出码交给进�
 
     assert.throws(
       () => execFileSync(process.execPath, [script, '--scope', 'nope'], { encoding: 'utf8', stdio: 'pipe' }),
-      (error) => error.status === 1,
+      (error) => error.status === 3,
+    );
+
+    // 护栏拒绝也要原样传出去（2），CI 靠这个把「没跑成」和「分数不达标」分开。
+    writeFileSync(file, diff('+++ b/apps/api/src/domain/a,b.ts', '@@ -1,0 +1,1 @@', '+a'));
+    assert.throws(
+      () => execFileSync(process.execPath, [script, '--scope', 'api', '--diff-file', file], { encoding: 'utf8', stdio: 'pipe' }),
+      (error) => error.status === 2,
     );
   } finally {
     rmSync(dir, { recursive: true, force: true });
