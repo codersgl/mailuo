@@ -111,6 +111,16 @@ describe('isAllowedHostHeader', () => {
     expect(isAllowedHostHeader('10.32.213.214:3003', LOCAL)).toBe(false);
   });
 
+  it('畸形 authority 在入口这一层也一律拒绝（纵深防御）', () => {
+    // 这几条经浏览器发不出来（URL 解析器先判非法），只有裸 HTTP 客户端能伪造 Host；
+    // 而裸客户端本来就能直接写 `Host: 127.0.0.1` 走回环规则。所以这里钉的是纵深防御：
+    // 解析层（hostNameOf 的锚点与段数判断）一旦放宽，白名单入口会跟着放行，这几条就是那层的哨兵。
+    expect(isAllowedHostHeader('[::1]evil:3003', LOCAL)).toBe(false);
+    expect(isAllowedHostHeader('[::1]:3003x', LOCAL)).toBe(false);
+    expect(isAllowedHostHeader('127.0.0.1:3003:evil', LOCAL)).toBe(false);
+    expect(isAllowedHostHeader('127.0.0.1:x3003', LOCAL)).toBe(false);
+  });
+
   it('缺失或空 Host 一律拒绝', () => {
     expect(isAllowedHostHeader(undefined, LOCAL)).toBe(false);
     expect(isAllowedHostHeader('', LOCAL)).toBe(false);
