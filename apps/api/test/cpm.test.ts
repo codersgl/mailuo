@@ -232,8 +232,10 @@ describe('computeSchedule（纯计算）', () => {
     expect(schedule.projectDuration).toBe(20);
   });
 
-  it('成环时抛 DependencyCycleError', () => {
-    expect(() =>
+  it('成环时抛 DependencyCycleError，消息与 name 也要带上', () => {
+    // 消息与 name 会被日志（server 的 error 分支）与接口错误体用到：把它们清空不会让「抛的是这个类」
+    // 变色，但日志里就只剩空信息。所以这两个字段单独断言。
+    const build = () =>
       computeSchedule(
         [
           { id: 'a', durationMinutes: 1 },
@@ -243,8 +245,18 @@ describe('computeSchedule（纯计算）', () => {
           { predecessorId: 'a', successorId: 'b' },
           { predecessorId: 'b', successorId: 'a' },
         ],
-      ),
-    ).toThrow(DependencyCycleError);
+      );
+
+    let thrown: unknown;
+    try {
+      build();
+    } catch (error) {
+      thrown = error;
+    }
+
+    expect(thrown).toBeInstanceOf(DependencyCycleError);
+    expect((thrown as Error).message).toBe('依赖图存在环');
+    expect((thrown as Error).name).toBe('DependencyCycleError');
   });
 });
 

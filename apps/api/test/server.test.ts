@@ -122,6 +122,9 @@ describe('listeningLines', () => {
     expect(lines[1]?.level).toBe('warn');
     expect(lines[1]?.text).toContain('HOST=0.0.0.0');
     expect(lines[1]?.text).toContain('没有鉴权');
+    // 后半句才是「这个配置会把任务数据敞开给谁」的说明，整句被删掉也照样能满足上面那两条包含断言。
+    expect(lines[1]?.text).toContain('同网段（含 Tailscale）的设备可以读写全部任务');
+    expect(lines[1]?.text).toContain('只在本机用请删掉 HOST');
   });
 
   it('通配监听时列出放行名单，IPv6 地址带方括号', () => {
@@ -133,6 +136,10 @@ describe('listeningLines', () => {
     expect(listed?.text).toContain('127.0.0.1');
     expect(listed?.text).toContain('[::1]');
     expect(listed?.text).toContain('HOST_ALLOW');
+    // 分隔符不能省：少了它两个地址连成 '127.0.0.1[::1]'，读起来像一个不存在的地址。
+    expect(listed?.text).toContain('127.0.0.1、[::1]');
+    // 这一行是普通日志，不是警告（通配监听本身是用户显式设的，只在上面那半句里提醒风险）。
+    expect(listed?.level).toBe('log');
   });
 
   it('具体地址（非通配）不打印放行名单', () => {
@@ -197,6 +204,8 @@ describe('startServer', () => {
       allowedHosts: ['127.0.0.1', '192.168.1.5', 'sgl.local'],
       staticRoot: '/repo/apps/web/dist',
     });
+    // 产物在的时候不能打「未找到前端产物」——那是假告警，会让人以为托管坏了而去查错方向。
+    expect(deps.log).not.toHaveBeenCalledWith(missingWebBuildMessage('/repo/apps/web/dist/index.html'));
   });
 
   it('没有迁移时不打那一行，也不把不存在的产物目录交给 createApp', () => {
