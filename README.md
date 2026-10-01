@@ -95,7 +95,7 @@ node bin/mailuo.mjs
 | `-p, --port` | `PORT` | `3001` | 默认端口被占用时，从它起最多再试 20 个端口（3001–3020）；`--port` 或 `PORT` 显式给出时不替换 |
 | `--host` | `HOST` | `127.0.0.1` | 只服务本机；跨设备访问设为 `0.0.0.0` |
 | `--db` | `KANBAN_DB_PATH` | `~/.mailuo/kanban.db` | 相对路径按当前工作目录解析 |
-| — | `HOST_ALLOW` | 空 | 额外放行的 Host 主机名，逗号分隔 |
+| — | `HOST_ALLOW` | 空 | 额外放行的 Host 主机名，逗号分隔（比较时忽略末尾的根标签点，`nas.` 与 `nas` 等价） |
 | `--no-open` | `MAILUO_NO_OPEN=1` | 打开浏览器 | 不自动打开；`--open` 可压过环境变量 |
 | — | `MAILUO_NO_UPDATE_CHECK=1` | 空（启动时查一次） | 不查 npm 上的新版本 |
 | — | `MAILUO_REGISTRY` | `https://registry.npmjs.org` | 查新版本用的 registry；未设时跟随 `npm_config_registry`（镜像 / 私有源） |

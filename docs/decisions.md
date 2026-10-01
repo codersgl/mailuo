@@ -4623,3 +4623,24 @@ api 用例 360 → 364，覆盖率 98.04 / 95.06 / 97.87 / 98.5（阈值不变�
 **仍然开放**（浏览器不可达，属纵深防御；要收口得再动解析规则，属另一步）：`hostNameOf('[127.0.0.1]')`
 这类方括号里不校验 IPv6、`isLoopbackHostName('127.999.999.999')` 不校验八位组范围、
 `normalizeHostEntry('::1:3003')` 会静默永不匹配。
+
+**审核（子代理）后的三处修正**：
+
+1. **一个实测缺陷**：新加的十六进制判据只认小写（`/^[0-9a-f]{1,4}$/`），于是
+   `isLoopbackHostName('::FFFF:7F00:1')` 返回 false。Host 头经 `hostNameOf` 已经小写，所以请求面不可达，
+   坏的是「分类函数被直接调用」这条口径（`isLoopbackListenHost` 那一侧）。修法是 `isLoopbackIpv4Mapped`
+   入口统一 `toLowerCase`，并补一条大写断言钉住。
+2. **注释说宽了**：`withoutRootLabel` 只接在主机名的两条返回路径上，方括号 IPv6（`[::1].`）不走它、
+   仍按畸形整条拒绝。这一点是**有意的 fail-closed**（浏览器产不出这种写法），注释已改写并加断言
+   `hostNameOf('[::1].') === ''` 钉住；同理第十三节原来说「`normalizeHostEntry` 跟着一致」只在无括号路径成立。
+3. **举例不准**：原来说 `HOST_ALLOW=localhost.` 会「跟着一致」——实际 `localhost.` 先被回环规则命中，
+   这个例子看不出白名单比较。换成 `HOST_ALLOW=kanban.local.`（用例里就是这么写的）。
+
+审核另外指出新用例有两条没有区分力（`hostNameOf('KanBan.Local.')` 同时依赖去点与小写、`::ffff:7f00:2`
+与 `::ffff:7f00:1` 只差最低位），以及 `isLoopbackListenHost` 与入口层缺同族输入。已补：
+大写形式、`::ffff:0:0`、`isLoopbackListenHost(' ::ffff:127.0.0.1 ')`（这条直接决定要不要打安全警告）、
+白名单条目带尾点的匹配（`HOST_ALLOW=kanban.local.`）、Origin 层的 `localhost.` 与映射形式、
+以及 `hostNameOf('[::1].')`。补完之后新代码一共过了 **9 个变异探针（9/9 变红）**——其中「去掉前缀判断」
+与「放宽十六进制位数」两条是补了 `fd7a:117f00:1`、`::ffff:00007f00:1` 这两条边界断言才钉住的。
+
+文档同步：`README.md` 的 `HOST_ALLOW` 一行补了「比较时忽略末尾的根标签点，`nas.` 与 `nas` 等价」。

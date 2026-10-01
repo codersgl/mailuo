@@ -37,6 +37,8 @@ describe('hostNameOf', () => {
     expect(hostNameOf('.')).toBe('');
     // 只去一个点：`localhost..` 仍是畸形名，不能跟着变成 localhost。
     expect(hostNameOf('localhost..:3003')).toBe('localhost.');
+    // 方括号 IPv6 不走「去点」这条路：`[::1].` 这种浏览器产不出来的写法整条拒绝（fail-closed）。
+    expect(hostNameOf('[::1].')).toBe('');
   });
 
   it('畸形 authority 一律返回空串（不能按第一个冒号宽容切分）', () => {
@@ -105,6 +107,14 @@ describe('isLoopbackHostName', () => {
     expect(isLoopbackHostName('::ffff:')).toBe(false);
     expect(isLoopbackHostName('::ffff:7f00')).toBe(false);
     expect(isLoopbackHostName('::ffff:7f00:1:2')).toBe(false);
+    // 十六进制段大小写都认：Host 头经 hostNameOf 已小写，但这两个分类函数也会被直接调用。
+    expect(isLoopbackHostName('::FFFF:7F00:1')).toBe(true);
+    // 段必须正好 1-4 位十六进制（IPv6 组的语法）：多位数不是合法组，不能被当成映射地址。
+    expect(isLoopbackHostName('::ffff:00007f00:1')).toBe(false);
+    // 前缀必须真的是 `::ffff:`——不能「切掉前 7 个字符再当映射看」。
+    expect(isLoopbackHostName('fd7a:117f00:1')).toBe(false);
+    // 方括号只在 hostNameOf 层剥离：分类函数拿到带括号的串不认。
+    expect(isLoopbackHostName('[::ffff:7f00:1]')).toBe(false);
   });
 
   it('回环正则两头的锚点与八位组位数都要对', () => {
@@ -133,6 +143,16 @@ describe('isLoopbackListenHost', () => {
     expect(isLoopbackListenHost(' ::1 ')).toBe(true);
     expect(isLoopbackListenHost(' 127.0.0.1 ')).toBe(true);
     expect(isLoopbackListenHost(' localhost ')).toBe(true);
+  });
+
+  it('映射成回环的 IPv4-mapped 监听地址也算本机（否则会多打一条安全警告）', () => {
+    // 这一条直接决定 server.ts 要不要打「监听非本机地址」的警告。
+    expect(isLoopbackListenHost('::ffff:127.0.0.1')).toBe(true);
+    expect(isLoopbackListenHost('::ffff:7f00:1')).toBe(true);
+    expect(isLoopbackListenHost(' ::ffff:127.0.0.1 ')).toBe(true);
+    // 展开写法（裸客户端才发得出来）不算本机：判成外来是 fail-closed。
+    expect(isLoopbackListenHost('0::ffff:7f00:1')).toBe(false);
+    expect(isLoopbackListenHost('::ffff:ac10:1')).toBe(false);
   });
 });
 
@@ -237,9 +257,21 @@ describe('isAllowedHostHeader', () => {
   it('IPv4-mapped 的回环地址在入口这一层也放行', () => {
     // 浏览器把 [::ffff:127.0.0.1] 规范化成 [::ffff:7f00:1]，这一层要跟着认。
     expect(isAllowedHostHeader('[::ffff:7f00:1]:3003', LOCAL)).toBe(true);
+    expect(isAllowedHostHeader('[::ffff:127.0.0.1]:3003', LOCAL)).toBe(true);
     expect(isAllowedOrigin('http://[::ffff:7f00:1]:3003', LOCAL)).toBe(true);
     // 非回环的映射地址不在白名单里，照旧拒。
     expect(isAllowedHostHeader('[::ffff:ac10:1]:3003', LOCAL)).toBe(false);
+    expect(isAllowedHostHeader('[::ffff:0:0]:3003', LOCAL)).toBe(false);
+  });
+
+  it('末尾根标签点在白名单比较里也一视同仁', () => {
+    // 白名单条目与 Host 都经 hostNameOf 归一化，因此带不带末尾点匹配结果相同。
+    const options = { listenHost: '0.0.0.0', allowedHosts: ['kanban.local.'] };
+
+    expect(isAllowedHostHeader('kanban.local.:3003', options)).toBe(true);
+    expect(isAllowedHostHeader('kanban.local:3003', options)).toBe(true);
+    // 归一化不等于放宽：不在名单里的域名照旧拒。
+    expect(isAllowedHostHeader('evil.local.:3003', options)).toBe(false);
   });
 
   it('HOST_ALLOW 里写了畸形条目时，畸形 Host 也不能因此被放行', () => {
@@ -292,6 +324,9 @@ describe('isAllowedOrigin', () => {
     // 两者主机名不同，起作用的是「回环」这条规则。
     expect(isAllowedOrigin('http://localhost:5173', LOCAL)).toBe(true);
     expect(isAllowedOrigin('http://127.0.0.1:5173', LOCAL)).toBe(true);
+    // 末尾根标签点与映射写法都要放过（浏览器会原样发出这两种 Host）。
+    expect(isAllowedOrigin('http://localhost.:5173', LOCAL)).toBe(true);
+    expect(isAllowedOrigin('http://[::ffff:7f00:1]:5173', LOCAL)).toBe(true);
   });
 
   it('白名单里的 Origin 放行，其它站的拒绝', () => {

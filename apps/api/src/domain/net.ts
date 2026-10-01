@@ -53,6 +53,9 @@ export function hostNameOf(host: string): string {
  *
  * 浏览器访问 `http://localhost.:3003` 时 Host 就是 `localhost.:3003`（URL 解析器保留这个点），
  * 不归一化会把本机地址判成外来主机而 403。只去一个点，`..` 这类畸形串保持原样交给上层判定。
+ *
+ * 只作用在「主机名」的两条返回路径上；方括号 IPv6（`[::1].`）不走这里，仍按畸形整条拒绝——那种写法
+ * 浏览器产不出来，fail-closed 比「宽容地当成回环」更稳（有用例钉住这个行为）。
  */
 function withoutRootLabel(name: string): string {
   return name.endsWith('.') ? name.slice(0, -1) : name;
@@ -75,8 +78,11 @@ const LOOPBACK_IPV4 = /^127(?:\.\d{1,3}){3}$/;
 const IPV4_MAPPED_PREFIX = '::ffff:';
 
 function isLoopbackIpv4Mapped(name: string): boolean {
-  if (!name.startsWith(IPV4_MAPPED_PREFIX)) return false;
-  const rest = name.slice(IPV4_MAPPED_PREFIX.length);
+  // 十六进制段大小写都认：Host 头经 hostNameOf 已经小写，但本函数也会被直接调用（例如监听地址那条路径），
+  // 口径不该依赖上游有没有归一化。
+  const value = name.toLowerCase();
+  if (!value.startsWith(IPV4_MAPPED_PREFIX)) return false;
+  const rest = value.slice(IPV4_MAPPED_PREFIX.length);
   // 点分写法直接复用 IPv4 的判据。
   if (rest.includes('.')) return LOOPBACK_IPV4.test(rest);
   // 十六进制写法固定是两组（`7f00:1` = 127.0.0.1）；高 16 位的高字节是 0x7f 才算 127/8。
