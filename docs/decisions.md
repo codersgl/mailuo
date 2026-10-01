@@ -4644,3 +4644,38 @@ api 用例 360 → 364，覆盖率 98.04 / 95.06 / 97.87 / 98.5（阈值不变�
 与「放宽十六进制位数」两条是补了 `fd7a:117f00:1`、`::ffff:00007f00:1` 这两条边界断言才钉住的。
 
 文档同步：`README.md` 的 `HOST_ALLOW` 一行补了「比较时忽略末尾的根标签点，`nas.` 与 `nas` 等价」。
+
+### 十四、把工具推广到 bin 与 web：配置与前提就绪，基线待跑
+
+`pnpm test:mutation` 原只覆盖 apps/api。这一步补上 `bin/mailuo.mjs` 与 `apps/web` 两套配置，
+范围按「跑通 + 把前提和代价记清楚」收口，两条基线本身留作待办。
+
+**bin/mailuo.mjs（491 个变异点）** —— `stryker.bin.config.json`
+
+- 文档给 `node:test` 项目推荐的是 `@stryker-mutator/tap-runner`。本仓库不需要它：`coverageAnalysis`
+  本来就是 `off`（不消费按用例覆盖率），而 tap runner 会把各个测试文件**并行**执行，正好撞上 bin 用例的
+  固定端口。已把该依赖移除，改用与 api 同一套命令运行器（`node --test bin/*.test.mjs`）。
+- 三个前提，都是实测踩出来的：
+  1. **先 `pnpm build`**：bin 的进程级用例要读构建产物，缺 `dist` 时有 3 条用例失败（干跑直接判失败）。
+     `test:mutation:bin` 脚本里已经串上 build。
+  2. **并发必须是 1**：bin 用例绑固定端口（3010 等），多个 Stryker worker 会互相抢端口——第一次干跑失败
+     报的就是「显式端口被占用…」那条用例。配置文件里已写死 `concurrency: 1`。
+  3. **本机 shell 导出了 `NODE_USE_ENV_PROXY=1`** 时，那条断言 stderr 为空的进程级用例会失败（Node 会打
+     undici 警告），跑之前要 `env -u NODE_USE_ENV_PROXY`。这是本机环境特性，CI 不受影响。
+- 干跑通过：491 个变异点、单次套件 5.3 秒。**基线没跑完**：第一次全量在并发 4 下跑了 20 多分钟后进程消失、
+  无任何输出（工作区当时是插桩态，已从 `.stryker-tmp-bin/backup-*` 恢复）。改成并发 1 之后没再重跑，
+  按上面的代价估算约 44 分钟起。**bin 的基线待跑。**
+
+**apps/web 的 domain + lib（1087 个变异点）** —— `stryker.web.config.json`
+
+- 范围 `apps/web/src/{domain,lib}/**/*.ts(x)`，干跑通过：15 个源文件、1087 个变异点。
+- 命令用**定向子集**：20 个直接 `import` domain/lib 的测试文件，单次 6.3 秒（全量套件 25.6 秒）。
+  子集在方向上是安全的——子集跑红说明全集一定红（杀是真杀），子集跑绿只可能是漏判，所以协议必须是
+  「子集跑一遍 → 存活点再逐个用全量套件复验」，不能直接把子集分数当结论。
+- **基线没跑。** 代价实测：子集 1087 点约 28 分钟（并发 4），再加存活点全量复验约 10 分钟；
+  含 `components`/`hooks` 的另外约 1300+ 点则要 3 小时以上——全量套件每个变异点 25.6 秒，其中 jsdom 环境
+  占 50%、用例 34%、transform 只占 6%，所以 `--fsModuleCache` 没用；`--no-isolate` 只把 25.6 秒压到 23.1 秒
+  （CPU 占用减半，墙钟收益有限）。**web 的基线待跑。**
+
+按顺序补跑的话：`env -u NODE_USE_ENV_PROXY pnpm test:mutation:bin`（约 44 分钟）→
+`pnpm test:mutation:web`（约 40 分钟，跑完记得做存活点全量复验）。
