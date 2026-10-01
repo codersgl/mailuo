@@ -100,9 +100,15 @@ TypeScript 7，所以根 `devDependencies` 里的 `typescript@6` 只服务 lint�
 - 变异测试有两条路。**手工**的：挑几处关键分支临时改坏、跑定向用例确认变红再还原（D86 一轮 12 个、
   D87 由子代理各做一轮、D88 审查 24 个探针）。**工具**的：Stryker，报告统一落在 `coverage/mutation/`
   （HTML + JSON，已 gitignore）。三个入口：
-  - `pnpm test:mutation`：范围 `apps/api/src/domain/**` + `server.ts`（597 个变异点），配置
-    `stryker.config.json`。每个变异点跑一遍完整的 api 套件（约 2.4 秒），**全量 17–23 分钟（并发 3），
-    不要放进 CI**，手工或 nightly 用。
+  - `pnpm test:mutation`：范围 `apps/api/src/domain/**` + `server.ts`，配置 `apps/api/stryker.config.json`，
+    用 `@stryker-mutator/vitest-runner` 的 perTest 覆盖率分析（每个变异体只跑覆盖它的那几条用例，实测
+    平均 8.60 条，口径是报告里 ΣtestsCompleted ÷ 变异点数）。**全量约 5 分钟（并发 4）**，不要放进 CI，
+    手工或 nightly 用。为此 `apps/api` 的 vitest 钉在 4.x、Stryker 也在 `apps/api` 里跑，理由与退出条件
+    见 `docs/decisions.md` D91/D92，以及 `apps/api/vitest.config.ts` 的头注释。
+    两个跑不起来的前提：`plugins` 必须显式写 `["@stryker-mutator/vitest-runner"]`（pnpm 的隔离布局下，
+    Stryker 默认的 `@stryker-mutator/*` glob 展开在 core 自己的 `node_modules` 里，找不到 runner）；
+    `apps/api/vitest.config.ts` 必须排除 `**/.stryker-tmp*/**`（否则原地插桩的备份被 vitest 当成测试候选，
+    dry run 会以 `ENOENT: scandir '.../backup-XXXX/migrations'` 崩掉）。
   - `pnpm test:mutation:bin`：范围 `bin/mailuo.mjs`（491 个变异点），配置 `stryker.bin.config.json`。
     三个前提：先 `pnpm build`（进程级用例要读构建产物，脚本里已串上）；**并发必须是 1**（bin 用例绑固定
     端口 3010 等，多 worker 会互相抢端口）；本机 shell 若导出 `NODE_USE_ENV_PROXY`，要用
@@ -117,20 +123,24 @@ TypeScript 7，所以根 `devDependencies` 里的 `typescript@6` 只服务 lint�
     （删除行在新文件里没有行号，无法变异）→ 拼成 `--mutate path:start-end`（命令行上的 `--mutate` 会
     整体替换配置里的文件列表）。默认只打印范围，加 `--run` 才执行；`--base` 默认 `main`，CI 上通常传
     `origin/main`。改动行数超过上限（api/web 200、bin 30）会拒绝执行并返回码 2，用 `--max-lines` 或
-    `--force-large` 放宽。实测一行改动 → 9 个变异点 → 两次分别 17 秒与 24 秒（对照：同一入口全量
-    17–23 分钟）。
+    `--force-large` 放宽。api 这个 scope 在 `apps/api` 下执行（perTest 只在包目录里工作），所以它打印与
+    传给 Stryker 的路径是相对 `apps/api` 的（`src/domain/clock.ts:40-40`），web/bin 仍是仓库根相对。
+    实测一行改动 → 9 个变异点 → 十来秒（多次实测在 6–25 秒之间摆动，与 D89 记的边界耗时同源；
+    对照：同一入口全量约 5 分钟）。
   - **差分是快速反馈，不是全量的替代**：它看不到「改了 A 文件、让远处 B 文件的测试失效」这类问题，
     与 cargo-mutants `--in-diff` 的官方警告是同一件事，所以定期全量不能省。
   - **不要用 `--incremental` 当门禁**：增量文档的支持表里，Command runner 的 test reporting 是 `Nothing`
     ——它检测得到变异源文件的变化，检测不到测试文件的变化。一个只删断言、不动 `src/` 的改动会把上一次的
     「Killed」全部复用、报成绿的。它只能当「同一份代码重复跑」的缓存，且必须定期 `--force` 全量。
-  - 三条都不走 `@stryker-mutator/vitest-runner`（D88 证明它与本仓库的 vitest 5 选不出用例），用 Stryker 自带的
-    命令运行器，按退出码判死；`node:test` 项目文档推荐的 tap runner 也不需要（理由见 D89 第十四节）。
+  - api 走 `@stryker-mutator/vitest-runner`（perTest），web/bin 仍走 Stryker 自带的命令运行器、按退出码判死：
+    web 的 vitest 是 5.x，runner 与它不兼容（D91）；bin 是 `node:test` 项目，官方推荐的 tap runner 会把测试文件
+    并行跑，正好撞上固定端口，所以也不需要（理由见 D89 第十四节）。
   - 判定会摆动，根因是「边界耗时」而不是并发本身：有 20 来个变异点落在遍历循环里，插桩后慢到越过 vitest
-    自己的 5 秒用例超时，于是判定取决于跑得多快（D89 第七节有实测）。**存活点清单是稳的**（三种配置下同一批
-    存活点）；分数有区间，补完盲区后 api 是原始口径 91.46%、保守下界 88.8%（把 16 个超时全当成没检出）。
-    所以 `stryker.config.json` 的 `thresholds` 取 `{ high: 92, low: 88, break: 84 }`：break 比保守下界低 4.8 个点，
-    能拦住「某个文件的用例被掏空」，拦不住「单个测试退化」。要钉住某个具体变异点，用 `--concurrency 1` 单独复验。
+    自己的用例超时，于是判定取决于跑得多快（D89 第七节有实测）。**存活点清单是稳的**；分数有区间，
+    改 perTest 后 api 全量实测 **91.51**（总分）/ 92.23（覆盖口径）：565 杀 / 17 超时 / 49 存活 / 5 无覆盖 /
+    2 错误，保守下界 88.8%（把 17 个超时全当成没检出）。所以 `apps/api/stryker.config.json` 的 `thresholds`
+    取 `{ high: 92, low: 88, break: 84 }`：break 比保守下界低约 5 个点，能拦住「某个文件的用例被掏空」，
+    拦不住「单个测试退化」。要钉住某个具体变异点，用 `--concurrency 1` 单独复验。
   - 三个配置都是 `inPlace: true`：原地改文件、备份放 `.stryker-tmp*`。中途 Ctrl-C 或杀进程会把整个仓库留在
     插桩态（插桩是全量的，不只 `mutate` 圈定的文件），恢复用 `git checkout -- apps bin scripts` 或从
     `.stryker-tmp*/backup-*` 拷回。

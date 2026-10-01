@@ -8,6 +8,10 @@ coverage/
 # Stryker 的沙箱/备份目录，只在本机跑变异测试时存在
 .stryker-tmp/
 
+# vitest runner 每起一个 worker 都会在 cwd 写一份 stryker-setup-<worker>.js，正常退出时会删掉，
+# 被强杀或异常退出时残留。它纯属运行时产物，而且会跟着 apps/api 一起被 `git add -A` 收进来（D92 踩过）。
+stryker-setup-*.js
+
 # SQLite 数据文件不入版本库（见 docs/spec.md）
 data/
 

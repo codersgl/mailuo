@@ -9,9 +9,9 @@
  *   node scripts/mutation-scope.mjs --scope bin --run           # 会先 pnpm build，并去掉 NODE_USE_ENV_PROXY
  *
  * 为什么需要这个脚本：Stryker 10 的配置 schema 里没有「只变异改动文件」的开关（没有 since），
- * 而本仓库三条配置都走命令运行器——Stryker 在这种模式下做不了任何测试选择，只能对每个变异体跑
- * 完整套件（api 597 个点 17–23 分钟、web 1087 个点约 40 分钟、bin 491 个点 44 分钟起）。
- * 差分把变异点数量压到与改动行数成正比，PR 上才放得下。
+ * 而全量入口的代价都不小——api 已经改用 perTest（638 个变异点约 5 分钟，见 D92），web 与 bin 仍是
+ * 命令运行器（web 1087 个点约 40 分钟、bin 491 个点 44 分钟起）。差分把变异点数量压到与改动行数
+ * 成正比，PR 上才放得下。
  *
  * 口径：只取新增/修改行。删除行在新文件里没有行号，无法变异，所以不产生范围。
  * 代价必须知道：差分看不到「改了 A 文件、让远处 B 文件的测试失效」这类问题，它是快速反馈，
@@ -42,16 +42,21 @@ export const DEFAULT_MAX_CHANGED_LINES = 200;
 export const SCOPES = {
   api: {
     label: 'apps/api/src/domain/** + apps/api/src/server.ts',
-    config: null, // null 表示用缺省的 stryker.config.json
+    // api 的 Stryker 在 apps/api 里执行（D91：perTest 只在包目录下工作），所以执行目录与
+    // 传给 --mutate 的路径都相对 apps/api。
+    cwd: 'apps/api',
+    config: 'stryker.config.json',
     matches: (file) => /^apps\/api\/src\/domain\/.*\.ts$/.test(file) || file === 'apps/api/src/server.ts',
   },
   web: {
     label: 'apps/web/src/{domain,lib}/**',
+    cwd: null,
     config: 'stryker.web.config.json',
     matches: (file) => /^apps\/web\/src\/(domain|lib)\/.*\.tsx?$/.test(file),
   },
   bin: {
     label: 'bin/mailuo.mjs',
+    cwd: null,
     config: 'stryker.bin.config.json',
     matches: (file) => file === 'bin/mailuo.mjs',
     // bin 的用例是进程级的、且绑固定端口，配置里并发写死为 1，所以每个变异体都要 5.3 秒，
@@ -111,7 +116,9 @@ export function parseUnifiedDiff(text) {
 
     if (line.startsWith('+++ ')) {
       const file = stripDiffPathPrefix(line.slice(4).trim());
-      current = isSafeRepoPath(file) ? { path: file, lines: [] } : null;
+      // 只把「删除整个文件」这个标记挡掉；路径安不安全交给 planScope 判定，因为这里丢掉就等于
+      // 静默漏检（审核 L3：`..` 段既不在 args 也不在 rejected，脚本会报「没有改动」并绿着退出）。
+      current = file === '/dev/null' ? null : { path: file, lines: [] };
       if (current) entries.push(current);
       continue;
     }
@@ -133,18 +140,6 @@ function stripDiffPathPrefix(raw) {
   let file = raw;
   if (file.startsWith('"') && file.endsWith('"')) file = file.slice(1, -1);
   return file.startsWith('b/') ? file.slice(2) : file;
-}
-
-/**
- * 只接受仓库内的相对路径。
- *
- * diff 是可以手工构造的（`--diff-file` 就是给人喂的入口），而算出来的路径会被 Stryker 当作
- * `--mutate` 的值去改文件，所以带 `..` 段或绝对路径的条目一律丢弃。git 自己产出的 diff 里
- * 不会出现这两种：git 的路径总是规范化的，删除整个文件写成 `+++ /dev/null`，是绝对路径，
- * 被这一条顺带挡掉。
- */
-function isSafeRepoPath(file) {
-  return !path.isAbsolute(file) && !file.split('/').includes('..');
 }
 
 /**
@@ -178,14 +173,50 @@ function toRanges(lines) {
  * 除了 scope 自己的正则，还要排掉含隐藏段（以 `.` 开头的路径段）的文件：三份配置里的 glob 由
  * Stryker 的 `FileMatcher` 匹配，而它默认 `dot: false`，不收 dotfile。不排掉就会出现「脚本认为
  * 在范围内、Stryker 却找不到这个文件」的分歧。
+ *
+ * `.` 与 `..` 不算隐藏段：它们不是 dotfile，而是越界/未归一化的写法。把它们当 dotfile 排掉就等于
+ * 静默丢弃（审核 L3 的原始复现就是这么漏的），所以放它们进来，交给 safeScopePath 判成 rejected。
  */
 function isInScope(scope, file) {
-  return scope.matches(file) && !file.split('/').some((segment) => segment.startsWith('.'));
+  return scope.matches(file) && !file.split('/').some(isHiddenSegment);
 }
 
-/** 路径能不能安全地拼进 `--mutate`（见 MUTATE_UNSAFE）。 */
-function isMutateSafePath(file) {
-  return !MUTATE_UNSAFE.test(file);
+/** 以 `.` 开头的路径段，但 `.` 与 `..` 除外。 */
+function isHiddenSegment(segment) {
+  return segment.startsWith('.') && segment !== '.' && segment !== '..';
+}
+
+/**
+ * diff 里的路径是仓库根相对的，而 Stryker 在 scope 自己的目录里执行：api 的 cwd 是 apps/api，
+ * 所以 `apps/api/src/domain/clock.ts` 必须变成 `src/domain/clock.ts`，否则 Stryker 会去找
+ * `apps/api/apps/api/...` 而报「找不到要变异的文件」。cwd 为 null 的 scope 原样返回。
+ */
+function toScopePath(file, scope) {
+  return scope.cwd ? path.posix.relative(scope.cwd, file) : file;
+}
+
+/**
+ * 把一个路径变成可以安全拼进 `--mutate` 的 scope 相对路径；不安全时返回 `null`。
+ *
+ * 三类拒绝理由，都要在**转换之后**再验一次（审核 L4：只验转换前的话，将来给某个 scope 加了 cwd
+ * 而 matches 允许 cwd 以外的路径时，`path.posix.relative` 会产出 `../` 而没人拦）：
+ * 1. 越出仓库：绝对路径，或任何位置出现 `..` 段；
+ * 2. 会破坏 CLI 解析的字符（逗号、glob 元字符、引号、反斜杠，见 MUTATE_UNSAFE）；
+ * 3. 转成 scope 相对之后仍然越出 scope 目录。
+ *
+ * 返回 null 而不是抛错，是为了让调用方把它记进 `rejected` 并让整次执行失败——静默丢掉就是
+ * 静默漏检（审核 L3）。
+ */
+function safeScopePath(file, scope) {
+  if (path.isAbsolute(file) || hasTraversalSegment(file) || MUTATE_UNSAFE.test(file)) return null;
+  const scopePath = toScopePath(file, scope);
+  if (path.posix.isAbsolute(scopePath) || hasTraversalSegment(scopePath)) return null;
+  return scopePath;
+}
+
+/** 路径里有没有 `.` 或 `..` 段（只有手写 diff 才可能出现的越界/未归一化写法）。 */
+function hasTraversalSegment(file) {
+  return file.split('/').some((segment) => segment === '.' || segment === '..');
 }
 
 /**
@@ -201,8 +232,10 @@ export function toMutateArgs(entries, scopeId) {
   const scope = requireScope(scopeId);
   const args = [];
   for (const entry of entries) {
-    if (!isInScope(scope, entry.path) || !isMutateSafePath(entry.path) || entry.lines.length === 0) continue;
-    for (const [start, end] of toRanges(entry.lines)) args.push(`${entry.path}:${start}-${end}`);
+    if (!isInScope(scope, entry.path) || entry.lines.length === 0) continue;
+    const file = safeScopePath(entry.path, scope);
+    if (file === null) continue;
+    for (const [start, end] of toRanges(entry.lines)) args.push(`${file}:${start}-${end}`);
   }
   return args;
 }
@@ -225,8 +258,8 @@ function requireScope(scopeId) {
 export function planScope({ scopeId, diffText, maxLines }) {
   const scope = requireScope(scopeId);
   const inScope = parseUnifiedDiff(diffText).filter((entry) => isInScope(scope, entry.path) && entry.lines.length > 0);
-  const rejected = [...new Set(inScope.filter((entry) => !isMutateSafePath(entry.path)).map((entry) => entry.path))];
-  const usable = inScope.filter((entry) => isMutateSafePath(entry.path));
+  const usable = inScope.filter((entry) => safeScopePath(entry.path, scope) !== null);
+  const rejected = [...new Set(inScope.filter((entry) => safeScopePath(entry.path, scope) === null).map((entry) => entry.path))];
   const lineCount = usable.reduce((total, entry) => total + entry.lines.length, 0);
   const limit = maxLines ?? scope.maxChangedLines ?? DEFAULT_MAX_CHANGED_LINES;
   return { scope, args: toMutateArgs(usable, scopeId), lineCount, maxLines: limit, tooLarge: lineCount > limit, rejected };
@@ -292,12 +325,15 @@ function readDiffFromFile({ diffFile }) {
 }
 
 /**
- * 默认的执行方式：调用本仓库安装的 stryker。
+ * 默认的执行方式：在 scope 自己的目录里调用该目录安装的 stryker。
+ *
+ * api 的 cwd 是 apps/api，它有自己的 `@stryker-mutator/core` 与 `vitest-runner`（D91：runner 与
+ * vitest 必须是同一个实例，所以这一套必须装在 apps/api）；web/bin 的 cwd 是仓库根。
  *
  * 直接执行 `node_modules/.bin/stryker` 而不走 `pnpm exec`：后者会先做依赖状态检查，缺依赖时
  * 自作主张跑 `pnpm install`，在 store 不可写的机器上（本仓库的沙箱就是这样）报出来的是一句
  * 看不出根因的 SQLite 错。直接起二进制时缺依赖会得到下面那句明确的「先跑一次 pnpm install」。
- * 注意这只覆盖 stryker 自身的启动：bin 分支的 `pnpm build` 与三条配置里的 `pnpm --filter ...`
+ * 注意这只覆盖 stryker 自身的启动：bin 分支的 `pnpm build` 与配置里由测试运行器起的命令
  * 仍会走 pnpm，所以下面显式关掉了它的依赖检查。
  *
  * `--mutate` 在命令行上会**整体替换**配置里的 mutate 数组（`@stryker-mutator/util` 的 deepMerge
@@ -316,7 +352,8 @@ export function runStrykerWithStrykerCli({ scope, mutateArgs }, deps = {}) {
   // 依赖状态检查、在缺 node_modules 的检出里尝试联网安装。
   env.npm_config_verify_deps_before_run = 'false';
 
-  const strykerBin = path.join(repoRoot, 'node_modules', '.bin', 'stryker');
+  const scopeDir = scope.cwd ? path.join(repoRoot, scope.cwd) : repoRoot;
+  const strykerBin = path.join(scopeDir, 'node_modules', '.bin', 'stryker');
   if (!exists(strykerBin)) {
     throw new Error(`找不到 ${strykerBin}，先在仓库根跑一次 pnpm install`);
   }
@@ -326,7 +363,7 @@ export function runStrykerWithStrykerCli({ scope, mutateArgs }, deps = {}) {
   args.push('--mutate', mutateArgs.join(','));
 
   if (scope.buildFirst) exec('pnpm', ['build'], { cwd: repoRoot, stdio: 'inherit', env });
-  exec(strykerBin, args, { cwd: repoRoot, stdio: 'inherit', env });
+  exec(strykerBin, args, { cwd: scopeDir, stdio: 'inherit', env });
   return 0;
 }
 
@@ -376,7 +413,9 @@ export function main(argv, deps = {}) {
 
   // 先报「有文件跑不了」，再谈「没有改动」：否则一个含逗号的路径会让整次执行静默变绿。
   if (plan.rejected.length > 0) {
-    log(`以下路径在 ${plan.scope.label} 范围内，但含有不能安全地传给 --mutate 的字符：`);
+    // 刻意说清口径：--mutate 用的是 scope 相对路径，这里列的是 diff 里的仓库根相对路径。
+    log(`以下路径在 ${plan.scope.label} 范围内，但含有不能安全地传给 --mutate 的字符或越界段。`);
+    log('下列路径相对仓库根（不是相对 scope 目录）：');
     for (const file of plan.rejected) log(`  ${file}`);
     log('请对它们跑一次全量（见 docs/development.md 的三个 test:mutation:* 入口）。');
     return 2;
@@ -388,7 +427,8 @@ export function main(argv, deps = {}) {
     return 0;
   }
 
-  log(`scope=${options.scope}（${plan.scope.label}）改动 ${plan.lineCount} 行，变异范围：`);
+  const cwdNote = plan.scope.cwd ? `，在 ${plan.scope.cwd} 下执行` : '';
+  log(`scope=${options.scope}（${plan.scope.label}）改动 ${plan.lineCount} 行${cwdNote}，变异范围：`);
   for (const arg of plan.args) log(`  ${arg}`);
 
   if (plan.tooLarge && !options.forceLarge) {
