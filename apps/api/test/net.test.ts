@@ -202,7 +202,10 @@ describe('isAllowedHostHeader', () => {
 
   it('HOST_ALLOW 里写了畸形条目时，畸形 Host 也不能因此被放行', () => {
     // HOST_ALLOW=x/y 这种笔误会被归一化成空串（hostNameOf 判它含非法字符）。解析失败的 Host 同样是空串：
-    // 若「空串要拒」这一步被去掉，两者就会「相等」而放行——一个手写错的条目把白名单开了一个口子。
+    // 若「空串要拒」这一步被去掉，两者就会「相等」而放行。
+    // 口径：这是纵深防御，不是可利用的绕过——浏览器产生的 Host 永远解析得出来，而能发畸形 Host 的裸客户端
+    // 本来就能直接写 `Host: 127.0.0.1`。这条守的是「配置笔误不得放大成对畸形 Host 的放行」。
+    // 判别力依赖 hostNameOf 与 normalizeHostEntry 都遵守「解析失败返回空串」这一约定：以后改约定这里会静默失效。
     const options = { listenHost: '0.0.0.0', allowedHosts: ['x/y'] };
 
     expect(isAllowedHostHeader('x/y', options)).toBe(false);
@@ -229,9 +232,11 @@ describe('normalizeHostEntry / formatHostForUrl', () => {
     expect(formatHostForUrl('[fd7a::1]')).toBe('[fd7a::1]');
   });
 
-  it('两端的空白先去干净（HOST_ALLOW 里手写空格是常见笔误）', () => {
+  it('两端的空白先去干净（导出 helper 的契约）', () => {
     // 先去空白再归一化/渲染。少了这一步，' ::1 ' 会归一化成 ' ::1 '（匹配不上任何 Host），
     // 渲染出来还会变成 '[ ::1 ]' 这种既不像地址也不像 URL 的串。
+    // 生产链路的入参已经 trim 过（config 读 HOST、parseHostAllow 读 HOST_ALLOW 都 trim），所以这条守的是
+    // 函数自身的契约，不是一条可达路径——与 hostNameOf 里那几条「浏览器发不出来的畸形串」同一类。
     expect(normalizeHostEntry(' ::1 ')).toBe('::1');
     expect(normalizeHostEntry(' 10.32.213.214 ')).toBe('10.32.213.214');
     expect(formatHostForUrl(' ::1 ')).toBe('[::1]');
