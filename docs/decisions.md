@@ -4679,3 +4679,90 @@ api 用例 360 → 364，覆盖率 98.04 / 95.06 / 97.87 / 98.5（阈值不变�
 
 按顺序补跑的话：`env -u NODE_USE_ENV_PROXY pnpm test:mutation:bin`（约 44 分钟）→
 `pnpm test:mutation:web`（约 40 分钟，跑完记得做存活点全量复验）。
+
+## D90 第 52 步：变异测试加差分门禁（2026-10-01，分支 feat/mutation-diff-scope）
+
+D89 第十四节把 bin 与 web 两套配置接上之后，三条入口的实际耗时是 api 17–23 分钟、web 约 40 分钟、
+bin 44 分钟起——都放不进 PR。这一步不碰 runner，先把「每次要跑多少变异点」降下来。
+
+**根因不是工具选错，是接入方式。** Stryker 官方对命令运行器的描述是「做不了任何优化，只能对每个
+变异体跑全部测试」。实测一次完整 api 套件的 net 时间是 2246 ms 与 2360 ms，但那是**裸跑**的时间；
+命令运行器下每个变异体还要付进程启动与插桩的固定开销，实测摊到每个变异体约 6 秒：
+597 × 6 / 3 ≈ 1200 秒，才与 17–23 分钟这个观测吻合（直接拿 2.2 秒去乘只能得到 7.5 分钟，那是把
+固定开销当成 0）。让 perTest 覆盖率分析生效才是结构性解法，但那件事卡在
+`@stryker-mutator/vitest-runner` 与 vitest 5 的兼容性上（D88），属于另一步。
+
+**为什么不用工具自带的两条捷径。**
+1. `since`：Stryker 10 的配置 schema 里没有这个选项（逐项核对 `stryker-schema.json` 的 properties）。
+2. `--incremental` 当门禁：增量文档的支持表里，Command runner 的 test reporting 是 `Nothing`——
+   它检测得到变异源文件的变化，检测不到测试文件的变化。一个只删断言、不动 `src/` 的 PR 会把上一次的
+   「Killed」全部复用、报成绿的，而这正是门禁最不该漏的一类退化。incremental 只允许当「同一份代码
+   重复跑」的缓存，且必须定期 `--force` 全量。
+
+**方案**：`scripts/mutation-scope.mjs` + 三个脚本 `test:mutation:{api,web,bin}:diff`。
+范围口径是「新增/修改行」——删除行在新文件里没有行号、无法变异，所以不产生范围。行号来自
+`git diff -U0`（解析器同时兼容带上下文行的 diff），基点用 `git merge-base <base> HEAD`，输出形如
+`--mutate apps/api/src/domain/clock.ts:40-40`：命令行上的 `--mutate` 会整体替换配置里的文件列表，
+这正是要的效果。护栏是「改动行数超过上限（api/web 200、bin 30）就拒绝执行并返回码 2」，默认只打印
+不执行，加 `--run` 才跑。
+
+**执行方式**：直接起 `node_modules/.bin/stryker`，不走 `pnpm exec`。后者会先做依赖状态检查，缺依赖时
+自作主张跑 `pnpm install`，在 store 不可写的机器上（本仓库的沙箱就是这样）报出来的是一句看不出根因的
+`[ERR_SQLITE_ERROR] unable to open database file`；直接起二进制时缺依赖会得到一句明确的「先在仓库根跑
+一次 pnpm install」。注意这只覆盖 stryker 自身的启动：bin 分支的 `pnpm build` 与三条配置里由命令运行器
+起的 `pnpm --filter ...` 仍会走 pnpm，所以 spawn 的 env 里显式加了
+`npm_config_verify_deps_before_run=false`（pnpm 11 起这个开关默认是 install）。
+
+**bin 只进周期性全量，不进 PR 门禁。** 两条依据：改动频率上，`bin/mailuo.mjs` 在 210 个提交里只被
+改过 7 次、最近 60 个提交 0 次；结构上它用 `node:test`，即使 perTest 恢复也用不上，永远是
+「5.3 秒 × 变异点数、强制串行」，是三个 scope 里唯一无法靠并发摊薄的。脚本支持 `--scope bin`
+（上限单独收到 30 行），但 CI 里只挂周期性全量。
+
+**验证**：
+- 单测 41 条（`scripts/mutation-scope.test.mjs`）：hunk 计数驱动的行号推进（含内容以 `++ ` 开头的行）、
+  纯删除、删除整个文件、带上下文行、省略 count 的 hunk、新增文件、`No newline`、带引号的路径、
+  三个 scope 的过滤边界、隐藏文件、含逗号路径的 fail-closed、上限护栏、参数校验、`--run` 与跳过路径、
+  传给 stryker 的 argv 与 env、直接执行的退出码，以及一条真实 git 仓库产出的 diff。
+  该文件自身覆盖率 100 / 96.18 / 100，已加进根 `test:coverage` 的 `--test-coverage-include`
+  （与 bin 合并后 97.54 / 92.25 / 95.08，阈值 93 / 86 / 88 不变）。
+- 集成：对 `a685422`（改 `net.ts`）的真实 diff，scope=api 只圈出 5 个范围，scope=web/bin 各自跳过。
+- 集成：临时在 `clock.ts:40` 加一个尾空格（语义不变的 1 行改动）→ Stryker 只加载 1/214 个文件、
+  9 个变异点全杀、100 分、退出码 0、两次分别 **17 秒与 24 秒**；同一入口的全量是 17–23 分钟。
+- `pnpm lint` 无新增问题；根 `node --test bin/*.test.mjs scripts/*.test.mjs` 78 项全过
+  （`scripts/*.test.mjs` 已接进根的 `test` 与 `test:coverage`）。两个环境前提：worktree 里要先
+  `pnpm build`，否则 bin 的 3 条进程级用例会因缺 `dist` 失败；跑之前要 `env -u NODE_USE_ENV_PROXY`，
+  本机 shell 导出了它时 bin 的「--help 打印用法后退出 0」那条会失败。
+
+**只读审核后的修正（子代理；15 种真实 diff 形状、全部 210 个提交的逐文件比对、16 个破坏点探针）**：
+
+1. **（阻断）hunk 体内以 `++ ` 开头的新增行会被当成文件头。** 合法的 `++ counter;` 在 diff 里就是
+   `+++ counter;`，只按 `startsWith('+++ ')` 认头会让这个文件剩下的改动全部丢失、脚本报「没有改动」
+   并绿着退出。改法是把解析改成由 `@@ -a,b +c,d @@` 的计数驱动：预算（`a+b`，`\ No newline` 不占）
+   归零之前所有行都属于 hunk 体。补了手工用例与一条真实 git 的集成用例。
+2. **（中）路径里的逗号会撞 Stryker CLI 的 `createSplitter(',')`。** `a,b.ts` 被拆成两个垃圾片段
+   （静默 0 个变异点），`*,x.ts` 会拆出通配 `apps/api/src/domain/*`，把「改一行」放大成整个 scope。
+   现在这类路径（以及 glob 元字符、引号、反斜杠）让整次执行失败并返回码 2，不再被悄悄跳过。
+3. **（中）测试没有钉住「真正交给 Stryker 的调用」。** 审核用 16 个破坏点实测 12 个仍然全绿
+   （丢 `--mutate`、丢配置文件名、不删 `NODE_USE_ENV_PROXY`、不 build、改 `--base` 默认值、
+   忽略 `--diff-file`、上限 200→1000……），根因是两个真实现被 DI 整体替换、0 覆盖。现在
+   `runStrykerWithStrykerCli` 与 `parseArgv` 都导出，用例逐条断言 argv、env 与调用顺序；
+   新脚本也进了覆盖率门禁。
+4. **（中）「不走 pnpm exec」的因果链只对了一半。** 见上面「执行方式」一段：已补
+   `npm_config_verify_deps_before_run=false`，并把措辞收窄到 stryker 自身的启动。
+
+顺手改掉的还有三条：隐藏文件不再纳入范围（与 Stryker `FileMatcher` 的 `dot:false` 对齐）；
+跳过时提示 `git diff` 看不到未跟踪文件；`--max-lines` 缺取值不再静默关掉护栏（`NaN` 参与比较恒为 false）。
+
+**已知盲区（写在这里，避免以后被当成 bug）**：
+1. 差分看不到跨文件的连带失效（改 A 让 B 的测试失效），必须靠定期全量兜底。
+2. 改动行若只落在不可变异的代码上（例如纯数字字面量——StrykerJS 没有 NumericLiteral 变异器，
+   实测 1 行改动产出 0 个变异体），Stryker 会报 `NaN` 分并以 0 退出。这不是回归，但意味着
+   「差分绿」不能证明「改动的逻辑被测试盯住了」。
+3. 上限护栏按「改动行数」而不是「变异点数」估算，只能当粗略护栏：同一行改动产出多少变异点只看那行 AST。
+4. `git diff` 看不到未跟踪的新文件，本地刚新建的源文件要先 `git add` 才进范围。脚本在跳过时会提示这一点，
+   但它无法区分「真的没改」与「改了但没 add」——CI 上比的是 base..HEAD，不存在这个问题。
+5. 引号形式与含 `\` 的路径不反转义：git 在 `core.quotePath=false` 下仍会对含 `"`、`\`、换行的文件名加引号，
+   这类路径会被 MUTATE_UNSAFE 挡下并让整次执行失败（fail closed），不会静默漏检。
+
+**留给下一步**：阶段 B（perTest 根因尖峰，决定能否把全量从 20 分钟压到个位数）与阶段 D
+（把差分挂进 CI、全量挂 nightly）。

@@ -81,7 +81,10 @@ TypeScript 7，所以根 `devDependencies` 里的 `typescript@6` 只服务 lint�
 `pnpm test:coverage` 跑同一套用例并采集覆盖率，任何一项低于阈值就以非零退出码失败。
 
 - 范围：`apps/api/src/**`（vitest + v8）与 `apps/web/src/**`（vitest + jsdom + v8），
-  以及 `bin/mailuo.mjs`（Node 内置的 `--experimental-test-coverage`）。
+  以及 `bin/mailuo.mjs` 与 `scripts/mutation-scope.mjs`（这两份走 Node 内置的
+  `--experimental-test-coverage`，在根 `test:coverage` 的 `--test-coverage-include` 里逐个列出）。
+  实测合并后 97.54 / 92.25 / 95.08（行 / 分支 / 函数），低于阈值 93 / 86 / 88 即失败；
+  拖低分支数的是 `bin/mailuo.mjs` 的 88.89。
 - `include` 写死到 `src/**`：没被用例加载到的文件也以 0% 计入，而不是从分母里消失。
   只剩 `apps/api/src/index.ts` 一个入口是 0%：D85 把启动流程搬进 `apps/api/src/server.ts`
   （100%）之后，它只剩组合根接线，由 `bin/mailuo.test.mjs` 的进程级用例真起服务跑过，那种
@@ -108,6 +111,19 @@ TypeScript 7，所以根 `devDependencies` 里的 `typescript@6` 只服务 lint�
     `stryker.web.config.json`。命令是**定向子集**（20 个直接 import 这两个目录的测试文件，6.3 秒 vs
     全量套件 25.6 秒），子集只会漏判、不会误判，所以**存活点必须再用全量套件逐个复验**（协议见 D89 第十四节）。
     约 40 分钟；`components`/`hooks` 未纳入（另约 1300+ 个点、3 小时以上）。
+  - `pnpm test:mutation:api:diff`（另有 `:web:diff` / `:bin:diff`）：只跑本次 diff 改到的行，是 PR 上用的
+    入口，实现在 `scripts/mutation-scope.mjs`。Stryker 10 的配置里没有 `since` 这类「只变异改动文件」的
+    开关，范围得自己算：`git merge-base <base> HEAD` 取基点 → 解析 `git diff -U0` → 取**新增/修改行**
+    （删除行在新文件里没有行号，无法变异）→ 拼成 `--mutate path:start-end`（命令行上的 `--mutate` 会
+    整体替换配置里的文件列表）。默认只打印范围，加 `--run` 才执行；`--base` 默认 `main`，CI 上通常传
+    `origin/main`。改动行数超过上限（api/web 200、bin 30）会拒绝执行并返回码 2，用 `--max-lines` 或
+    `--force-large` 放宽。实测一行改动 → 9 个变异点 → 两次分别 17 秒与 24 秒（对照：同一入口全量
+    17–23 分钟）。
+  - **差分是快速反馈，不是全量的替代**：它看不到「改了 A 文件、让远处 B 文件的测试失效」这类问题，
+    与 cargo-mutants `--in-diff` 的官方警告是同一件事，所以定期全量不能省。
+  - **不要用 `--incremental` 当门禁**：增量文档的支持表里，Command runner 的 test reporting 是 `Nothing`
+    ——它检测得到变异源文件的变化，检测不到测试文件的变化。一个只删断言、不动 `src/` 的改动会把上一次的
+    「Killed」全部复用、报成绿的。它只能当「同一份代码重复跑」的缓存，且必须定期 `--force` 全量。
   - 三条都不走 `@stryker-mutator/vitest-runner`（D88 证明它与本仓库的 vitest 5 选不出用例），用 Stryker 自带的
     命令运行器，按退出码判死；`node:test` 项目文档推荐的 tap runner 也不需要（理由见 D89 第十四节）。
   - 判定会摆动，根因是「边界耗时」而不是并发本身：有 20 来个变异点落在遍历循环里，插桩后慢到越过 vitest
