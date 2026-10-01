@@ -79,6 +79,16 @@ describe('isLoopbackHostName', () => {
     expect(isLoopbackHostName('::2')).toBe(false);
     expect(isLoopbackHostName('')).toBe(false);
   });
+
+  it('回环正则两头的锚点与八位组位数都要对', () => {
+    // 去 ^：以 127.0.0.1 结尾的串会被当成回环。这种域名现实中不合法、浏览器也发不出来，
+    // 与 hostNameOf 那几条同属纵深防御（裸客户端能伪造 Host，但它本来就能直接写 127.0.0.1）。
+    expect(isLoopbackHostName('evil127.0.0.1')).toBe(false);
+    // \d{1,3} 写成 \d：127/8 里带多位八位组的地址被误拒，浏览器访问 http://127.0.0.10:3003 会直接 403
+    // ——这个方向是真实可达的（fail-closed，用户看得见）。
+    expect(isLoopbackHostName('127.0.0.10')).toBe(true);
+    expect(isLoopbackHostName('127.0.100.200')).toBe(true);
+  });
 });
 
 describe('isLoopbackListenHost', () => {
@@ -88,6 +98,14 @@ describe('isLoopbackListenHost', () => {
     expect(isLoopbackListenHost('localhost')).toBe(true);
     expect(isLoopbackListenHost('0.0.0.0')).toBe(false);
     expect(isLoopbackListenHost('10.32.213.214')).toBe(false);
+  });
+
+  it('两端的空白不影响判定（HOST 写成 " ::1 " 也算本机）', () => {
+    // 启动链路给 HOST 做过 trim，所以这条只在直接调纯函数时才有区别；但它是函数的既定行为
+    // （先 trim 再判定），少了这一步「带空格的 HOST」会被判成非本机监听而多打一条安全警告。
+    expect(isLoopbackListenHost(' ::1 ')).toBe(true);
+    expect(isLoopbackListenHost(' 127.0.0.1 ')).toBe(true);
+    expect(isLoopbackListenHost(' localhost ')).toBe(true);
   });
 });
 
@@ -181,6 +199,15 @@ describe('isAllowedHostHeader', () => {
       }),
     ).toBe(false);
   });
+
+  it('HOST_ALLOW 里写了畸形条目时，畸形 Host 也不能因此被放行', () => {
+    // HOST_ALLOW=x/y 这种笔误会被归一化成空串（hostNameOf 判它含非法字符）。解析失败的 Host 同样是空串：
+    // 若「空串要拒」这一步被去掉，两者就会「相等」而放行——一个手写错的条目把白名单开了一个口子。
+    const options = { listenHost: '0.0.0.0', allowedHosts: ['x/y'] };
+
+    expect(isAllowedHostHeader('x/y', options)).toBe(false);
+    expect(isAllowedHostHeader('a b', options)).toBe(false);
+  });
 });
 
 describe('normalizeHostEntry / formatHostForUrl', () => {
@@ -200,6 +227,15 @@ describe('normalizeHostEntry / formatHostForUrl', () => {
     expect(formatHostForUrl('::1')).toBe('[::1]');
     expect(formatHostForUrl('fd7a::1')).toBe('[fd7a::1]');
     expect(formatHostForUrl('[fd7a::1]')).toBe('[fd7a::1]');
+  });
+
+  it('两端的空白先去干净（HOST_ALLOW 里手写空格是常见笔误）', () => {
+    // 先去空白再归一化/渲染。少了这一步，' ::1 ' 会归一化成 ' ::1 '（匹配不上任何 Host），
+    // 渲染出来还会变成 '[ ::1 ]' 这种既不像地址也不像 URL 的串。
+    expect(normalizeHostEntry(' ::1 ')).toBe('::1');
+    expect(normalizeHostEntry(' 10.32.213.214 ')).toBe('10.32.213.214');
+    expect(formatHostForUrl(' ::1 ')).toBe('[::1]');
+    expect(formatHostForUrl(' 127.0.0.1 ')).toBe('127.0.0.1');
   });
 });
 
@@ -230,6 +266,16 @@ describe('isAllowedOrigin', () => {
     // chrome-extension 同理。
     expect(isAllowedOrigin('file://', LOCAL)).toBe(false);
     expect(isAllowedOrigin('chrome-extension://abc', LOCAL)).toBe(false);
+    // 上面两条其实是被「host 不在白名单」挡住的（host 分别是空串与 abc）。要钉住协议这一层，
+    // 输入必须带一个本来会被放行的 host：file://127.0.0.1 的 host 就是回环，协议门一去掉就会放行。
+    expect(isAllowedOrigin('file://127.0.0.1', LOCAL)).toBe(false);
+    expect(isAllowedOrigin('chrome-extension://127.0.0.1', LOCAL)).toBe(false);
+  });
+
+  it('https 的 Origin 要放行（反向代理 + TLS 的部署就是这个形态）', () => {
+    // 白名单写成「只认 http」会让所有 https 页面上的写请求 403——功能回退，不是安全收紧。
+    expect(isAllowedOrigin('https://127.0.0.1:5173', LOCAL)).toBe(true);
+    expect(isAllowedOrigin('https://localhost:3003', LOCAL)).toBe(true);
   });
 });
 
