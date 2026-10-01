@@ -31,6 +31,17 @@ function diff(...lines) {
   return `${lines.join('\n')}\n`;
 }
 
+/** 本测试文件在 scripts/ 下，仓库根就是它的上一级（用于断言各 scope 的执行目录）。 */
+const repoRoot = path.resolve(fileURLToPath(new URL('..', import.meta.url)));
+
+/** 收集 exec 调用的替身：把 file / args / cwd 都留下来供断言。 */
+function captureExec(calls) {
+  return (file, args, options) => {
+    calls.push({ file, args, env: options.env, cwd: options.cwd });
+    return '';
+  };
+}
+
 test('单个 hunk 里的连续新增行合并成一个范围', () => {
   const text = diff(
     'diff --git a/apps/api/src/domain/clock.ts b/apps/api/src/domain/clock.ts',
@@ -43,7 +54,7 @@ test('单个 hunk 里的连续新增行合并成一个范围', () => {
     '+c',
   );
   assert.deepEqual(parseUnifiedDiff(text), [{ path: 'apps/api/src/domain/clock.ts', lines: [11, 12, 13] }]);
-  assert.deepEqual(toMutateArgs(parseUnifiedDiff(text), 'api'), ['apps/api/src/domain/clock.ts:11-13']);
+  assert.deepEqual(toMutateArgs(parseUnifiedDiff(text), 'api'), ['src/domain/clock.ts:11-13']);
 });
 
 test('hunk 体内以 "++ " 开头的新增行不被当成文件头', () => {
@@ -57,7 +68,7 @@ test('hunk 体内以 "++ " 开头的新增行不被当成文件头', () => {
     '+const b = 2;',
   );
   assert.deepEqual(parseUnifiedDiff(text), [{ path: 'apps/api/src/domain/clock.ts', lines: [2, 3, 4] }]);
-  assert.deepEqual(toMutateArgs(parseUnifiedDiff(text), 'api'), ['apps/api/src/domain/clock.ts:2-4']);
+  assert.deepEqual(toMutateArgs(parseUnifiedDiff(text), 'api'), ['src/domain/clock.ts:2-4']);
 });
 
 test('独立 hunk 头不会被上一条 hunk 的预算吃掉', () => {
@@ -82,8 +93,8 @@ test('分开的 hunk 产生分开的范围，单行范围写成 start-end', () =
     '+z',
   );
   assert.deepEqual(toMutateArgs(parseUnifiedDiff(text), 'api'), [
-    'apps/api/src/domain/clock.ts:11-12',
-    'apps/api/src/domain/clock.ts:33-33',
+    'src/domain/clock.ts:11-12',
+    'src/domain/clock.ts:33-33',
   ]);
 });
 
@@ -97,8 +108,8 @@ test('不相邻的行不合并', () => {
     '+z',
   );
   assert.deepEqual(toMutateArgs(parseUnifiedDiff(text), 'api'), [
-    'apps/api/src/domain/clock.ts:11-12',
-    'apps/api/src/domain/clock.ts:15-15',
+    'src/domain/clock.ts:11-12',
+    'src/domain/clock.ts:15-15',
   ]);
 });
 
@@ -139,17 +150,42 @@ test('删除整个文件（+++ /dev/null）被跳过', () => {
   assert.deepEqual(toMutateArgs(parseUnifiedDiff(text), 'api'), []);
 });
 
-test('绝对路径与含 .. 的路径被丢弃（diff 文件可以手工构造）', () => {
-  const text = diff(
-    '+++ b/apps/api/src/domain/../../../../etc/evil.ts',
-    '@@ -1,0 +1,1 @@',
-    '+a',
-    '+++ /etc/passwd',
-    '@@ -1,0 +1,1 @@',
-    '+b',
-  );
-  assert.deepEqual(parseUnifiedDiff(text), []);
+test('匹配 scope 的越界路径进 rejected，而不是被静默丢掉', () => {
+  // 解析层不再丢弃它（审核 L3：丢弃等于静默漏检，脚本会报「没有改动」并绿着退出）。
+  const text = diff('+++ b/apps/api/src/domain/../../../../etc/evil.ts', '@@ -1,0 +1,1 @@', '+a');
+  assert.deepEqual(parseUnifiedDiff(text), [{ path: 'apps/api/src/domain/../../../../etc/evil.ts', lines: [1] }]);
   assert.deepEqual(toMutateArgs(parseUnifiedDiff(text), 'api'), []);
+
+  const plan = planScope({ scopeId: 'api', diffText: text });
+  assert.deepEqual(plan.rejected, ['apps/api/src/domain/../../../../etc/evil.ts']);
+  assert.deepEqual(plan.args, []);
+
+  // `.` 段同样不该被当成 dotfile 静默排掉：它会被 path.posix.relative 归一化掉，让实际变异的
+  // 文件与 diff 声明的路径不再一致。
+  const dotted = planScope({ scopeId: 'api', diffText: diff('+++ b/apps/api/src/domain/./x.ts', '@@ -1,0 +1,1 @@', '+a') });
+  assert.deepEqual(dotted.rejected, ['apps/api/src/domain/./x.ts']);
+  assert.deepEqual(dotted.args, []);
+});
+
+test('scope 之外的绝对路径既不在 args 也不在 rejected（它本来就不在范围内）', () => {
+  const text = diff('+++ /etc/passwd', '@@ -1,0 +1,1 @@', '+b');
+  assert.deepEqual(parseUnifiedDiff(text), [{ path: '/etc/passwd', lines: [1] }]);
+  const plan = planScope({ scopeId: 'api', diffText: text });
+  assert.deepEqual(plan.rejected, []);
+  assert.deepEqual(plan.args, []);
+});
+
+test('scope 的 cwd 与 matches 不一致时也不会产出带 .. 的 --mutate', () => {
+  // 防御性用例：当前三个 scope 都不会这样（api 的 matches 保证路径都在 apps/api 下）。但将来给某个
+  // scope 加 cwd 而 matches 放宽时，path.posix.relative 会产出 '../../web/...'，必须在转换后再验一次。
+  SCOPES.__probe = { label: '探针', cwd: 'apps/api', config: null, matches: (file) => file.startsWith('apps/') };
+  try {
+    const text = diff('+++ b/apps/web/src/lib/format.ts', '@@ -1,0 +1,1 @@', '+a');
+    assert.deepEqual(toMutateArgs(parseUnifiedDiff(text), '__probe'), []);
+    assert.deepEqual(planScope({ scopeId: '__probe', diffText: text }).rejected, ['apps/web/src/lib/format.ts']);
+  } finally {
+    delete SCOPES.__probe;
+  }
 });
 
 test('带上下文行的 diff（非 -U0）也数对行号', () => {
@@ -211,7 +247,7 @@ test('scope 之外的路径被过滤掉', () => {
     '@@ -1,0 +1,1 @@',
     '+c',
   );
-  assert.deepEqual(toMutateArgs(parseUnifiedDiff(text), 'api'), ['apps/api/src/domain/clock.ts:1-1']);
+  assert.deepEqual(toMutateArgs(parseUnifiedDiff(text), 'api'), ['src/domain/clock.ts:1-1']);
   assert.deepEqual(toMutateArgs(parseUnifiedDiff(text), 'web'), ['apps/web/src/domain/board.ts:1-1']);
 });
 
@@ -227,7 +263,7 @@ test('api 的 server.ts 与 web 的 tsx 各自在范围内', () => {
     '@@ -1,0 +4,1 @@',
     '+c',
   );
-  assert.deepEqual(toMutateArgs(parseUnifiedDiff(text), 'api'), ['apps/api/src/server.ts:2-2']);
+  assert.deepEqual(toMutateArgs(parseUnifiedDiff(text), 'api'), ['src/server.ts:2-2']);
   assert.deepEqual(toMutateArgs(parseUnifiedDiff(text), 'web'), ['apps/web/src/lib/tree.tsx:3-3']);
 });
 
@@ -252,7 +288,7 @@ test('隐藏文件被排除，与 Stryker FileMatcher 的 dot:false 一致', () 
     '@@ -1,0 +2,1 @@',
     '+b',
   );
-  assert.deepEqual(toMutateArgs(parseUnifiedDiff(text), 'api'), ['apps/api/src/domain/clock.ts:2-2']);
+  assert.deepEqual(toMutateArgs(parseUnifiedDiff(text), 'api'), ['src/domain/clock.ts:2-2']);
 });
 
 test('三个 scope 的 diff 互不串台', () => {
@@ -268,7 +304,7 @@ test('三个 scope 的 diff 互不串台', () => {
     '+c',
   );
   const entries = parseUnifiedDiff(text);
-  assert.deepEqual(toMutateArgs(entries, 'api'), ['apps/api/src/domain/net.ts:1-1']);
+  assert.deepEqual(toMutateArgs(entries, 'api'), ['src/domain/net.ts:1-1']);
   assert.deepEqual(toMutateArgs(entries, 'web'), ['apps/web/src/lib/format.ts:2-2']);
   assert.deepEqual(toMutateArgs(entries, 'bin'), ['bin/mailuo.mjs:3-3']);
 });
@@ -335,7 +371,9 @@ test('main：默认只打印不执行，--run 才调用 stryker 并传对范围'
   const diffText = diff('+++ b/apps/api/src/domain/clock.ts', '@@ -1,0 +3,2 @@', '+a', '+b');
   const printed = [];
   assert.equal(main(['--scope', 'api'], { readDiffText: () => diffText, runStryker: () => 0, log: (m) => printed.push(m) }), 0);
-  assert.match(printed.join('\n'), /apps\/api\/src\/domain\/clock\.ts:3-4/);
+  // api 的路径在打印时是相对 apps/api 的（Stryker 就在那里执行），日志里同时给出 cwd。
+  assert.match(printed.join('\n'), /src\/domain\/clock\.ts:3-4/);
+  assert.match(printed.join('\n'), /在 apps\/api 下执行/);
   assert.match(printed.join('\n'), /未加 --run/);
 
   const invocations = [];
@@ -349,7 +387,7 @@ test('main：默认只打印不执行，--run 才调用 stryker 并传对范围'
   });
   assert.equal(code, 0);
   assert.equal(invocations.length, 1);
-  assert.deepEqual(invocations[0].mutateArgs, ['apps/api/src/domain/clock.ts:3-4']);
+  assert.deepEqual(invocations[0].mutateArgs, ['src/domain/clock.ts:3-4']);
   assert.equal(invocations[0].scope, SCOPES.api);
 });
 
@@ -402,6 +440,27 @@ test('main：有路径不能安全传给 --mutate 时返回 2，且不执行', (
   assert.equal(code, 2);
   assert.equal(ran, 0);
   assert.match(logs.join('\n'), /a,b\.ts/);
+  assert.match(logs.join('\n'), /相对仓库根/);
+});
+
+test('main：匹配 scope 的 .. 路径也返回 2，不会报成「没有改动」', () => {
+  // 审核 L3 的原始复现：这条路径同时匹配 api 的 matches 又有改动行，旧实现会 exit 0 并打印
+  // 「没有改动，跳过变异测试」。
+  const diffText = diff('+++ b/apps/api/src/domain/../../secret.ts', '@@ -1,0 +1,1 @@', '+x');
+  const logs = [];
+  let ran = 0;
+  const code = main(['--scope', 'api', '--run'], {
+    readDiffText: () => diffText,
+    runStryker: () => {
+      ran += 1;
+      return 0;
+    },
+    log: (m) => logs.push(m),
+  });
+  assert.equal(code, 2);
+  assert.equal(ran, 0);
+  assert.match(logs.join('\n'), /secret\.ts/);
+  assert.doesNotMatch(logs.join('\n'), /没有改动/);
 });
 
 test('main：--help 打印用法并返回 0', () => {
@@ -494,46 +553,45 @@ test('parseArgv：默认值与全部选项', () => {
   });
 });
 
-test('runStrykerWithStrykerCli：web scope 传对配置、--mutate，并关掉 pnpm 的依赖检查', () => {
+test('runStrykerWithStrykerCli：web scope 在仓库根跑，传对配置与 --mutate', () => {
   const calls = [];
   const code = runStrykerWithStrykerCli(
     { scope: SCOPES.web, mutateArgs: ['apps/web/src/lib/format.ts:3-4'] },
-    {
-      exec: (file, args, options) => {
-        calls.push({ file, args, env: options.env });
-        return '';
-      },
-      exists: () => true,
-    },
+    { exec: captureExec(calls), exists: () => true },
   );
   assert.equal(code, 0);
   assert.equal(calls.length, 1);
   assert.match(calls[0].file, /node_modules[/\\]\.bin[/\\]stryker$/);
   assert.deepEqual(calls[0].args, ['run', 'stryker.web.config.json', '--mutate', 'apps/web/src/lib/format.ts:3-4']);
+  assert.equal(calls[0].cwd, repoRoot);
   // pnpm 11 起 verifyDepsBeforeRun 默认 install，必须显式关掉，否则每次调用都可能去联网安装。
   assert.equal(calls[0].env.npm_config_verify_deps_before_run, 'false');
 });
 
-test('runStrykerWithStrykerCli：api 不带配置文件，bin 先 build 并清掉代理环境变量', () => {
+test('runStrykerWithStrykerCli：api 在 apps/api 下跑它自己的 stryker 与配置', () => {
   const calls = [];
-  const exec = (file, args, options) => {
-    calls.push({ file, args, env: options.env });
-    return '';
-  };
+  runStrykerWithStrykerCli(
+    { scope: SCOPES.api, mutateArgs: ['src/domain/clock.ts:1-1'] },
+    { exec: captureExec(calls), exists: () => true },
+  );
+  assert.equal(calls.length, 1);
+  // runner 与 vitest 必须是同一个实例，所以这一套装在 apps/api，执行目录也必须是它（D91）。
+  assert.equal(calls[0].cwd, path.join(repoRoot, 'apps', 'api'));
+  assert.match(calls[0].file, /apps[/\\]api[/\\]node_modules[/\\]\.bin[/\\]stryker$/);
+  assert.deepEqual(calls[0].args, ['run', 'stryker.config.json', '--mutate', 'src/domain/clock.ts:1-1']);
+});
+
+test('runStrykerWithStrykerCli：bin 在仓库根先 build，并清掉代理环境变量', () => {
+  const calls = [];
   const previousProxy = process.env.NODE_USE_ENV_PROXY;
   process.env.NODE_USE_ENV_PROXY = '1';
   try {
-    runStrykerWithStrykerCli({ scope: SCOPES.api, mutateArgs: ['a.ts:1-1'] }, { exec, exists: () => true });
-    assert.equal(calls.length, 1);
-    assert.deepEqual(calls[0].args, ['run', '--mutate', 'a.ts:1-1']);
-    // api 没有 dropEnv，环境变量原样传递。
-    assert.equal(calls[0].env.NODE_USE_ENV_PROXY, '1');
-
-    calls.length = 0;
-    runStrykerWithStrykerCli({ scope: SCOPES.bin, mutateArgs: ['bin/mailuo.mjs:5-5'] }, { exec, exists: () => true });
+    runStrykerWithStrykerCli({ scope: SCOPES.bin, mutateArgs: ['bin/mailuo.mjs:5-5'] }, { exec: captureExec(calls), exists: () => true });
     assert.equal(calls.length, 2);
     assert.equal(calls[0].file, 'pnpm');
     assert.deepEqual(calls[0].args, ['build']);
+    assert.equal(calls[0].cwd, repoRoot);
+    assert.equal(calls[1].cwd, repoRoot);
     assert.deepEqual(calls[1].args, ['run', 'stryker.bin.config.json', '--mutate', 'bin/mailuo.mjs:5-5']);
     // bin 的进程级用例里有一条断言 stderr 为空，导出的 NODE_USE_ENV_PROXY 会让它失败。
     assert.equal('NODE_USE_ENV_PROXY' in calls[1].env, false);
@@ -543,10 +601,11 @@ test('runStrykerWithStrykerCli：api 不带配置文件，bin 先 build 并清�
   }
 });
 
-test('runStrykerWithStrykerCli：缺 stryker 可执行文件时给明确报错', () => {
+test('runStrykerWithStrykerCli：缺 stryker 可执行文件时报出路径与可操作的提示', () => {
   assert.throws(
     () => runStrykerWithStrykerCli({ scope: SCOPES.api, mutateArgs: ['a.ts:1-1'] }, { exec: () => '', exists: () => false }),
-    /pnpm install/,
+    (error) =>
+      /apps[/\\]api[/\\]node_modules[/\\]\.bin[/\\]stryker/.test(error.message) && /pnpm install/.test(error.message),
   );
 });
 

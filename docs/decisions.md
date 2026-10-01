@@ -4855,3 +4855,90 @@ vitest 4 上，`apps/web` 与其余部分不动。
   删掉这段钉版本的注释。否则这会变成一份没人敢动的长期负债。
 - 由这一步顺带确认的两条前提要一起写进 C1：`plugins` 必须显式列（pnpm 布局），
   `.stryker-tmp*/**` 必须排除（否则 dry run 直接崩）。
+
+## D92 第 54 步：阶段 C1 —— api 的变异测试切到 perTest（2026-10-01，分支 feat/mutation-perTest）
+
+D91 把根因钉在「vitest 5 与 runner@10 不兼容」之后，这一步按它的建议落地，并在落地过程中做了一次
+形态选择。
+
+### 形态选择：api 的 Stryker 在 `apps/api` 里跑，配置也搬过去
+
+D91 验证过的只有「在 `apps/api` 里跑」这一种形态。另一种是在仓库根跑、用 `vitest.dir: 'apps/api'`
+把 runner 指过去——它对 D90 的差分脚本改动更小，但 D88 在根形态下确实失败过（当时是 vitest 5，
+不能直接归因），而且 runner 内部用 `process.cwd()` 归一化 test id、再把结果当文件名喂回
+`ctx.start()`，根与包目录不一致时正是最容易错的地方。既然已经有一条端到端验证过的路径（5 分 08 秒 /
+91.50 分），就不拿未验证的那条去赌。**因此 `stryker.config.json` 从仓库根移到 `apps/api/`**，
+`mutate` 的路径也变成相对 `apps/api` 的 `src/domain/**/*.ts` 与 `src/server.ts`。
+
+### 改动清单
+
+1. `apps/api/package.json`：`vitest` 与 `@vitest/coverage-v8` 从 `^5.0.2` 钉到 `^4.1.11`；加
+   `@stryker-mutator/core@^10.0.0` 与 `@stryker-mutator/vitest-runner@^10.0.0`；加脚本
+   `mutation: stryker run stryker.config.json`。
+2. `apps/api/stryker.config.json`（新）：`testRunner: "vitest"`、`plugins: ["@stryker-mutator/vitest-runner"]`、
+   `coverageAnalysis: "perTest"`、`concurrency: 4`，报告仍落在仓库根的 `coverage/mutation/`。
+3. `stryker.config.json`（仓库根，删除）。
+4. `apps/api/vitest.config.ts`：`exclude` 里排掉 `**/.stryker-tmp*/**`。
+5. 根 `package.json`：`test:mutation` 改成 `pnpm --filter @mailuo/api mutation`。
+6. `scripts/mutation-scope.mjs`（D90 的差分脚本）：`SCOPES` 增加 `cwd`，api 的 cwd 是 `apps/api`；
+   传给 `--mutate` 的路径由「仓库根相对」转成「scope 目录相对」（`path.posix.relative`），日志里
+   同时打出执行目录；stryker 二进制与 spawn 的 cwd 都按 scope 的 cwd 解析。web/bin 的 cwd 是 `null`，
+   行为与之前完全一致。
+7. `.gitignore`：加 `stryker-setup-*.js`。vitest runner 每起一个 worker 都会在 **cwd** 写一份
+   `stryker-setup-<worker>.js`（`vitest-test-runner.js:22` 用 `path.resolve` 相对 `process.cwd()`），
+   正常 dispose 时会删掉，被强杀或异常退出时残留。切到 vitest runner 之后它们开始出现在 `apps/api/`，
+   第一次提交时跟着 `git add -A` 被收了进去——纯运行时产物，必须忽略。
+
+### 验证
+
+- `apps/api` 套件在 vitest 4.1.11 下 366 项全绿；`apps/web` 仍在 5.0.2，582 项全绿，不受影响。
+- api 全量（638 个变异点，并发 4）：**5 分 10 秒**，91.51（总分）/ 92.23（覆盖口径），
+  565 杀 / 17 超时 / 49 存活 / 5 无覆盖 / 2 错误，退出码 0。对照改之前：17–23 分钟、91.46（当时 597 个点）。
+  平均每个变异体 8.60 条用例（改之前是「跑完整套件」，即 366 条）。
+- 差分门禁端到端：`clock.ts` 一行改动 → 9 个变异点全杀、100 分、多次实测在 6–25 秒之间摆动
+  （改之前同一条路径是 17–24 秒）；对 `a685422` 的真实 diff，api 圈出 5 个范围且路径是相对 `apps/api`
+  的 `src/domain/net.ts:...`。
+- 单测 45 条全过（新增了 api 的 cwd 与路径口径断言）；`pnpm lint` 0 error（5 条既有 warning）、
+  `pnpm typecheck` 两个包通过、`pnpm test:coverage` 退出码 0：api 覆盖率 98.15 / 95.25 / 97.87 / 98.50
+  与 vitest 5 时期**逐项相同**（降级没有带来覆盖率变化），web 98.39 / 98.49 / 98.19 / 99.19 不变。
+  一个环境前提：worktree 里要先 `pnpm build`，bin 的进程级用例要读 `apps/api/dist` 与 `apps/web/dist`，
+  缺产物时 `mailuo.mjs` 的覆盖率会掉到 92.23 并让门禁变红（D90 已经记过同一条，这次又踩了一次）。
+
+### 代价与退出条件
+
+- 代价只有一条：**`apps/api` 的测试跑在 vitest 4.1.11 上**，`apps/web` 与其余部分不动。不需要仓库级
+  override（D91 实测过，只要改 `apps/api` 自己的依赖就能让 runner 与测试文件解析到同一个 vitest 实例）。
+- 退出条件写在这里，落地后要有人执行：**`@stryker-mutator/vitest-runner` 支持 vitest 5 之后，
+  把 `apps/api` 升回 5.x、删掉这一节，并把 `apps/api/stryker.config.json` 的 `testRunner` 换回命令运行器
+  （或在 vitest 5 下重跑一遍确认 perTest 仍然正确）。** 在那之前，这里是一份有意的版本滞后，不是遗漏。
+- web 与 bin 不变：web 的 vitest 是 5.x（runner 不兼容），继续走命令运行器加定向子集；bin 用 `node:test`，
+  与 vitest runner 无关。
+
+### 只读审核后的修正（子代理；无阻断项，1 条中 + 6 条低，全部已改）
+
+1. **（中）脚本头部注释被这次改动推翻**：`scripts/mutation-scope.mjs` 还写着「三条配置都走命令运行器……
+   api 597 个点 17–23 分钟」，而 api 现在是 perTest、638 个点、约 5 分钟。这是该脚本存在理由的论证，
+   已改成「api 已改 perTest（见 D92），web 与 bin 仍是命令运行器」。
+2. **（低，但性质偏重）越界路径被静默丢弃，与脚本开头「拿不准就拒绝执行」直接矛盾。** 这条 D90 就存在：
+   解析层用 `isSafeRepoPath` 把含 `..` 的条目直接丢掉，于是 `+++ b/apps/api/src/domain/../../secret.ts`
+   既匹配 api 的 `matches`、又有改动行，却既不在 args 也不在 rejected，脚本报「没有改动」并 exit 0。
+   改法是把「安不安全」整个从句法层移到 `planScope`：解析只管解析（只挡 `+++ /dev/null`），
+   `safeScopePath` 返回 null 的条目一律进 rejected、整次执行返回 2。
+   **修的过程中发现还有第二个静默入口**：`..` 段以 `.` 开头，会被「隐藏文件」规则当成 dotfile 排掉，
+   所以只改解析层它仍然走不到 rejected。现在 `.` 与 `..` 不再算隐藏段（它们是越界/未归一化写法，
+   不是 dotfile），一并交给 `safeScopePath` 拒绝；审核另提的 `apps/api/src/domain/./x.ts` 同理。
+3. **（低）转换之后没有再校验一次**：`safeScopePath` 现在在 `path.posix.relative` 之后再验一遍绝对路径与
+   `.`/`..` 段，覆盖「将来给某个 scope 加 cwd 而 matches 放宽」的情形，并有用例临时注入一个这样的
+   scope 探针来钉住它。
+4. **（低）rejected 的路径口径没写明**：报错里补了一句「下列路径相对仓库根（不是相对 scope 目录）」——
+   同一个 scope 的 `--mutate` 是 scope 相对的，照抄会用到错路径。
+5. **（低）平均用例数两处不一致**：`docs/development.md` 写 8.75（那是 D91 一次含 3 个错误的口径），
+   本节写 8.60。统一成 8.60，并写明口径是「报告里 ΣtestsCompleted ÷ 变异点数」。
+6. **（低）退出条件只写在决策记录里**：`apps/api/vitest.config.ts` 的头注释补上「为什么钉在 4.1.11」
+   与退出条件——改依赖的人最可能先打开那个文件，而不是翻 decisions.md。
+7. **（低）用例丢了一句提示的锚定**：缺 stryker 二进制的用例现在同时断言路径与 `pnpm install` 提示。
+
+审核独立复核过的部分（无问题）：cwd 改造的路径换算与端到端结果、`mutation: stryker run <config>` 的
+CLI 位置参数合法性、删根配置无遗漏引用、`exclude` 是替换语义所以必须 spread `configDefaults.exclude`、
+`.gitignore` 对 `stryker.log` / `.stryker-tmp/` / `stryker-setup-*.js` 的覆盖、以及 D91 的核心结论
+（runner 与测试文件解析到同一个 vitest realpath）；它还独立用 vitest 5 复现了「覆盖率与降级前逐项相同」。
