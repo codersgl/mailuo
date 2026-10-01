@@ -95,19 +95,29 @@ TypeScript 7，所以根 `devDependencies` 里的 `typescript@6` 只服务 lint�
   的 `test:coverage`（bin 那段），取值是当前实测值向下取整再减 2 个点。为什么用这个口径、
   代价是什么，见 `docs/decisions.md` D82。
 - 变异测试有两条路。**手工**的：挑几处关键分支临时改坏、跑定向用例确认变红再还原（D86 一轮 12 个、
-  D87 由子代理各做一轮、D88 审查 24 个探针）。**工具**的：`pnpm test:mutation` 跑 Stryker，
-  范围是 `apps/api/src/domain/**` + `server.ts`（597 个变异点），配置在 `stryker.config.json`，
-  报告在 `coverage/mutation/`（HTML + JSON，已 gitignore）。
-  - 不走 `@stryker-mutator/vitest-runner`（D88 证明它与本仓库的 vitest 5 选不出用例），用 Stryker 自带的
-    命令运行器：每个变异点跑一遍完整的 api 套件，按退出码判死。代价是没有按测试选测，**全量约 17 分钟
-    （并发 3），不要放进 CI**，手工或 nightly 用。
+  D87 由子代理各做一轮、D88 审查 24 个探针）。**工具**的：Stryker，报告统一落在 `coverage/mutation/`
+  （HTML + JSON，已 gitignore）。三个入口：
+  - `pnpm test:mutation`：范围 `apps/api/src/domain/**` + `server.ts`（597 个变异点），配置
+    `stryker.config.json`。每个变异点跑一遍完整的 api 套件（约 2.4 秒），**全量 17–23 分钟（并发 3），
+    不要放进 CI**，手工或 nightly 用。
+  - `pnpm test:mutation:bin`：范围 `bin/mailuo.mjs`（491 个变异点），配置 `stryker.bin.config.json`。
+    三个前提：先 `pnpm build`（进程级用例要读构建产物，脚本里已串上）；**并发必须是 1**（bin 用例绑固定
+    端口 3010 等，多 worker 会互相抢端口）；本机 shell 若导出 `NODE_USE_ENV_PROXY`，要用
+    `env -u NODE_USE_ENV_PROXY` 跑（否则那条断言 stderr 为空的用例会失败）。全量约 44 分钟起。
+  - `pnpm test:mutation:web`：范围 `apps/web/src/{domain,lib}/**`（1087 个变异点），配置
+    `stryker.web.config.json`。命令是**定向子集**（20 个直接 import 这两个目录的测试文件，6.3 秒 vs
+    全量套件 25.6 秒），子集只会漏判、不会误判，所以**存活点必须再用全量套件逐个复验**（协议见 D89 第十四节）。
+    约 40 分钟；`components`/`hooks` 未纳入（另约 1300+ 个点、3 小时以上）。
+  - 三条都不走 `@stryker-mutator/vitest-runner`（D88 证明它与本仓库的 vitest 5 选不出用例），用 Stryker 自带的
+    命令运行器，按退出码判死；`node:test` 项目文档推荐的 tap runner 也不需要（理由见 D89 第十四节）。
   - 判定会摆动，根因是「边界耗时」而不是并发本身：有 20 来个变异点落在遍历循环里，插桩后慢到越过 vitest
     自己的 5 秒用例超时，于是判定取决于跑得多快（D89 第七节有实测）。**存活点清单是稳的**（三种配置下同一批
-    存活点），分数则在 83.9%（只算断言判死）与 87.3%（超时也算检出）之间。所以 `stryker.config.json` 的
-    `thresholds` 取 `{ high: 90, low: 85, break: 80 }`：break 比下界低 4 个点，能拦住「某个文件的用例被掏空」，
-    拦不住「单个测试退化」。要钉住某个具体变异点，用 `--concurrency 1` 单独复验。
-  - `stryker.config.json` 里 `inPlace: true`：它原地改文件、备份放 `.stryker-tmp/`。中途 Ctrl-C 或杀进程会把
-    整个仓库留在插桩态（插桩是全量的），恢复用 `git checkout -- apps bin scripts` 或从 `.stryker-tmp/backup-*` 拷回。
+    存活点）；分数有区间，补完盲区后 api 是原始口径 91.46%、保守下界 88.8%（把 16 个超时全当成没检出）。
+    所以 `stryker.config.json` 的 `thresholds` 取 `{ high: 92, low: 88, break: 84 }`：break 比保守下界低 4.8 个点，
+    能拦住「某个文件的用例被掏空」，拦不住「单个测试退化」。要钉住某个具体变异点，用 `--concurrency 1` 单独复验。
+  - 三个配置都是 `inPlace: true`：原地改文件、备份放 `.stryker-tmp*`。中途 Ctrl-C 或杀进程会把整个仓库留在
+    插桩态（插桩是全量的，不只 `mutate` 圈定的文件），恢复用 `git checkout -- apps bin scripts` 或从
+    `.stryker-tmp*/backup-*` 拷回。
 
 ## 发布（npm）
 

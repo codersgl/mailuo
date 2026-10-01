@@ -1,0 +1,32 @@
+{
+  "$schema": "./node_modules/@stryker-mutator/core/schema/stryker-schema.json",
+  "testRunner": "command",
+  "commandRunner": {
+    "command": "pnpm --filter @mailuo/web exec vitest run test/DependencySection.test.tsx test/SearchBox.test.tsx test/SearchResults.test.tsx test/Sidebar.test.tsx test/board.test.ts test/format.test.ts test/graph.test.ts test/highlight.test.ts test/layerDeps.test.ts test/reminderDomain.test.ts test/reminderUi.test.tsx test/route.test.ts test/searchDomain.test.ts test/storage.test.ts test/subtreeTime.test.ts test/theme.test.ts test/themeBoot.test.ts test/tree.test.ts test/useCardDrag.test.tsx test/useTheme.test.ts"
+  },
+  "coverageAnalysis": "off",
+  "inPlace": true,
+  "mutate": [
+    "apps/web/src/domain/**/*.ts",
+    "apps/web/src/domain/**/*.tsx",
+    "apps/web/src/lib/**/*.ts",
+    "apps/web/src/lib/**/*.tsx"
+  ],
+  "reporters": [
+    "clear-text",
+    "json",
+    "html"
+  ],
+  "jsonReporter": {
+    "fileName": "coverage/mutation/web.json"
+  },
+  "htmlReporter": {
+    "fileName": "coverage/mutation/web.html"
+  },
+  "concurrency": 4,
+  "timeoutMS": 60000,
+  "timeoutFactor": 2,
+  "tempDirName": ".stryker-tmp-web",
+  "logLevel": "info",
+  "fileLogLevel": "debug"
+}
