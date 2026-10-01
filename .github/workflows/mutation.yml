@@ -1,0 +1,198 @@
+# 变异测试（Stryker）。三条入口的代价差得很远，所以节奏也分开：
+#   - PR：只跑本次 diff 改到的行，十几秒到几分钟（D90 的差分脚本）；
+#   - 每天：api 全量，perTest，约 5 分钟（D92）；
+#   - 每周：web（约 40 分钟）与 bin（44 分钟起）。
+#
+# 为什么不并进 ci.yml：变异测试的判定在并发/负载下会摆动（D89 第七节有实测），而全量动辄几十分钟，
+# 当 PR 的阻断门禁会让「绿」变成一个说不清的数字。所以 PR 上那一步目前不阻断（见下面 diff job 的说明）。
+#
+# 报告统一落在 coverage/mutation/（已 gitignore），每次运行都上传成 artifact——变异测试失败时
+# 报告最有用，所以上传步骤用 if: always()。
+
+name: Mutation
+
+on:
+  pull_request:
+  schedule:
+    # 每天 03:17 UTC 跑 api 全量；每周日 04:43 UTC 跑 web 与 bin。
+    # 改这里的 cron 字符串时，必须同步改下面 job 的 if —— 它按 cron 字符串区分跑哪个范围，
+    # 漏改会让那个 job 永远为 false，而且不会有任何提示。
+    - cron: '17 3 * * *'
+    - cron: '43 4 * * 0'
+  workflow_dispatch:
+    inputs:
+      scope:
+        description: 手动跑哪个范围
+        type: choice
+        options: [api, web, bin, all]
+        default: api
+
+# 只读权限：这个工作流不写回仓库。
+permissions:
+  contents: read
+
+# 按事件分组建：PR 之间互相取消（同一分支连续推送时省 runner），但定时与手动触发不共享组——
+# 否则在 nightly 跑到一半时手动触发一次（哪怕只是 scope=api），就会把当天的全量信号静默取消掉。
+concurrency:
+  group: mutation-${{ github.event_name }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  # 每个 PR 都跑，不按 paths 过滤：过滤之后，与变异无关的 PR 上这个 check 会变成 skipped，
+  # 而 skipped 在「必需检查」的语义里是个容易踩的坑（它既不绿也不红）。安装有 pnpm 缓存，
+  # 范围为空时脚本会直接打印「没有改动」并退出，代价主要是那几十秒的安装。
+  diff:
+    name: PR 差分门禁（不阻断）
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      # fetch-depth: 0 是必需的——下面要拿 PR 的 base 提交做 merge-base，浅克隆里找不到它。
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - uses: pnpm/action-setup@v6
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - run: pnpm install --frozen-lockfile
+
+      # 用 base 提交的 SHA 而不是 origin/main：它和本次事件的 merge commit 严格配对，
+      # 就是这条 PR 该比的那一侧。单独一步校验它非空，是为了不让空值落进下面那一步：
+      # 有资料说 fork PR 的事件 payload 可能是空的，本机无法验证（首次真实 fork PR 要回看日志）。
+      - name: 校验 base 提交
+        run: |
+          if [ -z "${{ github.event.pull_request.base.sha }}" ]; then
+            echo "::error::拿不到 pull_request.base.sha，无法计算差分范围。这通常意味着这个事件没有可用的 base 提交。"
+            exit 1
+          fi
+
+      # 脚本的退出码是有分工的（见 scripts/mutation-scope.mjs 头部）：
+      #   0 通过 / 1 分数低于 break 阈值 / 2 护栏拒绝（改动过大、路径不安全）/ 3 用法或基础设施错误。
+      # 这里只容忍 1——分数不达标目前不阻断，但「根本没跑成」必须显式变红，否则一个改了 500 行的 PR
+      # 会拿到绿色的 check 而变异测试一行都没跑。
+      - name: 只变异本次改动行（分数不达标不阻断）
+        id: mutation
+        run: |
+          set +e
+          node scripts/mutation-scope.mjs --scope api --base "${{ github.event.pull_request.base.sha }}" --run
+          code=$?
+          set -e
+          echo "exit=$code" >> "$GITHUB_OUTPUT"
+          if [ "$code" -eq 1 ]; then
+            echo "::warning::变异分数低于 apps/api/stryker.config.json 里的 break 阈值。这一步当前不阻断合并，见 docs/decisions.md D93。"
+          fi
+          exit 0
+
+      - name: 护栏与基础设施错误必须失败
+        if: steps.mutation.outputs.exit != '0' && steps.mutation.outputs.exit != '1'
+        run: |
+          echo "::error::变异脚本以 ${{ steps.mutation.outputs.exit }} 退出：2=护栏拒绝，3=用法或基础设施错误。这不是分数不达标，必须修。"
+          exit 1
+
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: mutation-diff
+          path: coverage/mutation/
+          if-no-files-found: ignore
+          # 重跑失败的 job 属于同一个 run，同名 artifact 已存在时默认会直接失败。
+          overwrite: true
+
+  api-full:
+    name: api 全量（每天）
+    if: >-
+      (github.event_name == 'schedule' && github.event.schedule == '17 3 * * *') ||
+      (github.event_name == 'workflow_dispatch' && (inputs.scope == 'api' || inputs.scope == 'all'))
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: pnpm/action-setup@v6
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - run: pnpm install --frozen-lockfile
+
+      # 不需要 build：api 的变异测试走 vitest + perTest，源码由 vite 现场转换；
+      # 要读 dist 的是 bin 的进程级用例，那一条在下面每周的 job 里，且它的脚本自己串了 build。
+      - run: pnpm test:mutation
+
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: mutation-api
+          path: coverage/mutation/
+          if-no-files-found: ignore
+          overwrite: true
+
+  web-weekly:
+    name: web（每周）
+    if: >-
+      (github.event_name == 'schedule' && github.event.schedule == '43 4 * * 0') ||
+      (github.event_name == 'workflow_dispatch' && (inputs.scope == 'web' || inputs.scope == 'all'))
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: pnpm/action-setup@v6
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - run: pnpm install --frozen-lockfile
+
+      # 这个入口仍是命令运行器 + 定向子集（apps/web 的 vitest 是 5.x，runner 不兼容，见 D91）。
+      # 子集只会漏判、不会误判，所以存活点还要按 D89 第十四节的协议用全量套件逐个复验。
+      - run: pnpm test:mutation:web
+
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: mutation-web
+          path: coverage/mutation/
+          if-no-files-found: ignore
+          overwrite: true
+
+  bin-weekly:
+    name: bin（每周）
+    if: >-
+      (github.event_name == 'schedule' && github.event.schedule == '43 4 * * 0') ||
+      (github.event_name == 'workflow_dispatch' && (inputs.scope == 'bin' || inputs.scope == 'all'))
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: pnpm/action-setup@v6
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - run: pnpm install --frozen-lockfile
+
+      # test:mutation:bin 自己串了 pnpm build（进程级用例要读构建产物），配置里的并发写死成 1
+      # （用例绑固定端口，多 worker 会互相抢）。`env -u NODE_USE_ENV_PROXY` 是给本机 shell 导出了
+      # 这个变量的情形准备的：导出时 Node 会打 undici 警告，而有一条用例断言 stderr 为空。
+      - run: env -u NODE_USE_ENV_PROXY pnpm test:mutation:bin
+
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: mutation-bin
+          path: coverage/mutation/
+          if-no-files-found: ignore
+          overwrite: true

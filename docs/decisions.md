@@ -4942,3 +4942,67 @@ D91 验证过的只有「在 `apps/api` 里跑」这一种形态。另一种是�
 CLI 位置参数合法性、删根配置无遗漏引用、`exclude` 是替换语义所以必须 spread `configDefaults.exclude`、
 `.gitignore` 对 `stryker.log` / `.stryker-tmp/` / `stryker-setup-*.js` 的覆盖、以及 D91 的核心结论
 （runner 与测试文件解析到同一个 vitest realpath）；它还独立用 vitest 5 复现了「覆盖率与降级前逐项相同」。
+
+## D93 第 55 步：阶段 D —— 变异测试接进 CI（2026-10-01，分支 chore/mutation-ci）
+
+新增 `.github/workflows/mutation.yml`，把三条入口按各自的代价分开挂节奏。
+
+### 节奏与依据
+
+| 触发 | 范围 | 耗时（实测） | 是否阻断 |
+| --- | --- | --- | --- |
+| 每个 PR | 本次 diff 改到的行（api） | 十来秒起 | 分数不达标不阻断；护栏与基础设施错误阻断 |
+| 每天 03:17 UTC | api 全量（perTest） | 约 5 分钟 | 是 |
+| 每周日 04:43 UTC | web 与 bin，两个 job 并行 | 约 40 分钟 / 44 分钟起 | 是 |
+| `workflow_dispatch` | api / web / bin / all 任选 | — | 是 |
+
+不并进 `ci.yml` 的理由写在 workflow 头部：全量动辄几十分钟，而判定会随负载摆动（D89 第七节），
+塞进 PR 的阻断门禁会让「绿」变成一个说不清的数字。
+
+### 三个具体决定
+
+1. **PR 那一步用 `github.event.pull_request.base.sha` 当 `--base`，不用 `origin/main`。** 理由是它和
+   本次事件的 merge commit 严格配对，就是这条 PR 该比的那一侧（merge 基点仍由脚本用 `git merge-base`
+   算）。代价是 job 里必须 `fetch-depth: 0`。取 base 的那一步单独先校验非空：有资料说 fork PR 的
+   事件 payload 可能是空的，本机无法验证，不能让空值落进「不阻断」的那一步被吞成绿色。
+2. **PR 那一步用退出码分层，而不是 `continue-on-error`。** 最初写的是 step 级 `continue-on-error`，
+   审核指出它会把脚本刻意设计的护栏错误一起吞掉：脚本对「改动超上限」「路径不能安全传给 --mutate」
+   返回 2，对 git/参数错误返回 1，而 `continue-on-error` 让这些全变成绿——一个改了 500 行 api 的 PR
+   会拿到绿色 check 且变异测试一行都没跑。现在脚本的退出码有了明确分工（0 通过 / 1 分数低于 break /
+   2 护栏拒绝 / 3 用法或基础设施错误），CI 只容忍 1，其余由一步单独的检查显式变红。
+3. **`concurrency` 按事件分组建**（`mutation-${{ github.event_name }}-${{ github.ref }}`），只在 PR 上
+   `cancel-in-progress`。原来两条 cron 与「从 main 的手动触发」共享 `refs/heads/main` 这一组、且一律
+   取消上一轮，于是 nightly 跑到一半时手动触发一次就会把当天的全量信号静默取消掉。现在定时与手动
+   分属不同组，互不打断；PR 之间仍然互相取消。
+
+### 本地验证到哪一步
+
+- YAML 结构用解析器核过：四个 job、两条 cron、每个 job 的 `if` 与 timeout、artifact 步骤的
+  `if: always()` 都在位；action 版本与 `ci.yml` 同批（`checkout@v7` / `pnpm/action-setup@v6` /
+  `setup-node@v7`），上传用 `actions/upload-artifact@v7`（用 GitHub API 查的当前最新 major）。
+- 退出码分层有用例钉住：单测覆盖了 0/1/2/3 四种返回，包括「子进程真的跑了（有 status）」与
+  「根本没起来（没有 status）」的区别。
+- 把 PR 那一步的命令原样在本地跑了一遍（临时给 `clock.ts:40` 加一个尾空格，`--base` 传 HEAD 的 SHA）：
+  圈出 `src/domain/clock.ts:40-40`、9 个变异点全杀、退出码 0、11 秒。
+- `pnpm test:mutation`、`pnpm test:mutation:web`、`pnpm test:mutation:bin` 三条命令本身在 D89/D90/D92
+  里都实跑过，workflow 只是原样调用，没有另起一套。
+
+### 没有验证的部分（必须知道）
+
+- **workflow 本身没在 GitHub 上跑过。** 本机无法执行 GitHub Actions，所以 cron 的实际生效时间、
+  runner 上的资源占用（api 用的是 `concurrency: 4`）、artifact 上传、以及 bin 的固定端口在 runner 上
+  是否被占用，都还没被真实环境检验过。第一次 nightly 之后要回看日志。
+- `web`/`bin` 两条 weekly 的耗时是按本机实测估的，runner 的 CPU 与本机不同，实际可能更长——所以
+  timeout 给的是 90 / 120 分钟。
+- **首次真实 fork PR 要看日志**：`pull_request.base.sha` 在 fork PR 上是否一定有值，只能实测确认；
+  现在的护栏保证它为空时是红的，而不是绿的。
+
+### 留待下一步
+
+- 观察若干轮 PR 上的差分门禁，稳定后把「分数不达标」也提成阻断（转必需检查时还要一起考虑：
+  首次贡献者的 PR 需要维护者批准才跑，等待态会挡住合并）。
+- 若 nightly 的 api 全量在 runner 上明显慢于 5 分钟，考虑把 `concurrency` 从 4 调低（runner 通常是
+  2–4 核，超配会让边界耗时更容易越过超时预算，反而放大判定的摆动）。
+- 可选优化（审核提过、这次没做）：把 workflow 拆成 PR 与定时两个文件，job 的 `if` 就不必比对 cron
+  字符串（现在有「改了 cron 忘记改 if 会静默失效」的隐患，已在注释里点明）；PR 差分扩到 web/bin 两个
+  scope（现在只覆盖 api，web/bin-only 的 PR 是「绿但没测」）。
