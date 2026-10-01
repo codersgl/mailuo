@@ -2,8 +2,11 @@ node_modules/
 dist/
 build/
 
-# 覆盖率报告产物（vitest 的 html reporter 输出到这里）
+# 覆盖率报告产物（vitest 的 html reporter 输出到这里；变异测试的报告也落在这里）
 coverage/
+
+# Stryker 的沙箱/备份目录，只在本机跑变异测试时存在
+.stryker-tmp/
 
 # SQLite 数据文件不入版本库（见 docs/spec.md）
 data/

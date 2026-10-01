@@ -94,11 +94,20 @@ TypeScript 7，所以根 `devDependencies` 里的 `typescript@6` 只服务 lint�
 - 阈值定义在 `apps/api/vitest.config.ts`、`apps/web/vitest.config.ts` 与根 `package.json`
   的 `test:coverage`（bin 那段），取值是当前实测值向下取整再减 2 个点。为什么用这个口径、
   代价是什么，见 `docs/decisions.md` D82。
-- 变异测试目前是**手工**做的：挑几处关键分支临时改坏、跑定向用例确认变红再还原，D86 做过一轮
-  12 个、D87 由子代理各做一轮、D88 审查做了 24 个探针。Stryker 试装过（D88），但
-  `@stryker-mutator/vitest-runner@10` 与本仓库的 vitest 5 在「按变异点选测试」这步不兼容——
-  变异阶段平均只选到 2.05 条用例、mutation score 1.84，那个分数不可信；依赖与脚本已回退，
-  要再试见 D88 结尾的三条路。
+- 变异测试有两条路。**手工**的：挑几处关键分支临时改坏、跑定向用例确认变红再还原（D86 一轮 12 个、
+  D87 由子代理各做一轮、D88 审查 24 个探针）。**工具**的：`pnpm test:mutation` 跑 Stryker，
+  范围是 `apps/api/src/domain/**` + `server.ts`（597 个变异点），配置在 `stryker.config.json`，
+  报告在 `coverage/mutation/`（HTML + JSON，已 gitignore）。
+  - 不走 `@stryker-mutator/vitest-runner`（D88 证明它与本仓库的 vitest 5 选不出用例），用 Stryker 自带的
+    命令运行器：每个变异点跑一遍完整的 api 套件，按退出码判死。代价是没有按测试选测，**全量约 17 分钟
+    （并发 3），不要放进 CI**，手工或 nightly 用。
+  - 判定会摆动，根因是「边界耗时」而不是并发本身：有 20 来个变异点落在遍历循环里，插桩后慢到越过 vitest
+    自己的 5 秒用例超时，于是判定取决于跑得多快（D89 第七节有实测）。**存活点清单是稳的**（三种配置下同一批
+    存活点），分数则在 83.9%（只算断言判死）与 87.3%（超时也算检出）之间。所以 `stryker.config.json` 的
+    `thresholds` 取 `{ high: 90, low: 85, break: 80 }`：break 比下界低 4 个点，能拦住「某个文件的用例被掏空」，
+    拦不住「单个测试退化」。要钉住某个具体变异点，用 `--concurrency 1` 单独复验。
+  - `stryker.config.json` 里 `inPlace: true`：它原地改文件、备份放 `.stryker-tmp/`。中途 Ctrl-C 或杀进程会把
+    整个仓库留在插桩态（插桩是全量的），恢复用 `git checkout -- apps bin scripts` 或从 `.stryker-tmp/backup-*` 拷回。
 
 ## 发布（npm）
 

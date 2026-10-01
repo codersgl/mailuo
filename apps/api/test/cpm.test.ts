@@ -75,6 +75,30 @@ describe('computeSchedule（纯计算）', () => {
     ]);
   });
 
+  it('入度按边累加：节点顺序把后继排在前面时，也不会在前置完成之前排期', () => {
+    // 节点顺序刻意把 c 排在 b 前面（ids 为 [a, c, b]）。Kahn 的入度若少加一次，c 的入度会停在 1、
+    // 第一次就能入队，于是在 b 之前被排期：c 的最早开始由 30 变 10，项目工期由 35 变 30
+    // ——c 明明要等 b 完成（b 是 a→b→c 这条长链的中间环节）。
+    const schedule = computeSchedule(
+      [
+        { id: 'a', durationMinutes: 10 },
+        { id: 'c', durationMinutes: 5 },
+        { id: 'b', durationMinutes: 20 },
+      ],
+      [
+        { predecessorId: 'a', successorId: 'c' },
+        { predecessorId: 'a', successorId: 'b' },
+        { predecessorId: 'b', successorId: 'c' },
+      ],
+    );
+
+    expect(schedule.projectDuration).toBe(35);
+    expect(schedule.tasks.find((task) => task.id === 'c')).toMatchObject({
+      earliestStart: 30,
+      earliestFinish: 35,
+    });
+  });
+
   it('未估工期（null）按 0 参与计算', () => {
     const schedule = computeSchedule(
       [
@@ -208,8 +232,10 @@ describe('computeSchedule（纯计算）', () => {
     expect(schedule.projectDuration).toBe(20);
   });
 
-  it('成环时抛 DependencyCycleError', () => {
-    expect(() =>
+  it('成环时抛 DependencyCycleError，消息与 name 也要带上', () => {
+    // message 与 name 只进 app.ts 的 console.error（接口错误体是固定的「服务器内部错误」，不带上它们），
+    // 也就是排查脏数据时唯一能看到的线索：清空不会让「抛的是这个类」变色，日志里却只剩空信息。
+    const build = () =>
       computeSchedule(
         [
           { id: 'a', durationMinutes: 1 },
@@ -219,8 +245,18 @@ describe('computeSchedule（纯计算）', () => {
           { predecessorId: 'a', successorId: 'b' },
           { predecessorId: 'b', successorId: 'a' },
         ],
-      ),
-    ).toThrow(DependencyCycleError);
+      );
+
+    let thrown: unknown;
+    try {
+      build();
+    } catch (error) {
+      thrown = error;
+    }
+
+    expect(thrown).toBeInstanceOf(DependencyCycleError);
+    expect((thrown as Error).message).toBe('依赖图存在环');
+    expect((thrown as Error).name).toBe('DependencyCycleError');
   });
 });
 

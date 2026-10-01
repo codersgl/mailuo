@@ -97,6 +97,27 @@ describe('deriveColumns', () => {
     expect(Object.fromEntries(backward)).toEqual(Object.fromEntries(forward));
   });
 
+  it('挂在环下面的任务照常按自己的子任务推导（结算过的节点要从栈上抹掉）', () => {
+    // p↔q 是父子环（只可能来自手工改库，接口的成环校验挡住了），n 挂在 p 下面，x 是 n 的子任务
+    // （在进行中）。后序遍历结算完一个节点后必须把它从 onStack 里删掉：漏了这一步，已经结算过的
+    // 子节点再被看到时会被误判成「回边」，当前这条路径整段被锁住——n 保留自己的「待办」，
+    // 而它有一个在进行中的子任务，应该推导成「进行中」。
+    //
+    // 三种输入顺序都断言一次，而且断的是整份结果：这条用例的区分力不能挂在「任务恰好排在某个
+    // 位置」上——仓储层这一层的查询没有 ORDER BY，顺序就是 SQLite 的扫描顺序。
+    const expected = { x: 'doing', n: 'doing', p: 'todo', q: 'todo' };
+    const orders: DeriveNode[][] = [
+      [node('x', 'n', 'doing'), node('n', 'p', 'todo'), node('p', 'q', 'todo'), node('q', 'p', 'todo')],
+      [node('n', 'p', 'todo'), node('x', 'n', 'doing'), node('p', 'q', 'todo'), node('q', 'p', 'todo')],
+      [node('p', 'q', 'todo'), node('q', 'p', 'todo'), node('n', 'p', 'todo'), node('x', 'n', 'doing')],
+    ];
+
+    for (const tasks of orders) {
+      // 环上的 p、q 保留各自的列；不在环上的 n 按子在干推导成「进行中」，x 是叶子保留自己的列。
+      expect(resolved(tasks)).toEqual(expected);
+    }
+  });
+
   it('同一层里有多个子任务时按整层判定，不只看第一个', () => {
     const tasks = [
       node('p'),
