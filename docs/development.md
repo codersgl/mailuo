@@ -101,9 +101,11 @@ TypeScript 7，所以根 `devDependencies` 里的 `typescript@6` 只服务 lint�
   - 不走 `@stryker-mutator/vitest-runner`（D88 证明它与本仓库的 vitest 5 选不出用例），用 Stryker 自带的
     命令运行器：每个变异点跑一遍完整的 api 套件，按退出码判死。代价是没有按测试选测，**全量约 17 分钟
     （并发 3），不要放进 CI**，手工或 nightly 用。
-  - 判定不稳定：并发下有个别变异点的「判活/判死」会随负载摆动（D89 第四节列了 4 个），
-    原因与排查方向也在那里。所以**现在的分数只能用来找测试盲区，不能当门禁**；要钉住某个具体变异点的
-    判定，用并发 1 单独复验。
+  - 判定会摆动，根因是「边界耗时」而不是并发本身：有 20 来个变异点落在遍历循环里，插桩后慢到越过 vitest
+    自己的 5 秒用例超时，于是判定取决于跑得多快（D89 第七节有实测）。**存活点清单是稳的**（三种配置下同一批
+    存活点），分数则在 83.9%（只算断言判死）与 87.3%（超时也算检出）之间。所以 `stryker.config.json` 的
+    `thresholds` 取 `{ high: 90, low: 85, break: 80 }`：break 比下界低 4 个点，能拦住「某个文件的用例被掏空」，
+    拦不住「单个测试退化」。要钉住某个具体变异点，用 `--concurrency 1` 单独复验。
   - `stryker.config.json` 里 `inPlace: true`：它原地改文件、备份放 `.stryker-tmp/`。中途 Ctrl-C 或杀进程会把
     整个仓库留在插桩态（插桩是全量的），恢复用 `git checkout -- apps bin scripts` 或从 `.stryker-tmp/backup-*` 拷回。
 

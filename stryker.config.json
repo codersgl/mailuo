@@ -17,6 +17,11 @@
   "concurrency": 3,
   "timeoutMS": 60000,
   "timeoutFactor": 2,
+  "thresholds": {
+    "high": 90,
+    "low": 85,
+    "break": 80
+  },
   "tempDirName": ".stryker-tmp",
   "logLevel": "info",
   "fileLogLevel": "debug"
