@@ -4470,3 +4470,20 @@ net.ts 是 Host/Origin 白名单所在，其中 4 条属于「畸形 Host 被当
 
 net.ts 剩余真盲区 11 条：`L57` 两条（回环正则去 `^`、`\d{1,3}` → `\d`）、`L69/L137/L145` 三处 `trim()`、
 `L106` 两条（空 name 短路）、`L121` 四条（origin 协议白名单，同为纵深防御）。
+
+### 九、算法侧三条盲区已补
+
+第五节清单里算法侧的三条补上了用例，每条各杀死一个变异（逐个手工改坏验证，红的都只有对应那一条）：
+
+| 位置 | 变异 | 新用例 | 区分输入 |
+| --- | --- | --- | --- |
+| `cpm.ts:161` | `(indegree.get(succ) ?? 0) + 1` → `&& 0` | `apps/api/test/cpm.test.ts` 的「入度按边累加…」 | 节点顺序 `[a, c, b]`、工期 a=10 / b=20 / c=5、边 a→c、a→b、b→c：c 的最早开始 30 → 10，项目工期 35 → 30 |
+| `derive.ts:104` | 删掉 `onStack.delete(frame.node.id)` | `apps/api/test/derive.test.ts` 的「挂在环下面的任务照常按自己的子任务推导…」 | x(doing) 排在 n(todo) 前、n.parent=p、p↔q 成环、x.parent=n：原文 n=doing；变异后 n 被误判成回边而锁住，保留 todo |
+| `subtreeDuration.ts:49` | 子帧 `phase: 'enter'` → `''` | `apps/api/test/subtreeDuration.test.ts` 的「三层以上的链…」 | root→mid→inner→leaf(100) 按根到叶排列：原文 mid=root=100；变异后 mid=root=0（两层的夹具不暴露它） |
+
+api 覆盖率仍是 98.12 / 95.13 / 97.84 / 98.48，355 项用例全过，lint 与 typecheck 无新增问题。
+
+**顺带修正第一轮分类里算错的一处数字**：那次给 `cpm.ts:161` 的区分输入写的是「A=10、B=10、C=5 →
+`C.earliestStart` 由 20 变 10」。工期都从最早开始算，B 的完成时间只有 10，正确值其实也是 10，与变异值相同
+——那个夹具根本不成立。可行的是让长链那一侧确实更晚：a=10、b=20、c=5 时正确 30、变异 10。
+教训记在这里：分类里凡是用具体数字论证的，必须自己按实现算一遍，不能只凭「看起来应该更大」。

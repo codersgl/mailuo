@@ -97,6 +97,27 @@ describe('deriveColumns', () => {
     expect(Object.fromEntries(backward)).toEqual(Object.fromEntries(forward));
   });
 
+  it('挂在环下面的任务照常按自己的子任务推导（结算过的节点要从栈上抹掉）', () => {
+    // p 与 q 互相当父（环），n 挂在 p 下面，x 是 n 的子任务且在输入里排在 n 前面。
+    // 后序遍历结算完一个节点后必须把它从 onStack 里删掉：漏了这一步，x 再作为 n 的子节点
+    // 被看到时会被误判成「回边」，于是当前这条路径整段被锁住——n 保留自己的「待办」，
+    // 而它其实有一个在进行中的子任务，应该推导成「进行中」。
+    const tasks = [
+      node('x', 'n', 'doing'),
+      node('n', 'p', 'todo'),
+      node('p', 'q', 'todo'),
+      node('q', 'p', 'todo'),
+    ];
+    const result = deriveColumns(tasks);
+
+    // 环上的 p、q 保留各自的列（与上一条用例同一规则）。
+    expect(result.get('p')).toBe('todo');
+    expect(result.get('q')).toBe('todo');
+    // 不在环上的 n 与 x 照常推导 / 保留。
+    expect(result.get('n')).toBe('doing');
+    expect(result.get('x')).toBe('doing');
+  });
+
   it('同一层里有多个子任务时按整层判定，不只看第一个', () => {
     const tasks = [
       node('p'),

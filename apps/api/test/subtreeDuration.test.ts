@@ -82,4 +82,22 @@ describe('subtreeLeafDurations', () => {
     expect(sums.has('a')).toBe(false);
     expect(sums.has('b')).toBe(false);
   });
+
+  it('三层以上的链：从根往下遍历时，中间层也要等子节点算完再结算', () => {
+    // 两阶段栈的后序：子节点必须以 enter 帧入栈（先展开再结算）。若子帧被当成 leave，
+    // 中间层会在它的子节点还没算完时就结算，从 sums 里取到 undefined 当 0——
+    // 于是「中间层」与「根」都变成 0，而它们其实各是 100。
+    // 只有两层（根→中间层→叶子）时不暴露：那时中间层直接取叶子自己的工期就够了。
+    const sums = subtreeLeafDurations([
+      node('root', null),
+      node('mid', 'root'),
+      node('inner', 'mid'),
+      node('leaf', 'inner', 100),
+    ]);
+
+    expect(sums.get('inner')).toBe(100);
+    expect(sums.get('mid')).toBe(100);
+    expect(sums.get('root')).toBe(100);
+    expect(sums.has('leaf')).toBe(false);
+  });
 });
