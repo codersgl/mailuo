@@ -46,6 +46,20 @@ describe('hostNameOf', () => {
     expect(hostNameOf('a:b:c')).toBe('');
     expect(hostNameOf('')).toBe('');
   });
+
+  it('端口与方括号的残留不能在错误的位置被「部分匹配」成功', () => {
+    // 这四条针对同一类缺陷：解析用的是带锚点的正则与严格的段数判断，一旦锚点或段数放宽，
+    // 下面这些畸形串就会「部分匹配」通过，被解析成回环主机名——白名单随之失效。
+    // 每条的注释写明放宽哪一处会让它漏过去。
+    // 去 ^：rest = 'evil:3003'，末尾那截 ':3003' 会匹配上。
+    expect(hostNameOf('[::1]evil:3003')).toBe('');
+    // 去 $：rest = ':3003x'，前缀那截 ':3003' 会匹配上。
+    expect(hostNameOf('[::1]:3003x')).toBe('');
+    // 段数判断放宽成「至少两段」：会取前两段当 host:port，得到 127.0.0.1。
+    expect(hostNameOf('127.0.0.1:3003:evil')).toBe('');
+    // 去 ^：port = 'x3003'，末尾的数字会匹配上。
+    expect(hostNameOf('127.0.0.1:x3003')).toBe('');
+  });
 });
 
 describe('isLoopbackHostName', () => {
